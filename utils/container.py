@@ -1,23 +1,23 @@
-"""Chạy một lệnh trong `d710:full`. Chỗ DUY NHẤT biết cách gọi docker từ Python.
+"""Run a command inside `d710:full`. The ONLY place that knows how to call docker from Python.
 
-Image mang sẵn toàn bộ phần mềm của hãng: `/usr/PET` (librdf, pet_recon, các
-công cụ list-mode), `/usr/g`, và bộ giải mã ở `/opt/custom_tool`. Nhờ vậy
-`D710/` **không còn tham chiếu nào tới `custom_tool/` trên host** — thứ nó cần
-đều đã ở trong image:
+The image carries the entire vendor software stack: `/usr/PET` (librdf,
+pet_recon, the list-mode tools), `/usr/g`, and the decoder at
+`/opt/custom_tool`. Because of that, `D710/` **no longer references
+`custom_tool/` on the host at all** — everything it needs is inside the image:
 
-| trước ở host | trong image |
+| formerly on the host | inside the image |
 |---|---|
 | `custom_tool/ge_rdf_tool.py` | `/opt/custom_tool/ge_rdf_tool.py` |
 | `custom_tool/petsw/usr/PET/systemConfig/cal/*.3dnorm` | `/usr/PET/systemConfig/cal/*.3dnorm` |
-| `custom_tool/petsw/.../cal/*.3dwcc` | cùng thư mục đó |
+| `custom_tool/petsw/.../cal/*.3dwcc` | the same directory |
 
-Hệ quả: bước decode / estimate / tostir chỉ cần **bash + docker + python3
-stdlib** trên host. Không conda, không numpy, không pydicom, không i386
-multiarch. Chỉ `osem` và `export` còn cần môi trường project, vì SIRF không có
-trong image.
+Consequence: the decode / estimate / tostir steps need only **bash + docker +
+the python3 stdlib** on the host. No conda, no numpy, no pydicom, no i386
+multiarch. Only `osem` and `export` still need the project environment, because
+SIRF is not in the image.
 
-Mã của `D710/` **không** bake vào image: `d710` mount cây này vào lúc chạy, nên
-sửa một dòng Python không phải dựng lại 7 GB.
+The `D710/` code is **not** baked into the image: `d710` mounts this tree at run
+time, so changing one line of Python does not mean rebuilding 7 GB.
 """
 
 from __future__ import annotations
@@ -26,11 +26,12 @@ import os
 import subprocess
 import sys
 
-#: Thư mục gốc của cây mã, nhìn từ bên trong container.
+#: Root of the code tree, as seen from inside the container.
 D710_IN = "/d710"
 
-#: `vendor/` cũng được mount riêng ở đây, vì các script gdb `source /vendor/...`
-#: theo đường tuyệt đối và đó là quy ước đã được kiểm chứng.
+#: `vendor/` is mounted separately here as well, because the gdb scripts
+#: `source /vendor/...` by absolute path and that is the convention that has
+#: been validated.
 VENDOR_IN = "/vendor"
 
 
@@ -39,11 +40,11 @@ def image() -> str:
 
 
 def ensure_image() -> None:
-    """Chết sớm với lệnh nạp image, thay vì chết muộn với lỗi của docker.
+    """Fail early with the command to load the image, rather than late with a docker error.
 
-    Image được **bàn giao nguyên con**, không dựng lại: dựng nó cần cây
-    `custom_tool/petsw/` 18 GB không nằm trong repo. `D710/Dockerfile` chỉ ghi
-    lại image chứa gì.
+    The image is **handed over whole**, never rebuilt: building it needs the
+    18 GB `custom_tool/petsw/` tree, which is not in the repo. `D710/Dockerfile`
+    only documents what the image contains.
     """
     p = subprocess.run(["docker", "image", "inspect", image()],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -55,16 +56,18 @@ def ensure_image() -> None:
 
 
 def docker_argv(mounts=(), env=None, tty=False, extra=(), interactive=True) -> list:
-    """Phần `docker run ...` đứng trước tên image.
+    """The `docker run ...` part that precedes the image name.
 
-    `--user` để mọi file sinh ra thuộc về người chạy. Không có nó thì tất cả
-    dưới thư mục đầu ra quay về sở hữu của root — bind mount chuyển thẳng uid
-    của container ra host, và người dùng của container chỉ có root.
+    `--user` makes every generated file belong to whoever ran the command.
+    Without it everything under the output directory ends up owned by root — a
+    bind mount passes the container uid straight through to the host, and the
+    container's only user is root.
 
-    ⚠ Đường `pet_recon` (`vendor/run.sh`) là NGOẠI LỆ DUY NHẤT: nó ghi vào
-    `/usr/PET/systemConfig`, `/usr/g/service/log` và `/petRDFS/OVLFILES`, cả ba
-    chỉ root ghi được trong image, mà image thì không dựng lại. Nên nó chạy
-    root. Mọi thứ khác — giải mã, ct_to_pifa, đọc cal, to_stir — chạy `--user`.
+    ⚠ The `pet_recon` path (`vendor/run.sh`) is the ONE EXCEPTION: it writes to
+    `/usr/PET/systemConfig`, `/usr/g/service/log` and `/petRDFS/OVLFILES`, all
+    three writable only by root in the image, and the image is not rebuilt. So
+    it runs as root. Everything else — decoding, ct_to_pifa, reading cal files,
+    to_stir — runs with `--user`.
     """
     argv = ["docker", "run", "--rm"]
     if interactive:
@@ -83,7 +86,7 @@ def docker_argv(mounts=(), env=None, tty=False, extra=(), interactive=True) -> l
 
 def run(argv, mounts=(), env=None, capture=False, check=True, tty=False,
         extra=(), verbose=True):
-    """Chạy `argv` trong container. Trả `CompletedProcess`."""
+    """Run `argv` inside the container. Returns a `CompletedProcess`."""
     cmd = docker_argv(mounts, env, tty, extra) + [image()] + [str(a) for a in argv]
     if verbose:
         print("+ " + " ".join(cmd), flush=True)
@@ -92,9 +95,10 @@ def run(argv, mounts=(), env=None, capture=False, check=True, tty=False,
 
 
 def python(argv, **kw):
-    """`python3 <argv>` trong container, với `D710/` trên `PYTHONPATH`.
+    """`python3 <argv>` inside the container, with `D710/` on `PYTHONPATH`.
 
-    Người gọi phải tự mount `D710/` (dùng `d710_mount()`) nếu script cần nó.
+    The caller must mount `D710/` itself (via `d710_mount()`) if the script
+    needs it.
     """
     env = dict(kw.pop("env", None) or {})
     env.setdefault("PYTHONPATH", "/opt/custom_tool:" + D710_IN)
@@ -102,36 +106,38 @@ def python(argv, **kw):
 
 
 def d710_mounts(root) -> list:
-    """Mount cây mã hai lần: `/d710` cho Python, `/vendor` cho các script gdb."""
+    """Mount the code tree twice: `/d710` for Python, `/vendor` for the gdb scripts."""
     return [(root, D710_IN, "ro"), (os.path.join(str(root), "vendor"), VENDOR_IN, "ro")]
 
 
 def rdf_info(raw_file, verbose=False) -> str:
-    """`ge_rdf_tool.py info <raw>` — nguyên văn, chạy trong container.
+    """`ge_rdf_tool.py info <raw>` — verbatim, run inside the container.
 
-    Nguyên văn chứ không phải `--json` là có chủ ý: mọi thứ đọc kết quả này đều
-    đã hiệu chuẩn theo **đúng** bản in đó. Đã đối chứng host ↔ container: khác
-    duy nhất một dòng, dòng in lại đường dẫn file, mà không ai đọc.
+    Verbatim rather than `--json` is deliberate: everything that reads this
+    output has been calibrated against **that exact** printout. Host ↔ container
+    has been compared: the only difference is one line, the one echoing the file
+    path, which nothing reads.
     """
     raw_file = os.path.abspath(str(raw_file))
     d, name = os.path.dirname(raw_file), os.path.basename(raw_file)
     p = python(["/opt/custom_tool/ge_rdf_tool.py", "info", "/raw/" + name],
                mounts=[(d, "/raw", "ro")], capture=True, check=False,
                verbose=verbose)
-    # Giữ cả stderr: khi bộ giải mã không mở được file, nó thoát khác 0 với
-    # stdout rỗng, và báo mỗi stdout thì ra "công cụ nói:" rồi không gì cả.
+    # Keep stderr too: when the decoder cannot open the file it exits non-zero
+    # with an empty stdout, and reporting stdout alone gives "the tool said:"
+    # followed by nothing.
     return p.stdout + (("\n" + p.stderr) if p.stderr else "")
 
 
 def cal_tags(uid: str, suffix: str, tags, verbose=False):
-    """Đọc vài tag DICOM của một file hiệu chuẩn trong `/usr/PET/systemConfig/cal/`.
+    """Read a few DICOM tags of a calibration file in `/usr/PET/systemConfig/cal/`.
 
-    `tags` là danh sách `(tên, tag)` với tag là số nguyên, ví dụ
-    `[("kind", 0x00171005), ("src", 0x00171007)]`. Trả dict, hoặc `None` nếu
-    không có file.
+    `tags` is a list of `(name, tag)` with the tag as an integer, e.g.
+    `[("kind", 0x00171005), ("src", 0x00171007)]`. Returns a dict, or `None` if
+    there is no such file.
 
-    Ở trong container vì đó là nơi cây hiệu chuẩn của hãng sống bây giờ. Image
-    có sẵn pydicom, nên host không cần.
+    Done inside the container because that is where the vendor calibration tree
+    lives now. The image ships pydicom, so the host does not need it.
     """
     import json
 

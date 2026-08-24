@@ -1,38 +1,43 @@
-"""count/voxel -> Bq/mL -> SUV. Toàn bộ phần định lượng, và hằng số `K`.
+"""count/voxel -> Bq/mL -> SUV. All the quantification, and the constant `K`.
 
-Ảnh ra khỏi `osem/` là **count/voxel đã quy về thời điểm tiêm**. Đổi sang Bq/mL
-cần đúng một số vô hướng:
+The image coming out of `osem/` is **count/voxel decay-corrected back to the
+injection time**. Converting to Bq/mL takes exactly one scalar:
 
     Bq/mL = K · x_(count/voxel)
 
-⚠ **`K` chỉ đúng cho ĐÚNG chuỗi hiệu chỉnh đã đo ra nó và ĐÚNG một bước
-voxel.** Projector tích luỹ theo bước voxel chứ không theo thể tích, nên hằng
-số đo ở 2,1306 mm mà dùng lại ở 1,3672 mm sẽ đọc cao 1,56×.
+⚠ **`K` is only valid for THE EXACT correction chain that measured it and for
+ONE voxel size.** The projector accumulates along the voxel step rather than by
+volume, so a constant measured at 2.1306 mm and reused at 1.3672 mm reads 1.56×
+high.
 
-Hai mốc, không cái nào là câu trả lời cuối:
+Two reference points, neither of which is the final answer:
 
-* **WCC của chính exam.** Exam khai file WCC ở header (`wcc_cal_uid`) và file đó
-  có thật trong `/usr/PET/systemConfig/cal/<uid>.3dwcc`, tag `(0019,100B)` =
-  `hrActivityFactor`. Nhân `1e4` là **SUY ĐOÁN** về quy ước đơn vị của GE, chưa
-  dẫn ra được.
-* **Chặn trên theo liều.** Ảnh đã quy về thời điểm tiêm nên Σ(hoạt độ) ≤ liều
-  đã tiêm; ép bằng nhau cho một chặn trên, vì thực tế có phần liều nằm ngoài FOV.
+* **The exam's own WCC.** The exam names its WCC file in the header
+  (`wcc_cal_uid`) and that file really exists in
+  `/usr/PET/systemConfig/cal/<uid>.3dwcc`, tag `(0019,100B)` =
+  `hrActivityFactor`. The `1e4` multiplier is a **GUESS** about GE's unit
+  convention, not yet derived.
+* **A dose-based upper bound.** The image is decay-corrected to injection time,
+  so Σ(activity) ≤ the injected dose; forcing equality gives an upper bound,
+  since in reality some of the dose lies outside the FOV.
 
-Cả hai đều tuyến tính với SUV, nên mọi con số SUV sai đúng bằng tỉ lệ `K` sai.
+Both are linear in SUV, so every SUV number below is wrong by exactly the factor
+`K` is wrong by.
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-#: Quy ước đơn vị GIẢ ĐỊNH giữa `hrActivityFactor` và (Bq/mL)/(count/voxel).
-#: Chưa dẫn ra được; cho 68 % liều nằm trong FOV ở ca nhi, hợp lý với scan phủ
-#: 77 cm của bệnh nhi cao 118 cm (thiếu chân). Đo trên NEMA mới chốt được.
+#: ASSUMED unit convention between `hrActivityFactor` and (Bq/mL)/(count/voxel).
+#: Not yet derived; it puts 68 % of the dose inside the FOV in the paediatric
+#: case, consistent with a 77 cm scan of a 118 cm child (legs not covered).
+#: Only a NEMA measurement will settle it.
 WCC_UNIT_SCALE = 1e4
 
 
 def dose_bq(hdr) -> float:
-    """Liều thực đã vào người: liều tiêm trừ liều còn lại trong bơm, Bq."""
+    """Dose that actually entered the patient: injected minus syringe residual, Bq."""
     return (hdr["dose_mbq"] - hdr.get("residual_dose_mbq", 0.0)) * 1e6
 
 
@@ -42,11 +47,11 @@ def voxel_ml(vox) -> float:
 
 
 def wcc_activity_factor(case, bed: int, verbose: bool = True):
-    """`hrActivityFactor` của chính máy này, hoặc `None`.
+    """This scanner's own `hrActivityFactor`, or `None`.
 
-    Đọc từ sidecar `estimate.json` trước — `d710 estimate` ghi sẵn lúc nó đã có
-    container trong tay. Chỉ khi sidecar không có (bed dựng bằng bản cũ) mới
-    hỏi lại container.
+    Read from the `estimate.json` sidecar first — `d710 estimate` writes it while
+    it still has the container at hand. Only when the sidecar lacks it (a bed
+    built by an older version) is the container queried again.
     """
     from . import container, terms
 
@@ -78,58 +83,62 @@ def wcc_activity_factor(case, bed: int, verbose: bool = True):
 
 
 def k_from_wcc(factor):
-    """`hrActivityFactor` -> `K`, qua quy ước đơn vị GIẢ ĐỊNH.
+    """`hrActivityFactor` -> `K`, via the ASSUMED unit convention.
 
-    `None` vào thì `None` ra, chứ không phải `TypeError`: người gọi thường viết
-    `k_from_wcc(wcc_activity_factor(...))` và cái vế trong **có thể** không tra
-    ra được (ca chưa có sidecar mới, hoặc header không khai `wcc_cal_uid`). Khi
-    đó đường lùi là mốc theo liều, và đó là quyết định của người gọi.
+    `None` in gives `None` out rather than a `TypeError`: callers usually write
+    `k_from_wcc(wcc_activity_factor(...))` and the inner call **may** fail to
+    find anything (a case without a current sidecar, or a header that does not
+    name a `wcc_cal_uid`). The fallback is then the dose-based reference point,
+    and that is the caller's decision.
     """
     return None if factor is None else float(factor) * WCC_UNIT_SCALE
 
 
 def k_from_dose(vol, vox, dose: float) -> float:
-    """**Chặn trên** của `K`: giả sử 100 % liều nằm trong FOV.
+    """An **upper bound** on `K`: assumes 100 % of the dose is inside the FOV.
 
-    Thực tế < 100 % (scan không phủ hết người), nên `K` thật nhỏ hơn số này.
+    In reality it is < 100 % (the scan does not cover the whole patient), so the
+    true `K` is smaller than this.
     """
     total = float(np.asarray(vol).sum(dtype=np.float64))
     return dose / (total * voxel_ml(vox))
 
 
 def body_mask(vol, frac: float = 0.02, pct: float = 99.9):
-    """Mặt nạ thân thô: ngưỡng theo phân vị, không theo giá trị tuyệt đối.
+    """Rough body mask: threshold by percentile, not by absolute value.
 
-    Ngưỡng tuyệt đối vô nghĩa ở đây vì thang chưa hiệu chuẩn (và đổi theo `K`).
+    An absolute threshold is meaningless here because the scale is uncalibrated
+    (and shifts with `K`).
     """
     v = np.asarray(vol)
     return v > frac * np.percentile(v, pct)
 
 
 def suv_bw(bqml, dose: float, weight_kg: float):
-    """SUV theo cân nặng. Ngầm định mô 1 g/mL."""
+    """Body-weight SUV. Assumes tissue at 1 g/mL."""
     return np.asarray(bqml) / (dose / (weight_kg * 1000.0))
 
 
 def bsa_m2(weight_kg: float, height_m: float) -> float:
-    """Du Bois: BSA(m²) = 0,007184 · W(kg)^0,425 · H(cm)^0,725."""
+    """Du Bois: BSA(m²) = 0.007184 · W(kg)^0.425 · H(cm)^0.725."""
     return 0.007184 * weight_kg ** 0.425 * (height_m * 100) ** 0.725
 
 
 def suv_bsa(bqml, dose: float, weight_kg: float, height_m: float):
-    """SUV theo diện tích da. Ca nhi lệch ít hơn so với chuẩn hoá theo cân nặng.
+    """Body-surface-area SUV. Less biased than body weight for paediatric cases.
 
-    Không có SUVlbm: công thức Janmahasatian cần giới tính, header RDF không có.
+    No SUVlbm: the Janmahasatian formula needs sex, which the RDF header lacks.
     """
     return np.asarray(bqml) * (bsa_m2(weight_kg, height_m) * 1e4) / dose
 
 
 def suv_table(bqml, mask, hdr, out=print) -> dict:
-    """SUVbw và (nếu có chiều cao) SUVbsa: trung vị, p90, p99, max trong thân.
+    """SUVbw and (if height is known) SUVbsa: median, p90, p99, max inside the body.
 
-    ⚠ SUV **tuyến tính với `K`**, và `K` đang là suy đoán — mọi con số dưới đây
-    sai đúng bằng tỉ lệ `K` sai. Đổi sang mốc liều là SUV nhân ngay ~1,46×.
-    Chưa dùng để kết luận lâm sàng được.
+    ⚠ SUV is **linear in `K`**, and `K` is currently a guess — every number below
+    is wrong by exactly the factor `K` is wrong by. Switching to the dose-based
+    reference multiplies SUV by ~1.46× straight away. Not yet usable for clinical
+    conclusions.
     """
     dose = dose_bq(hdr)
     w = hdr["patient_weight_kg"]
@@ -137,9 +146,9 @@ def suv_table(bqml, mask, hdr, out=print) -> dict:
 
     got = {"SUVbw": suv_bw(bqml, dose, w)}
     if h > 0:
-        # Ca nhi: chuẩn hoá theo cân nặng dễ lệch hơn người lớn.
+        # Paediatric case: weight normalisation is more biased than in adults.
         got["SUVbsa"] = suv_bsa(bqml, dose, w, h)
-    # Không có SUVlbm: công thức Janmahasatian cần giới tính, header RDF không có.
+    # No SUVlbm: the Janmahasatian formula needs sex, which the RDF header lacks.
 
     out(f"{w} kg   {h} m   liều thực {dose / 1e6:.1f} MBq")
     out(f"mẫu số SUVbw = {dose / (w * 1000):,.1f} Bq/mL"
@@ -155,7 +164,7 @@ def suv_table(bqml, mask, hdr, out=print) -> dict:
 
 
 def report(vol, K: float, hdr, vox, out=print) -> dict:
-    """Áp `K`, in các con số phải nhìn trước khi tin, trả `{bqml, suv, ...}`."""
+    """Apply `K`, print the numbers to check before trusting it, return `{bqml, suv, ...}`."""
     dose = dose_bq(hdr)
     vml = voxel_ml(vox)
     bqml = np.asarray(vol) * K

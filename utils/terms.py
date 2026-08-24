@@ -1,23 +1,25 @@
-"""Nạp các số hạng của một bed từ Interfile, và tổng hợp chúng.
+"""Load the terms of one bed from Interfile, and summarise them.
 
-Cây `y = S·(G x) + b` đọc từ đĩa như sau:
+The tree `y = S·(G x) + b` reads off disk as follows:
 
-| số hạng | file | ý nghĩa |
+| term | file | meaning |
 |---|---|---|
-| `prompts` | `decoded/bed<n>.hs` | prompt thô, count |
-| `randoms` | `work/bed<n>/randoms.hs` | kernel GE |
-| `scatter` | `work/bed<n>/scatter.hs` | SSS của GE |
-| `background` | `work/bed<n>/background.hs` | `= randoms + scatter`, chính là `b` |
-| `normdt` | `work/bed<n>/normdt.hs` | norm × dead time — một **ĐỘ NHẠY** |
-| `norm_only` | `work/bed<n>/norm_only.hs` | norm thuần; `deadtime = normdt/norm_only` |
-| `attn` | `work/bed<n>/attn.hs` | dựng từ CT ở `utils.attn`, có cache |
+| `prompts` | `decoded/bed<n>.hs` | raw prompts, counts |
+| `randoms` | `work/bed<n>/randoms.hs` | GE kernel |
+| `scatter` | `work/bed<n>/scatter.hs` | GE's SSS |
+| `background` | `work/bed<n>/background.hs` | `= randoms + scatter`, i.e. `b` |
+| `normdt` | `work/bed<n>/normdt.hs` | norm × dead time — a **SENSITIVITY** |
+| `norm_only` | `work/bed<n>/norm_only.hs` | norm alone; `deadtime = normdt/norm_only` |
+| `attn` | `work/bed<n>/attn.hs` | built from CT in `utils.attn`, cached |
 
-`normdt` là độ nhạy chứ không phải hệ số hiệu chỉnh: **chia** dữ liệu cho nó
-mới là hiệu chỉnh, và `AcquisitionSensitivityModel` nhân nó vào forward
-projection. Xem docstring của `vendor/to_stir.py` cho hai phép đo chốt chiều đó.
+`normdt` is a sensitivity, not a correction factor: **dividing** the data by it
+is what corrects, and `AcquisitionSensitivityModel` multiplies it into the
+forward projection. See the docstring of `vendor/to_stir.py` for the two
+measurements that pin that direction down.
 
-Một bed là ~6 × 231 MB. `load()` trả cả object SIRF lẫn mảng numpy và người gọi
-phải `del` khi xong — giữ cả sáu bed cùng lúc là ~9 GB.
+One bed is ~6 × 231 MB. `load()` returns both the SIRF objects and the numpy
+arrays and the caller must `del` them when done — holding all six beds at once
+is ~9 GB.
 """
 
 from __future__ import annotations
@@ -26,37 +28,38 @@ import json
 
 import numpy as np
 
-#: Số hạng ở miền count — cộng lại thì có nghĩa.
+#: Terms in the count domain — adding them up is meaningful.
 COUNT_TERMS = ("prompts", "randoms", "scatter", "background", "trues")
 
-#: Số hạng là hệ số (không thứ nguyên) — trung bình thì có nghĩa, cộng thì không.
+#: Terms that are (dimensionless) factors — averaging is meaningful, summing is not.
 FACTOR_TERMS = ("norm_only", "deadtime", "normdt", "attenuation", "sensitivity")
 
 ALL_TERMS = COUNT_TERMS + FACTOR_TERMS
 
-#: Số plane trực tiếp (segment 0) trong sinogram 553 plane.
+#: Number of direct planes (segment 0) in the 553-plane sinogram.
 NSEG0 = 47
 
-#: Cái `to_stir.py` ghi ra. `attn` do `utils.attn` thêm vào sau.
+#: What `to_stir.py` writes out. `attn` is added later by `utils.attn`.
 ON_DISK = ("randoms", "scatter", "background", "normdt", "norm_only")
 
 
 def total(a) -> float:
-    """Cộng trong float64.
+    """Sum in float64.
 
-    Cộng 60,7 triệu bin float32 lệch cỡ vài count — đủ để một phép so tổng với
-    header trượt oan.
+    Summing 60.7 million float32 bins drifts by a few counts — enough to make a
+    comparison of the total against the header fail for no good reason.
     """
     return float(np.asarray(a).sum(dtype=np.float64))
 
 
 def load(case, n: int, af=None):
-    """Mọi số hạng của bed `n`, dạng `(objs SIRF, dict mảng numpy)`.
+    """Every term of bed `n`, as `(SIRF objs, dict of numpy arrays)`.
 
-    `af` (hệ số suy giảm, mảng numpy) là tuỳ chọn: có thì thêm `attenuation` và
-    `sensitivity = normdt × attenuation`, không thì hai khoá đó vắng mặt.
+    `af` (attenuation factors, a numpy array) is optional: given one, this adds
+    `attenuation` and `sensitivity = normdt × attenuation`; without it those two
+    keys are absent.
 
-    **Nhớ `del` cả hai khi xong.**
+    **Remember to `del` both when done.**
     """
     import sirf.STIR as pet
 
@@ -66,21 +69,21 @@ def load(case, n: int, af=None):
         objs[name] = pet.AcquisitionData(str(work / f"{name}.hs"))
 
     A = {k: v.as_array() for k, v in objs.items()}
-    A["trues"] = A["prompts"] - A["background"]   # âm ở từng bin là bình thường (nhiễu)
-    A["deadtime"] = A["normdt"] / A["norm_only"]  # phân suất sống, < 1
+    A["trues"] = A["prompts"] - A["background"]   # negative per-bin values are normal (noise)
+    A["deadtime"] = A["normdt"] / A["norm_only"]  # live fraction, < 1
     if af is not None:
         A["attenuation"] = af
-        # S = norm × dead time × suy giảm. Cả ba đều là ĐỘ NHẠY nên NHÂN vào
-        # nhau; `normdt` đã gộp sẵn hai thừa số đầu.
+        # S = norm × dead time × attenuation. All three are SENSITIVITIES, so they
+        # MULTIPLY together; `normdt` already bundles the first two factors.
         A["sensitivity"] = A["normdt"] * af
     return objs, A
 
 
 def ct_dir(case, n: int) -> str:
-    """Series CT mà `d710 estimate` đã dùng cho bed này.
+    """The CT series that `d710 estimate` used for this bed.
 
-    Lấy từ sidecar chứ không hỏi lại: suy giảm và scatter **phải** dựng từ cùng
-    một CT, và đó là CT mà kernel của GE đã thấy.
+    Taken from the sidecar rather than asked again: attenuation and scatter
+    **must** be built from the same CT, and that is the CT GE's kernel saw.
     """
     ct = meta(case, n).get("estimate", {}).get("ct")
     if not ct:
@@ -89,9 +92,10 @@ def ct_dir(case, n: int) -> str:
 
 
 def bed_table(case, beds, out=print) -> None:
-    """Bảng tóm tắt thu nhận, một dòng mỗi bed.
+    """Acquisition summary table, one row per bed.
 
-    Hai ca bệnh nhân có PHI: cố ý **không** in tên / mã BN / ngày sinh.
+    The two patient cases carry PHI: name / patient ID / date of birth are
+    deliberately **not** printed.
     """
     out(f"ca {case.name!r}: {len(beds)} bed  ->  {beds}\n")
     out(f"{'bed':>4} {'table mm':>10} {'prompts':>13} {'delays':>13} "
@@ -108,11 +112,12 @@ def bed_table(case, beds, out=print) -> None:
 
 
 def collect(case, beds, af: dict, out=print):
-    """Một lượt qua TẤT CẢ các bed. Trả `(proj, stats, planes)`.
+    """One pass over ALL beds. Returns `(proj, stats, planes)`.
 
-    Mỗi bed nạp → rút ra thứ cần → trả RAM ngay, nên đỉnh bộ nhớ là **một** bed
-    (~2,5 GB) chứ không phải sáu (~15 GB). Giữ lại lát cắt để vẽ cùng vài con số
-    tổng kết; mảng đầy đủ thì bỏ — bước tái tạo sẽ nạp lại.
+    Each bed is loaded → what is needed is extracted → RAM is handed straight
+    back, so peak memory is **one** bed (~2.5 GB) rather than six (~15 GB).
+    Slices are kept for plotting along with a few summary numbers; the full
+    arrays are dropped — the reconstruction step reloads them.
     """
     from . import plots
 
@@ -138,10 +143,10 @@ def collect(case, beds, af: dict, out=print):
 
 
 def invariant_table(case, beds, proj: dict, stats: dict, out=print) -> list:
-    """In bốn bất biến cho mọi bed, trả danh sách bed có vấn đề.
+    """Print the four invariants for every bed, return the list of bad beds.
 
-    Gộp theo plane trước rồi mới so — sinogram thô dưới 1 count/bin, nên `p < r`
-    đúng ở rất nhiều bin chỉ vì nhiễu Poisson.
+    Aggregate per plane before comparing — the raw sinogram runs below 1
+    count/bin, so `p < r` holds at a great many bins purely from Poisson noise.
     """
     out(f"{'bed':>4} {'Σp<Σr':>8} {'Σs>Σ(p−r)':>11} {'ΣR/delays':>11} "
         f"{'S/(T+S)':>9} {'livetime':>9} {'kcps':>8} {'bit-exact':>10}")
@@ -167,17 +172,17 @@ def invariant_table(case, beds, proj: dict, stats: dict, out=print) -> list:
 
 
 def meta(case, n: int) -> dict:
-    """`to_stir.json` của bed `n` — gồm cả `estimate.json` lồng bên trong.
+    """The `to_stir.json` of bed `n` — including the nested `estimate.json`.
 
-    Khoá đáng quan tâm nhất: `verified.bit_exact_vs_decoded`, do `to_stir.py`
-    đặt sau khi tự chứng minh ánh xạ bin trên chính dữ liệu của bed này.
+    The key that matters most: `verified.bit_exact_vs_decoded`, set by
+    `to_stir.py` after it proves the bin mapping on this bed's own data.
     """
     with open(case.work_bed(n) / "to_stir.json") as f:
         return json.load(f)
 
 
 def summarise(case, beds, A_by_bed: dict) -> dict:
-    """Một dòng số cho mỗi bed: tổng miền count, trung bình hệ số."""
+    """One row of numbers per bed: totals for count terms, means for factors."""
     out = {}
     for n in beds:
         A = A_by_bed[n]
@@ -187,18 +192,19 @@ def summarise(case, beds, A_by_bed: dict) -> dict:
 
 
 def invariants(case, n: int, per_plane: dict, stats: dict) -> dict:
-    """Bốn bất biến phải đúng trên dữ liệu thật, gộp **theo plane**.
+    """The four invariants that must hold on real data, aggregated **per plane**.
 
-    Gộp theo plane chứ không theo bin: sinogram thô chạy ~0,06 count/bin, nên
-    `p < r` đúng ở ~82 % số bin chỉ vì nhiễu Poisson và một khẳng định theo bin
-    không nói lên điều gì.
+    Aggregated per plane, not per bin: the raw sinogram runs at ~0.06 count/bin,
+    so `p < r` holds at ~82 % of bins purely from Poisson noise and a per-bin
+    assertion says nothing.
 
-    * `frac_p_lt_r`  — % plane có Σp < Σr. Phải là 0: true rate âm là bất khả.
-    * `frac_s_gt_t`  — % plane có Σs > Σ(p−r). Phải là 0 (NEMA có ngoại lệ ở rìa
-      segment, xem `tests/test_pipeline_data.py`).
-    * `randoms_over_delays` — randoms của GE so với delay máy đếm, hai đường độc
-      lập; ~0,99.
-    * `bit_exact` — `to_stir.py` đã tự chứng minh ánh xạ bin lúc ghi.
+    * `frac_p_lt_r`  — % of planes with Σp < Σr. Must be 0: a negative true rate
+      is impossible.
+    * `frac_s_gt_t`  — % of planes with Σs > Σ(p−r). Must be 0 (NEMA has an
+      exception at the segment edges, see `tests/test_pipeline_data.py`).
+    * `randoms_over_delays` — GE's randoms against the scanner's delayed counts,
+      two independent paths; ~0.99.
+    * `bit_exact` — `to_stir.py` proved the bin mapping when it wrote the file.
     """
     h = case.header(n)
     P, R, S = per_plane["prompts"], per_plane["randoms"], per_plane["scatter"]

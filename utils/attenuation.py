@@ -1,7 +1,7 @@
-"""CT -> mu-map trên lưới ảnh của bed. Đây là **đầu vào** của scatter, không phải đầu ra.
+"""CT -> mu-map on the bed's image grid. This is scatter's **input**, not its output.
 
-Scatter cần biết vật chất nằm ở đâu; module này chỉ dựng đúng chừng đó, không
-làm hiệu chỉnh suy giảm cho phần tái tạo.
+Scatter needs to know where the material is; this module builds exactly that and
+no more — it does not perform the attenuation correction for the reconstruction.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import os
 
 import numpy as np
 
-#: Khoảng cách plane PET, và số plane trong một bed (= 2·num_rings − 1).
+#: PET plane spacing, and the number of planes in one bed (= 2·num_rings − 1).
 PLANE_MM = 3.2699997
 PLANES_PER_BED = 47
 
@@ -31,12 +31,12 @@ def hu_to_mu(hu: np.ndarray, kvp: float = 120.0) -> np.ndarray:
 
 
 def to_radiological(arr: np.ndarray) -> np.ndarray:
-    """Lật trục y của STIR sang y bệnh nhân của DICOM; là nghịch đảo của chính nó."""
+    """Flip STIR's y axis to DICOM patient y; it is its own inverse."""
     return np.flip(np.asarray(arr), axis=1)
 
 
 class CTAC:
-    """Một series CT: khối HU ``[slice, row, col]`` theo thứ tự DICOM, kèm hình học."""
+    """One CT series: an HU volume ``[slice, row, col]`` in DICOM order, plus its geometry."""
 
     def __init__(self, hu, z, x0, y0, pixel_mm, kvp, meta):
         self.hu, self.z, self.x0, self.y0 = hu, z, x0, y0
@@ -54,7 +54,7 @@ class CTAC:
 
 
 def load(path: str) -> CTAC:
-    """Đọc một thư mục series CT."""
+    """Read one CT series directory."""
     import pydicom
 
     ds = []
@@ -77,8 +77,8 @@ def load(path: str) -> CTAC:
 
     z = np.array([float(d.ImagePositionPatient[2]) for d in ds])
     step = np.round(np.diff(z), 3)
-    # Một bản export thiếu slice sẽ được nội suy bắc cầu qua lỗ hổng thành một
-    # mu-map sai nhưng trông hợp lý.  Chẩn đoán, đừng lấy trung bình.
+    # An export missing slices would be interpolated straight across the gap into
+    # a mu-map that is wrong but looks plausible.  Diagnose it; do not average.
     if len(step) and step.std() > 0.05:
         modal = float(np.bincount((step * 100).astype(int)).argmax()) / 100
         gaps = step[np.abs(step - modal) > 0.01]
@@ -103,14 +103,15 @@ def load(path: str) -> CTAC:
 
 
 def mu_image(ct: CTAC, table_position_mm: float, template, edge_tol_planes: float = 1.5):
-    """SIRF ``ImageData`` chứa mu-map của bed, 1/cm, trên lưới của ``template``.
+    """A SIRF ``ImageData`` holding the bed's mu-map, 1/cm, on ``template``'s grid.
 
-    ``edge_tol_planes`` cho phép bed thò ra khỏi CT vài plane ở hai đầu. Bed đầu
-    và bed cuối của một ca gần như luôn thò ra vài mm — ca nhi bed 1 nằm ở
-    -767.7 mm còn CT chỉ bắt đầu từ -765.4 mm — và từ chối cả bed vì 2 mm đó thì
-    mất hẳn một bed. Phần thò ra được **kẹp về lát CT ngoài cùng** (lặp lại nó),
-    chứ không phải điền không khí: chỗ đó vẫn còn thân người, coi là không khí sẽ
-    hiệu chỉnh suy giảm thiếu. Quá ``edge_tol_planes`` thì vẫn báo lỗi.
+    ``edge_tol_planes`` lets a bed hang a few planes off the end of the CT. The
+    first and last bed of a case almost always overhang by a few mm — the
+    paediatric case's bed 1 sits at -767.7 mm while the CT only starts at
+    -765.4 mm — and rejecting the whole bed over those 2 mm loses a bed entirely.
+    The overhang is **clamped to the outermost CT slice** (repeating it) rather
+    than filled with air: there is still body there, and treating it as air would
+    under-correct attenuation. Beyond ``edge_tol_planes`` it still raises.
     """
     from scipy.ndimage import map_coordinates
 
@@ -121,13 +122,14 @@ def mu_image(ct: CTAC, table_position_mm: float, template, edge_tol_planes: floa
     if abs(vy - vx) > 1e-3:
         raise SystemExit(f"lỗi: voxel ngang không đẳng hướng {vy} × {vx}")
 
-    # Theo trục: plane PET thứ p nằm ở table_position + p·PLANE_MM.
+    # Axially: PET plane p sits at table_position + p·PLANE_MM.
     zc = table_position_mm + np.arange(PLANES_PER_BED) * PLANE_MM
     gz = (zc - ct.z[0]) / ct.dz
-    # Phần thò ra khỏi lát CT ngoài cùng, đo bằng mm rồi mới đổi sang PLANE PET.
-    # Nửa lát CT đầu tiên vẫn nội suy được nên không tính. Dung sai phải là một
-    # KHOẢNG CÁCH, không phải số lát: đo bằng chỉ số lát thì CT 1,25 mm bị siết
-    # chặt gấp 2,6 lần CT 3,27 mm cho cùng một bed.
+    # The overhang past the outermost CT slice, measured in mm and only then
+    # converted to PET PLANES. The first half CT slice still interpolates, so it
+    # does not count. The tolerance must be a DISTANCE, not a slice count:
+    # measured in slice indices, a 1.25 mm CT would be held 2.6× tighter than a
+    # 3.27 mm CT for the same bed.
     out_mm = max(ct.z[0] - zc.min(), zc.max() - ct.z[-1], 0.0)
     over = max(out_mm - ct.dz / 2, 0.0) / PLANE_MM
     if over > edge_tol_planes:
@@ -138,19 +140,19 @@ def mu_image(ct: CTAC, table_position_mm: float, template, edge_tol_planes: floa
             f"(thò ra {out_mm:.1f} mm = {over:.2f} plane > cho phép "
             f"{edge_tol_planes})")
     if over > 0:
-        # Báo phần thò ra THẬT (mm), không phải phần vượt quá dung sai.
+        # Report the ACTUAL overhang (mm), not the amount over tolerance.
         print(f"  cảnh báo: bed {table_position_mm:.2f} mm thò khỏi CT "
               f"{out_mm:.1f} mm; kẹp về lát CT ngoài cùng")
         gz = np.clip(gz, 0.0, len(ct.z) - 1.0)
 
-    # Theo mặt cắt: lưới PET tâm ở chỉ số xy//2, trục máy ở DICOM (x, y) = (0, 0).
+    # Transversely: the PET grid is centred at index xy//2, the scanner axis at DICOM (x, y) = (0, 0).
     xy = shape[1]
     c = (np.arange(xy) - xy // 2) * vy
     g = np.meshgrid(gz, (c - ct.y0) / ct.pixel_mm, (c - ct.x0) / ct.pixel_mm,
                     indexing="ij")
     hu = map_coordinates(ct.hu, [x.ravel() for x in g], order=1,
                          mode="constant", cval=-1000.0).reshape(PLANES_PER_BED, xy, xy)
-    mu = hu_to_mu(hu, ct.kvp) * 10.0                   # 1/mm -> 1/cm cho STIR
+    mu = hu_to_mu(hu, ct.kvp) * 10.0                   # 1/mm -> 1/cm for STIR
 
     out = template.get_uniform_copy(0)
     out.fill(np.ascontiguousarray(to_radiological(mu), dtype=np.float32))
@@ -158,7 +160,7 @@ def mu_image(ct: CTAC, table_position_mm: float, template, edge_tol_planes: floa
 
 
 def factors(ad, mu_img):
-    """``(af, acf)`` — xác suất sống sót và nghịch đảo của nó, dạng AcquisitionData."""
+    """``(af, acf)`` — the survival probability and its inverse, as AcquisitionData."""
     import sirf.STIR as pet
 
     return pet.AcquisitionSensitivityModel.compute_attenuation_factors(ad, mu_img)

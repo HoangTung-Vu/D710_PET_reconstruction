@@ -1,19 +1,19 @@
-"""Hạ tầng dùng chung — mọi thứ KHÔNG thuộc về một thuật toán tái tạo cụ thể.
+"""Shared infrastructure — everything NOT belonging to a specific reconstruction algorithm.
 
-| module | nội dung |
+| module | contents |
 |---|---|
-| `paths` | `$D710_OUT/<ca>/...`; chỗ duy nhất biết cây đầu ra |
-| `attenuation` | CT DICOM -> mu-map -> hệ số suy giảm |
-| `geometry` | quy ước chỉ số bin D710 -> STIR |
-| `terms` | nạp các số hạng của một bed từ Interfile |
-| `attn` | `af` theo bed, có cache trên đĩa (`work/bed<n>/attn.hs`) |
-| `sirf_env` | chdir vào scratch + giữ `MessageRedirector` sống |
-| `quant` | count/voxel -> Bq/mL -> SUV; hằng số `K` |
-| `export` | ghi NIfTI / DICOM |
-| `plots` | hình cho notebook |
+| `paths` | `$D710_OUT/<case>/...`; the only place that knows the output tree |
+| `attenuation` | DICOM CT -> mu-map -> attenuation factors |
+| `geometry` | D710 -> STIR bin index conventions |
+| `terms` | load one bed's terms from Interfile |
+| `attn` | per-bed `af`, cached on disk (`work/bed<n>/attn.hs`) |
+| `sirf_env` | chdir into scratch + keep the `MessageRedirector` alive |
+| `quant` | count/voxel -> Bq/mL -> SUV; the constant `K` |
+| `export` | write NIfTI / DICOM |
+| `plots` | figures for the notebook |
 
-Thuật toán ở nơi khác: `osem/` là một, thuật toán sau (FBP, MLEM, deep prior)
-tạo package riêng cùng cấp và dùng lại đúng `utils/` này. Nên **không có gì
-mang tính OSEM được đặt vào đây** — nếu một hàm chỉ có nghĩa với OSEM, chỗ của
-nó là `osem/`.
+The algorithms live elsewhere: `osem/` is one, and a later algorithm (FBP, MLEM,
+deep prior) gets its own sibling package and reuses this same `utils/`. So
+**nothing OSEM-specific belongs here** — if a function only makes sense for OSEM,
+its place is `osem/`.
 """

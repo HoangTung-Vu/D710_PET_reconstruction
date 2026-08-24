@@ -1,14 +1,16 @@
-"""Hệ số suy giảm theo bed — số hạng DUY NHẤT không lấy từ kernel của GE.
+"""Per-bed attenuation factors — the ONE term not taken from GE's kernel.
 
-`vendor/estimate.py` có dùng mu-map (nó phải có, để mô phỏng scatter), nhưng
-cái nó xuất ra là **scatter**, không phải hệ số suy giảm. Nên `af` dựng lại ở
-đây từ cùng series CT, bằng `utils/attenuation.py`.
+`vendor/estimate.py` does use a mu-map (it has to, in order to simulate
+scatter), but what it exports is **scatter**, not attenuation factors. So `af` is
+rebuilt here from the same CT series, via `utils/attenuation.py`.
 
-Cache vào `work/bed<n>/attn.hs` để nằm cùng chỗ với ba số hạng kia (randoms /
-scatter / normdt) — sau lần chạy đầu thì cả bốn số hạng của mô hình đều có mặt
-trên đĩa, mở ra xem được bằng bất cứ công cụ STIR nào. Tính lại mất ~16 s/bed.
+Cached to `work/bed<n>/attn.hs` so it sits alongside the other three terms
+(randoms / scatter / normdt) — after the first run all four terms of the model
+are present on disk and can be opened with any STIR tool. Recomputing costs
+~16 s/bed.
 
-⚠ Xoá `attn.hs`/`attn.s` nếu đổi CT hoặc đổi lưới ảnh — file không tự biết.
+⚠ Delete `attn.hs`/`attn.s` if the CT or the image grid changes — the file cannot
+tell by itself.
 """
 
 from __future__ import annotations
@@ -17,11 +19,11 @@ from . import attenuation
 
 
 def check_same_exam(ct, hdr) -> None:
-    """CT nào đi với exam nào là do UID quyết định, không phải do nằm cạnh nhau.
+    """Which CT belongs to which exam is decided by UID, not by sitting next to it.
 
-    Đây là đồng nhất thức chứ không phải phép so gần đúng: thư mục ảnh nằm cạnh
-    thư mục raw **không** đảm bảo cùng exam (`11082026/` chứa ảnh của hai exam
-    khác nhau).
+    This is an identity, not an approximate comparison: an image directory next
+    to a raw directory is **no** guarantee of the same exam (`11082026/` holds
+    images from two different exams).
     """
     got, want = ct.meta["frame_of_reference_uid"], hdr["sop_instance_uid"]
     if got != want:
@@ -32,10 +34,10 @@ def check_same_exam(ct, hdr) -> None:
 
 
 class Attenuation:
-    """`af` cho từng bed của một ca, cache trên đĩa và trong RAM.
+    """`af` for each bed of a case, cached on disk and in RAM.
 
         at = Attenuation(case, ct_dir, template_image, template_acq)
-        af4 = at.af(4)                 # (1, 553, 288, 381) mảng numpy
+        af4 = at.af(4)                 # (1, 553, 288, 381) numpy array
     """
 
     def __init__(self, case, ct_dir: str, image, acq_template, verbose: bool = True):
@@ -50,7 +52,7 @@ class Attenuation:
         return self.ct.describe()
 
     def af(self, n: int):
-        """Hệ số suy giảm của bed `n` — xác suất sống sót ∈ (0, 1]."""
+        """Attenuation factors for bed `n` — survival probability ∈ (0, 1]."""
         import sirf.STIR as pet
 
         if n in self._cache:

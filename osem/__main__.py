@@ -1,12 +1,12 @@
-"""`d710 osem` — tái tạo mọi bed của một ca rồi ghép, không cần notebook.
+"""`d710 osem` — reconstruct every bed of a case and stitch them, no notebook needed.
 
     python3 -m osem --case ped [--beds 1 2 3] [--iters 3] [--subsets 12]
 
-Cần môi trường project (`conda activate petct_reconstruction`): SIRF không có
-trong image `d710:full`.
+Needs the project environment (`conda activate petct_reconstruction`): SIRF is
+not in the `d710:full` image.
 
-Ghi `<ca>/recon.npz` — count/voxel đã quy về thời điểm tiêm, cộng hình học đủ
-để `d710 export` đổi sang Bq/mL mà không phải chạy lại gì.
+Writes `<case>/recon.npz` — count/voxel referred back to the injection time, plus
+enough geometry for `d710 export` to convert to Bq/mL without rerunning anything.
 """
 
 from __future__ import annotations

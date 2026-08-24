@@ -1,12 +1,12 @@
-"""OSEM — thuật toán, và không gì khác.
+"""OSEM — the algorithm, and nothing else.
 
-* `recon` — `y = S·(G x) + b` cho **một** bed, cộng sensitivity image của bed đó
-* `stitch` — hiệu chỉnh phân rã rồi ghép các bed, trọng số = sensitivity image
+* `recon` — `y = S·(G x) + b` for **one** bed, plus that bed's sensitivity image
+* `stitch` — decay-correct and stitch the beds, weighted by the sensitivity image
 
-Mọi thứ không thuộc thuật toán (đường dẫn, CT → suy giảm, đọc số hạng, định
-lượng, xuất ảnh, vẽ hình) nằm ở `utils/` và được dùng chung. Thuật toán sau —
-FBP, MLEM, deep prior — tạo package riêng cùng cấp với package này và dùng lại
-đúng `utils/` đó.
+Everything that is not the algorithm (paths, CT → attenuation, reading terms,
+quantification, export, plotting) lives in `utils/` and is shared. A later
+algorithm — FBP, MLEM, deep prior — gets its own package alongside this one and
+reuses that same `utils/`.
 
     from utils.paths import case
     from utils import sirf_env, attn

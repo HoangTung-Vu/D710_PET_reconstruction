@@ -1,32 +1,35 @@
-"""Hiệu chỉnh phân rã rồi ghép các bed theo trục.
+"""Decay-correct, then stitch the beds along the axis.
 
-### Phân rã phải làm TRƯỚC khi ghép
+### Decay correction must happen BEFORE stitching
 
-Sáu bed chụp cách nhau 91 s, bed 6 muộn hơn bed 1 tới 458 s. Ghép thẳng là dán
-sáu thời điểm khác nhau vào một khối → gradient giả dọc trục. Quy hết về **thời
-điểm tiêm**, đúng chuẩn `DecayCorrection = START` của DICOM:
+The six beds are acquired 91 s apart, with bed 6 up to 458 s later than bed 1.
+Stitching directly glues six different time points into one volume → a spurious
+axial gradient. Everything is referred back to the **injection time**, matching
+DICOM's `DecayCorrection = START`:
 
     f = exp(−λ·Δt) · (1 − exp(−λ·T)) / (λ·T)
-        exp(−λ·Δt)          phân rã từ lúc tiêm tới lúc bed bắt đầu
-        (1−exp(−λT))/(λT)   hoạt độ trung bình TRONG khung T, không phải tức thời
+        exp(−λ·Δt)          decay from injection to the start of the bed
+        (1−exp(−λT))/(λT)   the mean activity DURING frame T, not the instantaneous one
 
-Bỏ thừa số thứ hai (dùng hoạt độ tức thời lúc bed bắt đầu) lệch ~0,5 % ở đây và
-nhiều hơn hẳn với khung dài — và lệch **khác nhau theo bed**, nên nó sống sót
-thành gradient trục chứ không tan vào hằng số `K`.
+Dropping the second factor (using the instantaneous activity at the bed start)
+is off by ~0.5 % here and considerably more for long frames — and it is off **by
+a different amount per bed**, so it survives as an axial gradient instead of
+dissolving into the constant `K`.
 
-### Vùng chồng là chỗ CẢ HAI bed yếu nhất — nên phải đánh trọng số
+### The overlap is where BOTH beds are weakest — hence the weighting
 
-Bước bàn 124,26 mm = **đúng 38 plane**, bed dài 47 plane → chồng 9 plane. Nhưng
-9 plane đó là plane 38–46 của bed dưới và plane 0–8 của bed trên: **hai đầu yếu
-nhất gặp nhau**. Trọng số là `SENS[n]`, sensitivity image của chính STIR — mẫu
-số OSEM chia vào mỗi vòng lặp, nên đã gồm norm, dead time, suy giảm và cách
-projector lấy mẫu LOR thật, và là ảnh **3D**, tức trọng số theo TỪNG VOXEL. Với
-ML Poisson `Var(x̂) ≈ x / sens`, nên trọng số nghịch đảo phương sai chính là
+The table step of 124.26 mm is **exactly 38 planes**, and a bed is 47 planes
+long → a 9-plane overlap. But those 9 planes are planes 38–46 of the lower bed
+and planes 0–8 of the upper one: **the two weakest ends meet**. The weight is
+`SENS[n]`, STIR's own sensitivity image — the denominator OSEM divides by on
+each iteration, so it already includes norm, dead time, attenuation and how the
+projector really samples LORs, and it is a **3D** image, i.e. a PER-VOXEL weight.
+For Poisson ML, `Var(x̂) ≈ x / sens`, so the inverse-variance weight is exactly
 `w ∝ sens`.
 
-Chỉ số plane làm tròn được là vì bước bàn thật sự là số nguyên lần plane; lệch
-nửa plane sẽ dồn hai bed vào cùng ô với sai số trục 1,6 mm.
-`tests/test_notebook_contract.py` chốt đúng điều đó.
+The plane indices can be rounded because the table step really is an integer
+number of planes; a half-plane offset would pile two beds into the same cell with
+a 1.6 mm axial error. `tests/test_notebook_contract.py` pins exactly that down.
 """
 
 from __future__ import annotations
@@ -39,13 +42,13 @@ from utils.geometry import PLANE_MM
 
 
 def injection_epoch(hdr) -> float:
-    """Thời điểm tiêm, epoch UTC. Header RDF ghi giờ UTC (DICOM ghi giờ địa phương)."""
+    """Injection time, UTC epoch. The RDF header records UTC (DICOM records local time)."""
     t = dt.datetime.strptime(hdr["radiopharm_start_datetime"][:14], "%Y%m%d%H%M%S")
     return t.replace(tzinfo=dt.timezone.utc).timestamp()
 
 
 def decay_factor(hdr, t_inj: float) -> float:
-    """Hệ số NHÂN đưa ảnh của một bed về hoạt độ tại thời điểm tiêm."""
+    """The MULTIPLICATIVE factor taking a bed's image back to the activity at injection time."""
     lam = np.log(2) / hdr["half_life_s"]
     dt_s = hdr["bed_start_time"] - t_inj
     T = hdr["frame_duration_ms"] / 1000.0
@@ -53,13 +56,13 @@ def decay_factor(hdr, t_inj: float) -> float:
 
 
 def plane_index(case, beds):
-    """`(idx, z0, nz)` — mỗi bed ánh xạ vào những plane nào của khối chung.
+    """`(idx, z0, nz)` — which planes of the shared volume each bed maps into.
 
-    `z = table_position + i·PLANE_MM`, **đúng công thức `attenuation.mu_image`
-    dùng để cắt CT cho bed đó**, nên hình học hai bên nhất quán theo cấu tạo chứ
-    không phải nhờ trùng hợp.
+    `z = table_position + i·PLANE_MM`, **the very formula `attenuation.mu_image`
+    uses to cut the CT for that bed**, so the two geometries agree by
+    construction rather than by coincidence.
     """
-    nz_bed = int(round(2 * 24 - 1))          # 47 plane một bed
+    nz_bed = int(round(2 * 24 - 1))          # 47 planes per bed
     zs = {n: case.header(n)["table_position_mm"] + np.arange(nz_bed) * PLANE_MM
           for n in beds}
     z0 = min(z[0] for z in zs.values())
@@ -68,9 +71,9 @@ def plane_index(case, beds):
 
 
 def stitch(case, beds, img: dict, sens: dict, verbose: bool = True):
-    """Ghép các bed thành một khối toàn thân. Trả `(vol, z0, factors)`.
+    """Stitch the beds into one whole-body volume. Returns `(vol, z0, factors)`.
 
-    `vol` là count/voxel **đã quy về thời điểm tiêm**.
+    `vol` is count/voxel **referred back to the injection time**.
     """
     t_inj = injection_epoch(case.header(beds[0]))
     factors = {n: decay_factor(case.header(n), t_inj) for n in beds}
@@ -104,11 +107,11 @@ def stitch(case, beds, img: dict, sens: dict, verbose: bool = True):
 
 
 def overlap_report(case, beds, img: dict, factors: dict, out=print):
-    """KIỂM chỗ ghép bằng SỐ, đừng chỉ nhìn.
+    """CHECK the seams with NUMBERS, do not just look at them.
 
-    Ô "tương quan" so hai bản tái tạo **độc lập** của *cùng một đoạn cơ thể*.
-    Đặt sai chiều trục hay lệch một bed thì nó sụp ngay, trong khi ảnh ghép vẫn
-    trông như một cơ thể.
+    The "correlation" column compares two **independent** reconstructions of *the
+    same stretch of body*. Get the axial direction wrong, or misplace a bed, and
+    it collapses immediately — while the stitched image still looks like a body.
     """
     idx, _z0, _nz = plane_index(case, beds)
     out(f"\n{'cặp bed':>10} {'plane chồng':>12} {'tương quan':>11} {'tỉ lệ biên độ':>14}")

@@ -1,0 +1,31 @@
+# Nothing generated at run time lands in this tree any more: it all goes to
+# $D710_OUT, which is somewhere else entirely (utils/paths.py, and there is
+# deliberately no default).  So this file is a backstop, not a load-bearing
+# part of the layout -- if one of these patterns ever fires, something wrote
+# where it should not have.
+*.f32
+*.u16
+*.i32
+*.npy
+*.npz
+*.nii
+*.nii.gz
+*.hs
+*.s
+*.log
+
+# The old layout, in case an old script or an old shell history recreates it.
+out/
+work/
+raw_prompt/
+vendor/out/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.ipynb_checkpoints/
+
+# The console tree is 18 GB of GE software and lives outside this repo
+# (custom_tool/petsw).  Nothing here should ever pull it in.
+petsw/

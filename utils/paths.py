@@ -1,22 +1,23 @@
-"""Nơi mọi thứ sinh ra lúc chạy được đặt — và chỗ DUY NHẤT biết điều đó.
+"""Where everything generated at run time goes — and the ONLY place that knows it.
 
-Cây mã (`D710/`) chỉ chứa mã. Mọi file sinh ra lúc chạy đi vào một gốc do người
-chạy chỉ định:
+The code tree (`D710/`) holds code only. Every file produced at run time goes
+under a root the operator names:
 
-    $D710_OUT/<ca>/
+    $D710_OUT/<case>/
         decoded/       bed<n>.{hs,s,json,singles.npy,...}   <- d710 decode
         vendor/bed<n>/ {randoms,scatter,normdt,norm_only}.f32, prompts.u16, ...
         work/bed<n>/   {randoms,scatter,background,normdt,norm_only,attn}.{hs,s}
-        export/        <ca>_bqml.nii.gz, <ca>_suvbw.nii.gz, dicom/
-        scratch/       tmp_*.hs/.s của SIRF — xoá lúc nào cũng được
+        export/        <case>_bqml.nii.gz, <case>_suvbw.nii.gz, dicom/
+        scratch/       SIRF's tmp_*.hs/.s — safe to delete at any time
         logs/
-        recon.npz      thể tích đã ghép (count/voxel), cầu nối osem -> export
+        recon.npz      the stitched volume (count/voxel), the osem -> export bridge
 
-**Không có gốc mặc định.** Thiếu cả `--out` lẫn `$D710_OUT` là lỗi, chứ không
-rơi về thư mục mã — đó chính là cái refactor này dọn đi.
+**There is no default root.** Missing both `--out` and `$D710_OUT` is an error,
+not a fallback to the code directory — that fallback is exactly what this
+refactor removed.
 
-Ca lồng (`<ca>/vendor/bed<n>`) chứ không phẳng (`<ca>_bed<n>`): xoá một ca là
-`rm -rf <ca>`, và tên ca không còn phải né ký tự `_`.
+Cases are nested (`<case>/vendor/bed<n>`) rather than flat (`<case>_bed<n>`):
+deleting a case is `rm -rf <case>`, and case names no longer have to avoid `_`.
 """
 
 from __future__ import annotations
@@ -26,14 +27,15 @@ import os
 import re
 from pathlib import Path
 
-#: Gốc cây mã — thư mục `D710/`. Suy từ `__file__`, nên đúng dù chạy từ đâu.
+#: Root of the code tree — the `D710/` directory. Derived from `__file__`, so it
+#: is correct no matter where the process was started.
 ROOT = Path(__file__).resolve().parent.parent
 
 _BED_RE = re.compile(r"bed(\d+)$")
 
 
 class NoOutputRoot(SystemExit):
-    """Không biết ghi vào đâu. Là `SystemExit` để script chết gọn, không traceback."""
+    """Nowhere to write. A `SystemExit` so scripts die cleanly, without a traceback."""
 
     def __init__(self) -> None:
         super().__init__(
@@ -44,7 +46,7 @@ class NoOutputRoot(SystemExit):
 
 
 def out_root(explicit: str | os.PathLike | None = None) -> Path:
-    """`--out` > `$D710_OUT` > lỗi."""
+    """`--out` > `$D710_OUT` > error."""
     p = explicit or os.environ.get("D710_OUT")
     if not p:
         raise NoOutputRoot()
@@ -52,7 +54,7 @@ def out_root(explicit: str | os.PathLike | None = None) -> Path:
 
 
 class Case:
-    """Một ca chụp, và mọi thư mục của nó. Chỉ là đường dẫn — không đọc đĩa."""
+    """One exam and all of its directories. Paths only — it never touches the disk."""
 
     def __init__(self, name: str, root: Path) -> None:
         self.name = name
@@ -61,7 +63,7 @@ class Case:
     def __repr__(self) -> str:
         return f"Case({self.name!r}, {self.root})"
 
-    # ---------------------------------------------------------- thư mục
+    # -------------------------------------------------------- directories
     @property
     def decoded(self) -> Path:
         return self.root / "decoded"
@@ -88,10 +90,11 @@ class Case:
 
     @property
     def recon(self) -> Path:
-        """Thể tích đã ghép, count/voxel đã quy về thời điểm tiêm.
+        """The stitched volume, count/voxel referred back to the injection time.
 
-        Nằm ở gốc ca chứ không trong `export/`: nó là **đầu vào** của bước xuất,
-        không phải sản phẩm xuất ra. `d710 osem` ghi, `d710 export` đọc.
+        It sits at the case root rather than in `export/`: it is the **input** to
+        the export step, not one of its products. `d710 osem` writes it,
+        `d710 export` reads it.
         """
         return self.root / "recon.npz"
 
@@ -102,11 +105,11 @@ class Case:
         return self.work / f"bed{n}"
 
     def prompt(self, n: int) -> Path:
-        """`.hs` prompt thô của bed n — cũng là template header của mọi số hạng."""
+        """Bed n's raw-prompt `.hs` — also the header template for every other term."""
         return self.decoded / f"bed{n}.hs"
 
     def header(self, n: int) -> dict:
-        """Sidecar header RDF của bed n, do `d710 decode` ghi."""
+        """Bed n's RDF header sidecar, written by `d710 decode`."""
         with open(self.decoded / f"bed{n}.json") as f:
             return json.load(f)
 
@@ -116,9 +119,9 @@ class Case:
             d.mkdir(parents=True, exist_ok=True)
         return self
 
-    # ------------------------------------------------------- dò từ đĩa
+    # --------------------------------------------------- discovered on disk
     def decoded_beds(self) -> list[int]:
-        """Bed đã qua bước 1 (có `bed<n>.hs` và sidecar)."""
+        """Beds that have been through step 1 (they have a `bed<n>.hs` and a sidecar)."""
         out = []
         for hs in self.decoded.glob("bed*.hs"):
             m = _BED_RE.match(hs.stem)
@@ -127,17 +130,18 @@ class Case:
         return sorted(out)
 
     def beds(self, terms=("background", "normdt")) -> list[int]:
-        """Bed đã qua đủ cả ba bước — cái mà OSEM ăn được.
+        """Beds that have been through all three steps — the ones OSEM can eat.
 
-        Dò từ đĩa, đừng gõ tay: một bed hỏng ở bước 2 vẫn còn `bed<n>.hs` của
-        bước 1, và ghép nó vào là ghép một bed không có số hạng nền.
+        Discovered from disk, never typed by hand: a bed that failed at step 2
+        still has its step-1 `bed<n>.hs`, and including it means stitching in a
+        bed with no background term.
         """
         return [n for n in self.decoded_beds()
                 if all((self.work_bed(n) / f"{t}.hs").exists() for t in terms)]
 
 
 def case(name: str, out: str | os.PathLike | None = None) -> Case:
-    """Ca `name` dưới `--out` / `$D710_OUT`.
+    """Case `name` under `--out` / `$D710_OUT`.
 
         from utils.paths import case
         C = case("ped")
@@ -147,7 +151,7 @@ def case(name: str, out: str | os.PathLike | None = None) -> Case:
 
 
 def cases(out: str | os.PathLike | None = None) -> list[Case]:
-    """Mọi ca đã có mặt dưới gốc đầu ra."""
+    """Every case already present under the output root."""
     root = out_root(out)
     if not root.is_dir():
         return []

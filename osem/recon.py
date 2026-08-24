@@ -1,29 +1,29 @@
-"""OSEM cho một bed: dựng `y = S·(G x) + b` rồi lặp.
+"""OSEM for one bed: build `y = S·(G x) + b`, then iterate.
 
-Ba đường vào, **không hoán đổi được**:
+Three inputs, **not interchangeable**:
 
-| | file | gắn thế nào |
+| | file | how it is attached |
 |---|---|---|
-| `y` prompt thô | `decoded/bed<n>.hs` | `recon.set_input` |
-| `S` | `work/bed<n>/normdt.hs` × af | `set_acquisition_sensitivity` **trước** `set_up` |
+| `y` raw prompts | `decoded/bed<n>.hs` | `recon.set_input` |
+| `S` | `work/bed<n>/normdt.hs` × af | `set_acquisition_sensitivity` **before** `set_up` |
 | `b` | `work/bed<n>/background.hs` | `set_background_term` |
 
-`S` phải gắn **trước** `set_up` để STIR gộp nó vào sensitivity image — đó là cái
-làm phép hiệu chỉnh mang tính định lượng chứ không chỉ đánh trọng số lại. `b` đi
-**vòng qua** `S` vì randoms và scatter đã nằm sẵn trong miền count đo được;
-`tests/test_notebook_contract.py` dựng lại đúng đồng nhất thức đó trên máy quét
-thu nhỏ.
+`S` must be attached **before** `set_up` so that STIR folds it into the
+sensitivity image — that is what makes the correction quantitative rather than a
+mere reweighting. `b` **bypasses** `S` because randoms and scatter already live
+in the measured count domain; `tests/test_notebook_contract.py` rebuilds exactly
+that identity on a miniature scanner.
 
-⚠ **Đừng nhân `geometry.ring_pair_multiplicity()` vào đây.** `normdt` của GE đã
-mang sẵn bội số span-2; nhân thêm là bình phương nó (4× ở bin lẻ). Xem docstring
-của hàm đó.
+⚠ **Do not multiply `geometry.ring_pair_multiplicity()` in here.** GE's `normdt`
+already carries the span-2 multiplicity; multiplying again squares it (4× at odd
+bins). See that function's docstring.
 
-Nguồn API, không tự bịa — ví dụ chính thức của SIRF ở
+API sources, nothing invented — the official SIRF examples in
 `$CONDA_PREFIX/dlevel/build/sources/SIRF/examples/Python/PET/`:
 `osem_reconstruction.py` (`make_Poisson_loglikelihood` + `OSMAPOSLReconstructor`),
 `get_multiplicative_sinogram.py` (`AcquisitionSensitivityModel`),
-`listmode_reconstruction.py` (sensitivity + background cùng nhau). Không ví dụ
-nào ghép **cả bốn** số hạng trên sinogram thật; chỗ ghép là ở đây.
+`listmode_reconstruction.py` (sensitivity + background together). No example
+combines **all four** terms on a real sinogram; that combination happens here.
 """
 
 from __future__ import annotations
@@ -32,29 +32,29 @@ import numpy as np
 
 from utils import terms
 
-#: 288 view, nên số subset phải là ước của 288.
+#: 288 views, so the number of subsets must divide 288.
 N_SUBSETS = 12
 N_ITERATIONS = 3
 
-#: Mặc định 1 LOR/bin là quá thô cho hình học này.
+#: The default of 1 LOR/bin is too coarse for this geometry.
 TANGENTIAL_LORS = 5
 
-#: Số voxel ngang. STIR ghim bước voxel ở 2,1306 mm bất kể giá trị này, nên nó
-#: quyết định **FOV** chứ không quyết định độ phân giải.
+#: Number of transverse voxels. STIR pins the voxel size at 2.1306 mm regardless
+#: of this value, so it sets the **FOV**, not the resolution.
 XY = 328
 
 
 def image_grid(case, bed: int, xy: int = XY):
-    """Lưới ảnh dùng chung cho mọi bed — cùng máy, cùng hình học.
+    """The image grid shared by every bed — same scanner, same geometry.
 
-    Trả `(acq_template, image_template)`. Phải giữ `acq_template` sống: nó là
-    nguồn của ExamInfo cho mọi thứ dựng từ nó.
+    Returns `(acq_template, image_template)`. `acq_template` must be kept alive:
+    it is the source of the ExamInfo for everything built from it.
     """
     import sirf.STIR as pet
 
     y0 = pet.AcquisitionData(str(case.prompt(bed)))
     x0 = y0.create_uniform_image(1.0, xy)
-    # `attenuation.mu_image` đòi đúng lưới 47 plane = 2·24 − 1 của một bed.
+    # `attenuation.mu_image` requires exactly a bed's 47-plane = 2·24 − 1 grid.
     if x0.as_array().shape[0] != terms.NSEG0:
         raise SystemExit("error: lưới ảnh có %d plane, phải là %d"
                          % (x0.as_array().shape[0], terms.NSEG0))
@@ -62,12 +62,12 @@ def image_grid(case, bed: int, xy: int = XY):
 
 
 def acquisition_model(objs, sensitivity, image, tangential_lors=TANGENTIAL_LORS):
-    """`y = S·(G x) + b`, dựng đúng thứ tự STIR đòi."""
+    """`y = S·(G x) + b`, built in the order STIR requires."""
     import sirf.STIR as pet
 
     am = pet.AcquisitionModelUsingRayTracingMatrix()
     am.set_num_tangential_LORs(tangential_lors)
-    # TRƯỚC set_up: đó là cái làm S đi vào sensitivity image.
+    # BEFORE set_up: that is what makes S go into the sensitivity image.
     am.set_acquisition_sensitivity(pet.AcquisitionSensitivityModel(sensitivity))
     am.set_background_term(objs["background"])
     am.set_up(objs["prompts"], image)
@@ -76,16 +76,18 @@ def acquisition_model(objs, sensitivity, image, tangential_lors=TANGENTIAL_LORS)
 
 def reconstruct(case, bed: int, af, image, n_sub: int = N_SUBSETS,
                 n_it: int = N_ITERATIONS, xy: int = XY):
-    """OSEM cho một bed. Trả `(ảnh, sensitivity)`, cả hai `(47, xy, xy)`.
+    """OSEM for one bed. Returns `(image, sensitivity)`, both `(47, xy, xy)`.
 
-    `sensitivity` là **sensitivity image của chính STIR** — mẫu số mà OSEM chia
-    vào mỗi vòng lặp, tức backprojection của `S` qua toàn bộ bin. Nó đã gồm sẵn
-    norm, dead time, suy giảm VÀ cách projector lấy mẫu LOR thật, nên dùng nó
-    làm trọng số ghép bed là *đo* chứ không phải *giả định hình học*. Lấy nó
-    không tốn thêm gì: `set_up` vốn đã tính rồi.
+    `sensitivity` is **STIR's own sensitivity image** — the denominator OSEM
+    divides by on each iteration, i.e. the backprojection of `S` over all bins.
+    It already includes norm, dead time, attenuation AND how the projector really
+    samples LORs, so using it as the bed-stitching weight is a *measurement*
+    rather than a *geometric assumption*. Getting it costs nothing extra:
+    `set_up` has already computed it.
 
-    Nạp lại bed từ đĩa rồi trả RAM khi xong, để chạy sáu bed không cần giữ sáu
-    bộ sinogram trong bộ nhớ (~2,5 GB thay vì ~15 GB).
+    The bed is reloaded from disk and its RAM handed back when done, so running
+    six beds does not mean holding six sets of sinograms in memory (~2.5 GB
+    instead of ~15 GB).
     """
     import sirf.STIR as pet
 
@@ -93,14 +95,14 @@ def reconstruct(case, bed: int, af, image, n_sub: int = N_SUBSETS,
 
     S = objs["prompts"].get_uniform_copy(0)
     S.fill(A["sensitivity"])
-    del A                       # mảng numpy không cần nữa; S đã giữ bản sao
+    del A                       # numpy arrays no longer needed; S holds a copy
 
     am = acquisition_model(objs, S, image)
 
     obj = pet.make_Poisson_loglikelihood(objs["prompts"], acq_model=am)
     obj.set_num_subsets(n_sub)
     obj.set_up(image)
-    # Cộng qua mọi subset -> sensitivity đầy đủ của bed này.
+    # Summed over all subsets -> the full sensitivity of this bed.
     sens = sum(obj.get_subset_sensitivity(s).as_array() for s in range(n_sub))
 
     rec = pet.OSMAPOSLReconstructor()
@@ -108,7 +110,7 @@ def reconstruct(case, bed: int, af, image, n_sub: int = N_SUBSETS,
     rec.set_num_subsets(n_sub)
     rec.set_num_subiterations(n_sub * n_it)
     rec.set_input(objs["prompts"])
-    rec.set_up(image)           # tính sensitivity image — chậm nhất ở đây
+    rec.set_up(image)           # computes the sensitivity image — the slowest step
     rec.set_current_estimate(image)
     for _ in range(rec.get_num_subiterations()):
         rec.update_current_estimate()
@@ -119,10 +121,11 @@ def reconstruct(case, bed: int, af, image, n_sub: int = N_SUBSETS,
 
 
 def reconstruct_all(case, beds, af: dict, image, out=print, **kw):
-    """`reconstruct` cho mọi bed, có đồng hồ. Trả `(img, sens)`, hai dict.
+    """`reconstruct` for every bed, timed. Returns `(img, sens)`, two dicts.
 
-    `sens rìa/giữa` in ra mỗi bed là thứ đáng liếc: nó cho thấy độ nhạy tụt bao
-    nhiêu ở đầu bed, tức là vùng chồng khi ghép yếu tới đâu.
+    The `sens rìa/giữa` (edge/centre) value printed per bed is worth a glance: it
+    shows how far sensitivity drops off at the end of a bed, i.e. how weak the
+    overlap region is when stitching.
     """
     import time
 

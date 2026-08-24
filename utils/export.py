@@ -1,15 +1,17 @@
-"""Xuất khối PET đã tái tạo ra NIfTI và DICOM.
+"""Export the reconstructed PET volume to NIfTI and DICOM.
 
-Khối vào là mảng STIR `(z, y, x)`; trục z tăng theo `table_position`, tức tăng
-về phía đầu — cùng chiều với z của DICOM.
+The input volume is a STIR array `(z, y, x)`; the z axis increases with
+`table_position`, i.e. towards the head — the same direction as DICOM's z.
 
-**Một phép lật duy nhất, và nó không tuỳ chọn.** `utils/attenuation.py`
-dựng mu-map theo thứ tự DICOM rồi gọi `to_radiological()` (lật trục y) trước khi
-đổ vào ảnh STIR. Nên trục y của ảnh STIR **ngược** với y của bệnh nhân trong
-DICOM, và muốn xuất ra DICOM/NIfTI thì phải lật lại. Hàm đó tự nghịch đảo, nên ở
-đây dùng đúng nó chứ không viết lại phép lật.
+**There is exactly one flip, and it is not optional.** `utils/attenuation.py`
+builds the mu-map in DICOM order and then calls `to_radiological()` (which flips
+the y axis) before pouring it into the STIR image. So the y axis of the STIR
+image is **reversed** with respect to the patient y of DICOM, and exporting back
+to DICOM/NIfTI has to flip it again. That function is its own inverse, so this
+module calls it rather than re-implementing the flip.
 
-Trục x thì không lật: lưới ngang của `mu_image` lấy thẳng toạ độ DICOM.
+The x axis is not flipped: the transverse grid of `mu_image` takes DICOM
+coordinates directly.
 """
 from __future__ import annotations
 
@@ -20,40 +22,41 @@ import numpy as np
 
 from .attenuation import to_radiological
 
-#: SOP Class của PET Image Storage.
+#: SOP Class of PET Image Storage.
 PET_SOP_CLASS = "1.2.840.10008.5.1.4.1.1.128"
 
-#: Gốc UID riêng, để UID sinh ra không đụng của hãng.
+#: Our own UID root, so generated UIDs never collide with the vendor's.
 UID_ROOT = "1.2.826.0.1.3680043.10.1338"
 
 
 def to_dicom_order(vol: np.ndarray) -> np.ndarray:
-    """Ảnh STIR `(z, y, x)` -> thứ tự bệnh nhân của DICOM (chỉ lật y).
+    """STIR image `(z, y, x)` -> DICOM patient order (flips y only).
 
-    Dùng đúng `to_radiological` mà `attenuation.mu_image` đã dùng, chứ không
-    viết lại phép lật: hàm đó tự nghịch đảo, nên gọi nó lần nữa là hoàn tác.
+    Calls the very `to_radiological` that `attenuation.mu_image` used rather than
+    re-implementing the flip: that function is its own inverse, so calling it
+    again undoes it.
     """
     return np.ascontiguousarray(to_radiological(vol))
 
 
 def grid_origin(nx: int, ny: int, vx: float, vy: float) -> tuple[float, float]:
-    """Toạ độ DICOM (x, y) của voxel [0, 0] trong một lát.
+    """DICOM (x, y) coordinate of voxel [0, 0] within a slice.
 
-    Lưới ngang của `attenuation.mu_image` là `(arange(n) - n//2) * v`, tâm máy
-    ở (0, 0) — nên gốc là `-(n//2)*v`. Hai trục hỏi riêng: lưới hiện tại vuông,
-    nhưng lấy một cỡ dùng cho cả hai thì lưới không vuông sẽ lệch gốc mà không
-    báo gì.
+    The transverse grid of `attenuation.mu_image` is `(arange(n) - n//2) * v`,
+    with the scanner centre at (0, 0) — so the origin is `-(n//2)*v`. The two
+    axes are asked for separately: the current grid is square, but reusing one
+    size for both would silently shift the origin on a non-square grid.
     """
     return -(nx // 2) * vx, -(ny // 2) * vy
 
 
 def write_nifti(vol, path, vx, vy, vz, z0):
-    """Ghi `.nii.gz`. Affine theo RAS (NIfTI), đổi từ LPS bằng cách đảo dấu x, y."""
+    """Write `.nii.gz`. The affine is RAS (NIfTI), converted from LPS by negating x, y."""
     import nibabel as nib
 
-    d = to_dicom_order(vol)                       # (z, y, x), thứ tự DICOM
+    d = to_dicom_order(vol)                       # (z, y, x), DICOM order
     x0, y0 = grid_origin(d.shape[2], d.shape[1], vx, vy)
-    data = np.transpose(d, (2, 1, 0))             # nibabel muốn (i, j, k) = (x, y, z)
+    data = np.transpose(d, (2, 1, 0))             # nibabel wants (i, j, k) = (x, y, z)
     affine = np.array([[-vx, 0.0, 0.0, -x0],
                        [0.0, -vy, 0.0, -y0],
                        [0.0, 0.0, vz, z0],
@@ -72,15 +75,16 @@ def _dcm_dt(epoch: float) -> tuple[str, str]:
 
 def write_dicom(vol, out_dir, hdr, vx, vy, vz, z0, series_desc="OSEM SIRF BQML",
                 units="BQML", series_number=901):
-    """Ghi một series PET DICOM, một file mỗi lát.
+    """Write one PET DICOM series, one file per slice.
 
-    Ghi đủ những tag mà một máy đọc ảnh cần để **tự tính SUV**: `Units = BQML`,
-    liều và thời điểm tiêm, cân nặng, `DecayCorrection`. Thiếu bất kỳ cái nào là
-    viewer sẽ hiện Bq/mL thô hoặc từ chối tính SUV.
+    Writes every tag a viewer needs in order to **compute SUV itself**:
+    `Units = BQML`, the dose and injection time, the weight, `DecayCorrection`.
+    Miss any one of them and the viewer shows raw Bq/mL or refuses to compute SUV.
 
-    `FrameOfReferenceUID` lấy đúng của exam (`sop_instance_uid` trong header
-    RDF), nên ảnh PET này **tự khớp toạ độ với CT** trong mọi viewer — chính là
-    đồng nhất thức mà notebook đã kiểm ở cell suy giảm.
+    `FrameOfReferenceUID` is taken from the exam itself (`sop_instance_uid` in
+    the RDF header), so this PET image **lines up with the CT automatically** in
+    any viewer — exactly the identity the notebook checked in the attenuation
+    cell.
     """
     from pydicom.dataset import Dataset, FileDataset
     from pydicom.uid import ExplicitVRLittleEndian, generate_uid
@@ -90,10 +94,11 @@ def write_dicom(vol, out_dir, hdr, vx, vy, vz, z0, series_desc="OSEM SIRF BQML",
     x0, y0 = grid_origin(nx, ny, vx, vy)
     os.makedirs(out_dir, exist_ok=True)
 
-    # PET lưu int16 + RescaleSlope; giữ 4 chữ số có nghĩa ở đỉnh là quá đủ.
-    # Đỉnh phải lấy trên phần HỮU HẠN: `nanmax` bỏ qua NaN nhưng KHÔNG bỏ ±inf,
-    # mà một voxel inf thì slope = inf -> RescaleSlope ghi "inf" (sai chuẩn DS)
-    # và mọi pixel chia cho inf thành 0 — mất trắng cả series mà không báo gì.
+    # PET stores int16 + RescaleSlope; 4 significant digits at the peak is plenty.
+    # The peak must be taken over the FINITE part: `nanmax` skips NaN but NOT
+    # ±inf, and a single inf voxel makes slope = inf -> RescaleSlope written as
+    # "inf" (invalid DS) with every pixel divided by inf becoming 0 — the whole
+    # series lost, silently.
     finite = d[np.isfinite(d)]
     peak = float(finite.max()) if finite.size else 0.0
     slope = (peak / 32000.0) if peak > 0 else 1.0
@@ -109,8 +114,8 @@ def write_dicom(vol, out_dir, hdr, vx, vy, vz, z0, series_desc="OSEM SIRF BQML",
         fm.MediaStorageSOPClassUID = PET_SOP_CLASS
         fm.MediaStorageSOPInstanceUID = generate_uid(prefix=UID_ROOT + ".")
         fm.TransferSyntaxUID = ExplicitVRLittleEndian
-        # Cú pháp truyền đã khai trong file_meta; `is_little_endian` /
-        # `is_implicit_VR` là API cũ, pydicom 4 bỏ hẳn.
+        # The transfer syntax is declared in file_meta; `is_little_endian` /
+        # `is_implicit_VR` are the old API, dropped entirely in pydicom 4.
         ds = FileDataset(None, {}, file_meta=fm, preamble=b"\0" * 128)
 
         ds.SOPClassUID = PET_SOP_CLASS
@@ -154,7 +159,7 @@ def write_dicom(vol, out_dir, hdr, vx, vy, vz, z0, series_desc="OSEM SIRF BQML",
         ds.RescaleSlope = f"{slope:.10g}"
         ds.RescaleIntercept = "0"
         ds.Units = units
-        ds.DecayCorrection = "START"       # đã hiệu chỉnh phân rã về lúc tiêm
+        ds.DecayCorrection = "START"       # decay-corrected back to injection time
         ds.CorrectedImage = ["DECY", "ATTN", "SCAT", "DTIM", "NORM", "RAN"]
         ds.SeriesType = ["STATIC", "IMAGE"]
         ds.ImageType = ["DERIVED", "PRIMARY"]
@@ -181,8 +186,8 @@ def write_dicom(vol, out_dir, hdr, vx, vy, vz, z0, series_desc="OSEM SIRF BQML",
 
 
 # --------------------------------------------------------------------------
-# `d710 export` — áp K rồi ghi ra đĩa.  Đọc `<ca>/recon.npz` mà `d710 osem`
-# để lại, nên không phải tái tạo lại gì.
+# `d710 export` — apply K, then write to disk.  Reads the `<case>/recon.npz`
+# that `d710 osem` left behind, so nothing has to be reconstructed again.
 # --------------------------------------------------------------------------
 def main(argv=None) -> int:
     """`python3 -m utils.export --case ped --format nifti`."""
@@ -228,7 +233,7 @@ def main(argv=None) -> int:
 
     r = quant.report(vol, K, hdr, vox)
 
-    # --- ghi --------------------------------------------------------------
+    # --- write -------------------------------------------------------------
     C.export.mkdir(parents=True, exist_ok=True)
     if args.format in ("nifti", "both"):
         for name, arr in (("bqml", r["bqml"]), ("suvbw", r["suv"])):
@@ -236,9 +241,10 @@ def main(argv=None) -> int:
                             vox[2], vox[1], vox[0], z0)
             print(f"ghi {p}")
     if args.format in ("dicom", "both"):
-        # DICOM cố ý CHỈ có Bq/mL: viewer tự tính SUV từ Units=BQML + liều +
-        # cân nặng, và người đọc đổi được bw/lbm/bsa.  Ghim SUV vào DICOM là
-        # khoá cứng một lựa chọn.
+        # The DICOM deliberately carries ONLY Bq/mL: the viewer computes SUV
+        # itself from Units=BQML + dose + weight, and the reader can switch
+        # between bw/lbm/bsa.  Baking SUV into the DICOM would hard-code one
+        # choice.
         n_it, n_sub = int(z["n_iterations"]), int(z["n_subsets"])
         paths = write_dicom(r["bqml"], str(C.export / "dicom"), hdr,
                             vox[2], vox[1], vox[0], z0,

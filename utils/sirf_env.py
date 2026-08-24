@@ -1,18 +1,21 @@
-"""Hai cái bẫy của SIRF phải xử **trước** khi chạm vào bất kỳ `AcquisitionData` nào.
+"""Two SIRF traps that must be handled **before** touching any `AcquisitionData`.
 
-Cả hai đều đã bật ra khi chạy thật, không phải phòng xa:
+Both showed up in real runs; neither is precautionary:
 
-1. **`tmp_*.hs`/`.s`, 231 MB mỗi cặp.** SIRF ghi chúng vào **thư mục hiện hành**
-   của tiến trình — không phải cạnh file nguồn — và mỗi `get_uniform_copy` sinh
-   một cặp, giữ tới khi object bị thu gom. Lần chạy đầu để lại 926 MB ngay cạnh
-   notebook. Nên: `chdir` vào `<ca>/scratch`.
-2. **`MessageRedirector` phải được GIỮ tham chiếu.** Thả ra là nó bị thu gom
-   ngay và STIR đổ hàng nghìn dòng INFO ra stdout. `setup()` giữ hộ.
+1. **`tmp_*.hs`/`.s`, 231 MB per pair.** SIRF writes them into the process's
+   **current working directory** — not next to the source file — and every
+   `get_uniform_copy` creates a pair, kept until the object is collected. The
+   first run left 926 MB sitting next to the notebook. Hence: `chdir` into
+   `<case>/scratch`.
+2. **The `MessageRedirector` reference must be KEPT.** Drop it and it is
+   collected immediately, after which STIR dumps thousands of INFO lines to
+   stdout. `setup()` holds it for you.
 
-Và một cái thứ ba mà `chdir` tự tạo ra: mục `''` trong `sys.path` (Jupyter và
-`python script.py` đều chèn) được giải nghĩa **tại thời điểm import**, nên sau
-`chdir` nó trỏ vào `scratch/` và `import osem` gãy giữa chừng notebook.
-`setup()` neo nó thành đường tuyệt đối trước khi đổi thư mục.
+And a third one that `chdir` creates by itself: the `''` entry in `sys.path`
+(inserted by both Jupyter and `python script.py`) is resolved **at import time**,
+so after the `chdir` it points into `scratch/` and `import osem` breaks halfway
+through the notebook. `setup()` anchors it to an absolute path before changing
+directory.
 """
 
 from __future__ import annotations
@@ -22,15 +25,16 @@ import sys
 
 from .paths import ROOT, Case
 
-#: Giữ `MessageRedirector` sống suốt đời tiến trình. Đây là toàn bộ lý do nó tồn tại.
+#: Keeps the `MessageRedirector` alive for the life of the process. That is its
+#: entire reason for existing.
 _redirector = None
 
 
 def anchor_sys_path() -> None:
-    """Biến mọi mục tương đối trong `sys.path` thành tuyệt đối, và bảo đảm có `D710/`.
+    """Make every relative `sys.path` entry absolute, and ensure `D710/` is on it.
 
-    Gọi trước bất kỳ `chdir` nào. Không gọi thì `import utils` / `import osem`
-    sau `chdir` sẽ đi tìm trong `scratch/`.
+    Call before any `chdir`. Without it, `import utils` / `import osem` after a
+    `chdir` go looking inside `scratch/`.
     """
     root = str(ROOT)
     sys.path[:] = [os.path.abspath(p) if p in ("", ".") else p for p in sys.path]
@@ -39,9 +43,10 @@ def anchor_sys_path() -> None:
 
 
 def setup(case: Case, quiet: bool = True):
-    """Vào `<ca>/scratch`, chặn INFO của STIR. Trả về thư mục scratch.
+    """Enter `<case>/scratch` and silence STIR's INFO output. Returns the scratch dir.
 
-    Idempotent: gọi lại trong cùng tiến trình không tạo thêm redirector nào.
+    Idempotent: calling it again in the same process creates no further
+    redirector.
     """
     global _redirector
 
@@ -52,16 +57,16 @@ def setup(case: Case, quiet: bool = True):
     if quiet and _redirector is None:
         import sirf.STIR as pet
 
-        # Ba file này rơi vào scratch, cùng chỗ với tmp_*.hs — cùng số phận.
+        # These three land in scratch alongside the tmp_*.hs — same fate.
         _redirector = pet.MessageRedirector("info.txt", "warn.txt", "err.txt")
     return case.scratch
 
 
 def clear_scratch(case: Case) -> int:
-    """Xoá `tmp_*` trong scratch. Trả số file đã xoá.
+    """Delete `tmp_*` in scratch. Returns the number of files removed.
 
-    An toàn giữa hai lần chạy, KHÔNG an toàn khi đang có `AcquisitionData` sống:
-    SIRF vẫn giữ file mở, xoá xong là object rỗng.
+    Safe between runs, NOT safe while any `AcquisitionData` is alive: SIRF still
+    holds those files open, and deleting them empties the object.
     """
     n = 0
     if not case.scratch.is_dir():

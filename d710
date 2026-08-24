@@ -70,8 +70,42 @@ need_image() {
   (D710/Dockerfile ghi lại image chứa gì.)"
 }
 
+# Chỉ `osem` và `export` cần môi trường project.  Kiểm SỚM, vì nếu không thì
+# `python3` trần đi thẳng vào `import numpy` sâu trong package rồi chết bằng
+# một ModuleNotFoundError chẳng nói lên điều gì.
+#
+# Hai lệnh cần hai thứ khác nhau, và khác nhau ở mức đáng phân biệt:
+#   osem   -> sirf.STIR, mà SIRF chỉ nạp khi env đã ACTIVATE (loader cần
+#             LD_LIBRARY_PATH của env; trỏ đúng đường dẫn interpreter là chưa đủ)
+#   export -> numpy + nibabel + pydicom, thuần Python, đường dẫn interpreter là đủ
+# Bắt `export` phải activate như `osem` là đòi thừa.
+need_py() {
+    local mods="$1" what="$2"
+    "$PY" -c "import ${mods}" 2>/dev/null && return
+    die "\`$PY\` không nạp được: ${mods}
+  ${what}
+      conda activate petct_reconstruction
+  hoặc trỏ thẳng:
+      export D710_PYTHON=\$HOME/miniconda3/envs/petct_reconstruction/bin/python
+  (chỉ \`osem\` và \`export\` cần; decode/estimate/tostir chạy bằng python3 trần.)"
+}
+
+need_sirf() {
+    need_py "numpy, sirf.STIR" \
+        "SIRF/STIR chỉ nạp khi env đã ACTIVATE — đường dẫn interpreter thôi là
+  chưa đủ, loader cần cả LD_LIBRARY_PATH của env:"
+}
+
+need_export_py() {
+    need_py "numpy, nibabel, pydicom" "Cần môi trường project:"
+}
+
 # docker run với --user, để mọi file sinh ra thuộc về người chạy.  Không có nó
 # thì tất cả dưới thư mục đầu ra quay về sở hữu của root.
+#
+# Là hàm nên KHÔNG `exec` được — người gọi để nó chạy bình thường rồi tự thoát
+# theo mã trả về.  (Ngoại lệ duy nhất của --user là đường pet_recon, xem
+# vendor/run.sh.)
 drun() { docker run --rm -i --user "$(id -u):$(id -g)" -e HOME=/tmp "$@"; }
 
 # beds_from <dir> <glob> <hậu tố cần bỏ> -> mảng $beds, đã sắp theo SỐ.
@@ -142,7 +176,8 @@ decode)
     fi
     # KHÔNG COPY GÌ VÀO CONTAINER: raw mount read-only, mọi kết quả rơi lên
     # mount đầu ra.  Một exam là hàng chục GB.
-    exec drun "${mounts[@]}" "$IMAGE" bash /decode/decode_in.sh "$LISTMODE" "$FORCE" "$TOF"
+    drun "${mounts[@]}" "$IMAGE" bash /decode/decode_in.sh "$LISTMODE" "$FORCE" "$TOF"
+    exit $?
     ;;
 
 # ------------------------------------------------------------- estimate
@@ -215,19 +250,19 @@ exam)
 
 # ------------------------------------------------------------------ osem
 osem)
-    need_case
+    need_case; need_sirf
     O="$(resolve_out)"
     exec env D710_OUT="$O" PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}" \
-        "$PY" -m osem --case "$CASE" \
+        "$PY" -u -m osem --case "$CASE" \
         ${BED:+--beds "$BED"} ${CT:+--ct "$CT"} "${REST[@]+"${REST[@]}"}"
     ;;
 
 # ---------------------------------------------------------------- export
 export)
-    need_case
+    need_case; need_export_py
     O="$(resolve_out)"
     exec env D710_OUT="$O" PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}" \
-        "$PY" -m utils.export --case "$CASE" \
+        "$PY" -u -m utils.export --case "$CASE" \
         ${FORMAT:+--format "$FORMAT"} "${REST[@]+"${REST[@]}"}"
     ;;
 
@@ -236,8 +271,9 @@ read)
     need_image
     [[ ${#REST[@]} -gt 0 ]] || die "cần một file, ví dụ: d710 read \$D710_OUT/ped/vendor/bed6/scatter.f32"
     f="$(cd "$(dirname "${REST[0]}")" && pwd)/$(basename "${REST[0]}")"
-    exec drun -v "$(dirname "$f"):/data:ro" -v "$HERE:/d710:ro" "$IMAGE" \
+    drun -v "$(dirname "$f"):/data:ro" -v "$HERE:/d710:ro" "$IMAGE" \
         python3 /d710/vendor/read_out.py "/data/$(basename "$f")" "${REST[@]:1}"
+    exit $?
     ;;
 
 # ----------------------------------------------------------------- shell

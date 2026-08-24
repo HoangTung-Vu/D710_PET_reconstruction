@@ -77,9 +77,15 @@ def wcc_activity_factor(case, bed: int, verbose: bool = True):
     return float(got["factor"])
 
 
-def k_from_wcc(factor: float) -> float:
-    """`hrActivityFactor` -> `K`, qua quy ước đơn vị GIẢ ĐỊNH."""
-    return float(factor) * WCC_UNIT_SCALE
+def k_from_wcc(factor):
+    """`hrActivityFactor` -> `K`, qua quy ước đơn vị GIẢ ĐỊNH.
+
+    `None` vào thì `None` ra, chứ không phải `TypeError`: người gọi thường viết
+    `k_from_wcc(wcc_activity_factor(...))` và cái vế trong **có thể** không tra
+    ra được (ca chưa có sidecar mới, hoặc header không khai `wcc_cal_uid`). Khi
+    đó đường lùi là mốc theo liều, và đó là quyết định của người gọi.
+    """
+    return None if factor is None else float(factor) * WCC_UNIT_SCALE
 
 
 def k_from_dose(vol, vox, dose: float) -> float:

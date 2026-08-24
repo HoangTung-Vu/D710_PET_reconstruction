@@ -1,8 +1,9 @@
 """The invariants that only hold on real data, one test per bed.
 
-Everything here skips when `raw_prompt/<exam>/` and `work/<exam>_bed<n>/` have
-not been built -- they are patient-derived and gitignored.  Build them with
-`./run_exam.sh --raw <...> --ct <...> --name <exam>`.
+Everything here skips when `$D710_OUT/<exam>/decoded/` and
+`$D710_OUT/<exam>/work/bed<n>/` have not been built -- they are patient-derived
+and live outside the source tree entirely.  Build them with
+`d710 exam --raw <...> --ct <...> --case <exam>`.
 
 These are the checks `osem_pipeline.ipynb` prints in its invariant cell, moved
 somewhere that fails instead of printing.  Comparisons are made **per plane**,

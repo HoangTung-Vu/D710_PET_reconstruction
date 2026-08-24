@@ -232,7 +232,7 @@ def main() -> int:
 
     # Exit non-zero on a partial set, the way estimate.py does.  Without this a
     # missing scatter.f32 leaves no background.hs, the notebook silently drops
-    # the bed, and run_exam.sh still reports it as finished.
+    # the bed, and `d710 exam` still reports it as finished.
     missing = [stem for _n, _d, stem in TERMS if stem not in stats]
     if missing or "background" not in stats:
         print("\n!! incomplete: no %s -- rerun estimate.py for this bed"

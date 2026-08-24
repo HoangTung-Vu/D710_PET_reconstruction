@@ -255,7 +255,7 @@ def test_a_missing_term_is_reported_as_a_failure(tmp_path, monkeypatch, capsys):
 
     Writing randoms alone under the name `background` would be a silent
     under-subtraction, so the term is skipped -- but exiting 0 would let
-    `run_exam.sh` mark the bed finished while `work/<bed>/` has no `b` in it.
+    `d710 exam` mark the bed finished while `work/bed<n>/` has no `b` in it.
     """
     vendor, template = make_case(tmp_path)
     os.remove(os.path.join(vendor, "scatter.f32"))

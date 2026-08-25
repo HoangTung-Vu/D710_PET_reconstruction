@@ -27,6 +27,8 @@ Both are linear in SUV, so every SUV number below is wrong by exactly the factor
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 
 #: ASSUMED unit convention between `hrActivityFactor` and (Bq/mL)/(count/voxel).
@@ -34,6 +36,24 @@ import numpy as np
 #: case, consistent with a 77 cm scan of a 118 cm child (legs not covered).
 #: Only a NEMA measurement will settle it.
 WCC_UNIT_SCALE = 1e4
+
+#: `K` riêng cho phần export, tính bằng (Bq/mL)/(count/voxel).
+#:
+#: Đây là hệ số ĐỘC LẬP với WCC của máy: đặt thẳng con số đo được vào đây
+#: (hoặc qua biến môi trường `D710_K`) thay vì nhân/chia `hrActivityFactor`
+#: với một quy ước đơn vị chưa dẫn ra được. `None` = chưa có, export sẽ lùi
+#: về WCC rồi tới chặn trên theo liều.
+#:
+#: ⚠ Chỉ đúng cho ĐÚNG chuỗi hiệu chỉnh đã đo ra nó và cho MỘT cỡ voxel.
+K_EXPORT = None
+
+
+def k_export():
+    """`K` riêng của export: `D710_K` > `K_EXPORT` > `None`."""
+    raw = os.environ.get("D710_K")
+    if raw:
+        return float(raw)
+    return None if K_EXPORT is None else float(K_EXPORT)
 
 
 def dose_bq(hdr) -> float:

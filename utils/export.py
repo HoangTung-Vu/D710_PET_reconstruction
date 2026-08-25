@@ -203,8 +203,9 @@ def main(argv=None) -> int:
     ap.add_argument("--out", help="gốc đầu ra; mặc định $D710_OUT")
     ap.add_argument("--format", choices=("nifti", "dicom", "both"), default="both")
     ap.add_argument("--K", type=float,
-                    help="(Bq/mL)/(count/voxel). Mặc định: WCC của chính exam; "
-                         "không có thì lấy CHẶN TRÊN theo liều.")
+                    help="(Bq/mL)/(count/voxel). Mặc định: K riêng của export "
+                         "($D710_K hoặc quant.K_EXPORT); không có thì WCC của "
+                         "chính exam; không có nữa thì CHẶN TRÊN theo liều.")
     args = ap.parse_args(argv)
 
     C = get_case(args.case, args.out)
@@ -219,6 +220,14 @@ def main(argv=None) -> int:
 
     # --- K ---------------------------------------------------------------
     K = args.K
+    if K is not None:
+        print(f"K từ --K = {K:,.2f}")
+    if K is None:
+        K = quant.k_export()
+        if K is not None:
+            print(f"K riêng của export = {K:,.2f}"
+                  + ("   (D710_K)" if os.environ.get("D710_K") else
+                     "   (quant.K_EXPORT)"))
     if K is None:
         f = quant.wcc_activity_factor(C, beds[0])
         if f is not None:

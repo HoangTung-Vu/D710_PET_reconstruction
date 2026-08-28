@@ -47,7 +47,7 @@ def sinogram_grid(proj, plane, names, title, cmap, unit, subtitle=""):
     for j, t in enumerate(names):
         p = proj[t]
         for i, (img, lab) in enumerate(((p["sino"], f"plane {plane}"),
-                                        (p["axial"], "gộp theo view"))):
+                                        (p["axial"], "summed over views"))):
             lo, hi = np.percentile(img, 0.5), np.percentile(img, 99.5)
             im = ax[i, j].imshow(img, cmap=cmap, aspect="auto",
                                  vmin=lo, vmax=max(hi, lo + 1e-9))
@@ -75,22 +75,22 @@ def profiles(proj, planes, beds, case_name=""):
         for t in COUNT_TERMS:
             ax[0, j].plot(proj[n, t]["prof"], lw=1.0, label=t)
         ax[0, j].axhline(0, color="k", lw=0.6)
-        ax[0, j].set_title(f"bed {n} — cắt ngang, plane {planes[n]}", fontsize=9)
+        ax[0, j].set_title(f"bed {n} — transaxial, plane {planes[n]}", fontsize=9)
         ax[0, j].set_xlabel("tangential (381)")
 
         for t in FACTOR_TERMS:
             ax[1, j].plot(proj[n, t]["prof"], lw=1.0, label=t)
         ax[1, j].axhline(1.0, color="k", lw=0.6, ls=":")
-        ax[1, j].set_title(f"bed {n} — hệ số", fontsize=9)
+        ax[1, j].set_title(f"bed {n} — factors", fontsize=9)
         ax[1, j].set_xlabel("tangential (381)")
 
-    ax[0, 0].set_ylabel("count/bin (trung bình theo view)")
-    ax[1, 0].set_ylabel("hệ số")
+    ax[0, 0].set_ylabel("count/bin (mean over views)")
+    ax[1, 0].set_ylabel("factor")
     ax[0, 0].legend(fontsize=7)
     ax[1, 0].legend(fontsize=7)
     for a in ax.ravel():
         a.grid(alpha=0.25)
-    fig.suptitle(f"Cắt ngang từng bed — {case_name}", fontsize=12)
+    fig.suptitle(f"Transaxial profiles per bed — {case_name}", fontsize=12)
     fig.tight_layout()
     return fig
 
@@ -111,7 +111,7 @@ def per_plane(proj, beds):
         ax[k].grid(alpha=0.25)
     ax[0].set_ylabel("count/plane")
     ax[0].legend(fontsize=7)
-    fig.suptitle("Tổng theo plane, mọi bed (vạch = hết segment 0)", fontsize=12)
+    fig.suptitle("Sum per plane, all beds (line = end of segment 0)", fontsize=12)
     fig.tight_layout()
     return fig
 
@@ -156,7 +156,7 @@ def whole_body(vol, vox, plane_mm, title=""):
                  aspect=plane_mm / vox[2])
     ax[1].set_title("MIP sagittal")
     ax[2].plot(vol.sum(axis=(1, 2)), np.arange(vol.shape[0]))
-    ax[2].set(title="tổng theo plane", xlabel="count", ylabel="plane (z tăng dần)")
+    ax[2].set(title="sum per plane", xlabel="count", ylabel="plane (increasing z)")
     ax[2].grid(alpha=0.3)
     for a in ax[:2]:
         a.axis("off")
@@ -171,7 +171,7 @@ def suv(suv_bw, mask, vox, plane_mm, K, case_name=""):
 
     mip = suv_bw.max(axis=1)[::-1]
     fig, ax = plt.subplots(1, 3, figsize=(14, 7))
-    for a, vmax, t in ((ax[0], 5.0, "MIP SUVbw — cửa sổ 0–5 (đọc lâm sàng)"),
+    for a, vmax, t in ((ax[0], 5.0, "MIP SUVbw — window 0-5 (clinical reading)"),
                        (ax[1], float(np.percentile(suv_bw, 99.9)),
                         "MIP SUVbw — p99.9")):
         im = a.imshow(mip, cmap="hot", vmin=0, vmax=vmax, aspect=plane_mm / vox[1])
@@ -179,9 +179,9 @@ def suv(suv_bw, mask, vox, plane_mm, K, case_name=""):
         a.axis("off")
         plt.colorbar(im, ax=a, fraction=0.03, pad=0.02)
     ax[2].hist(suv_bw[mask].ravel(), bins=120, range=(0, 6), log=True)
-    ax[2].set(title="phân bố SUVbw trong thân", xlabel="SUVbw",
-              ylabel="số voxel (log)")
+    ax[2].set(title="SUVbw distribution inside the body", xlabel="SUVbw",
+              ylabel="voxel count (log)")
     ax[2].grid(alpha=0.3)
-    fig.suptitle(f"SUV — {case_name}   (K = {K:,.0f}, CÒN LÀ SUY ĐOÁN)", fontsize=12)
+    fig.suptitle(f"SUV — {case_name}   (K = {K:,.0f}, STILL AN ESTIMATE)", fontsize=12)
     fig.tight_layout()
     return fig

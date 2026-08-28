@@ -50,9 +50,9 @@ def ensure_image() -> None:
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if p.returncode != 0:
         raise SystemExit(
-            "error: không có image '%s'. Nạp nó:\n"
+            "error: no image '%s'. Load it:\n"
             "  docker load -i d710_full.tar\n"
-            "(D710/Dockerfile ghi lại image chứa gì.)" % image())
+            "(D710/Dockerfile records what the image contains.)" % image())
 
 
 def docker_argv(mounts=(), env=None, tty=False, extra=(), interactive=True) -> list:
@@ -154,12 +154,12 @@ def cal_tags(uid: str, suffix: str, tags, verbose=False):
         "print(json.dumps(out))\n" % (uid, suffix, list(tags)))
     p = python(["-c", code], capture=True, check=False, verbose=verbose)
     if p.returncode != 0:
-        print("   không đọc được %s.%s trong container:\n%s"
+        print("   could not read %s.%s inside the container:\n%s"
               % (uid, suffix, p.stderr.strip()[:500]), file=sys.stderr)
         return None
     try:
         return json.loads(p.stdout.strip().splitlines()[-1])
     except (ValueError, IndexError):
-        print("   %s.%s: đầu ra không phải JSON:\n%s"
+        print("   %s.%s: output is not JSON:\n%s"
               % (uid, suffix, p.stdout[:500]), file=sys.stderr)
         return None

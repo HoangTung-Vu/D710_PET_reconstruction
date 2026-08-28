@@ -708,6 +708,25 @@ khi** cả 288 view đã ghi xong, nên không ảnh hưởng kết quả.
 **Điểm nạp mu-map ở (3) chính là chỗ đưa mu tự tính vào** — xem §3d và
 `ct_to_pifa.py`.
 
+### Điều kiện thứ năm, thêm 2026-08-27: scatter có TOF hay không
+
+```
+5. IgJobReq.reconMethod = 3   ->  CScatterFully3dModel(ig, nThreads, TRUE)
+                              ->  m_bTOFDim = 1  (offset 0x2d8)
+                              ->  scatter_tof.f32 từ CCorrDataMem::m_pScatterTOF
+```
+
+Tham số thứ ba của constructor **là** cờ TOF, và `CIgManager::Do3dEmissionImage`
+tính nó bằng đúng `(reconMethod == 3)` (`0x42a6fc`: `cmpl $0x3 … ; sete %cl`).
+Đặt `0` thì `CreateTaskList` bỏ hết năm task `MSCAT_*_TOF`, và `m_pScatterTOF`
+— vẫn được cấp phát 288 × 151360 B ở mọi lần chạy — nằm rỗng.
+
+Đo trên ped bed 1, bật so với tắt: `randoms.f32` **giống hệt từng bit**,
+`scatter.f32` lệch **0.04 %** tổng. Nên bật là bao trùm, không phải đánh đổi.
+`extract.gdb` mặc định bật; `D710_TOF=0` (hay `estimate.py --no-tof`) tắt.
+
+Chi tiết và cách kiểm: `../TOF_SCATTER_REVERSE.md`.
+
 ## 3d. Mu-map tự tính đưa vào pipeline của hãng — ĐƯỢC, và chỉ sửa 1 dòng
 
 Trả lời cho hướng **SSS**: có, và không cần console.

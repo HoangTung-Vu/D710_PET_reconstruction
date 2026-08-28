@@ -73,8 +73,8 @@ def check_ring_pairs(info, pairs: list[list[tuple[int, int]]]) -> None:
             want = info.get_num_ring_pairs_for_segment_axial_pos_num(s, a)
             if len(pairs[p]) != want:
                 raise ValueError(
-                    f"plane {p} (segment {s}, axial {a}): suy ra "
-                    f"{len(pairs[p])} cặp ring, STIR nói {want}")
+                    f"plane {p} (segment {s}, axial {a}): derived "
+                    f"{len(pairs[p])} ring pairs, STIR says {want}")
             p += 1
 
 

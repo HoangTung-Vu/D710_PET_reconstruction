@@ -25,6 +25,11 @@ from cases import VENDOR_TERMS, bed_params, decoded_beds
 
 CLONED_KEYS = ("name of data file", "number format", "number of bytes per pixel")
 
+#: Keys that describe the DATA's timing axis, which the correction terms do not
+#: have. `to_stir.strip_tof` removes exactly these; the scanner block's own TOF
+#: keys stay, because those describe the hardware.
+TOF_DATA_KEYS = ("matrix axis label [5]", "matrix size [5]", "tof mashing factor")
+
 _cache: dict[str, np.ndarray] = {}
 
 
@@ -95,9 +100,11 @@ def test_the_bin_mapping_was_proved_on_this_bed(bed):
 # ------------------------------------------------------- one geometry only
 
 def test_every_term_shares_the_prompts_geometry(bed):
-    want = interfile.shape(bed["hs"])
+    """Same LOR geometry. The timing axis is deliberately not shared -- see
+    `test_terms_are_non_tof_even_when_the_prompts_are_not`."""
+    want = interfile.shape(bed["hs"])[1:]
     for name in VENDOR_TERMS:
-        assert interfile.shape(term(bed, name)) == want, name
+        assert interfile.shape(term(bed, name))[1:] == want, name
 
 
 def test_term_headers_are_clones_of_the_prompt_header(bed):
@@ -106,13 +113,45 @@ def test_term_headers_are_clones_of_the_prompt_header(bed):
     A term whose header was generated rather than cloned drifts on the energy
     window, and STIR throws `BinNormalisation set-up with different ExamInfo`
     only much later, inside `make_Poisson_loglikelihood`.
+
+    The one licensed difference is the timing axis. Every correction term is
+    non-TOF whatever the prompts are -- norm, dead time, attenuation and randoms
+    do not depend on arrival time, and the scatter's time axis travels
+    separately in `scatter_tof.npy` -- so `to_stir.strip_tof` takes the axis-5
+    keys back out. The scanner block keeps its TOF description either way, which
+    is what the ExamInfo is actually built from.
     """
     src = interfile.keys(bed["hs"])
     for name in VENDOR_TERMS:
         got = interfile.keys(term(bed, name))
-        assert set(src) == set(got), name
-        differing = {k for k in src if src[k] != got[k]}
-        assert differing <= set(CLONED_KEYS), f"{name}: also changed {differing}"
+        assert set(src) - set(got) <= set(TOF_DATA_KEYS), name
+        assert set(got) - set(src) == set(), name
+        differing = {k for k in set(src) & set(got) if src[k] != got[k]}
+        assert differing <= set(CLONED_KEYS) | {"number of dimensions"}, \
+            f"{name}: also changed {differing}"
+
+
+def test_terms_are_non_tof_even_when_the_prompts_are_not(bed):
+    """The other half of the contract above, stated as its own fact."""
+    for name in VENDOR_TERMS:
+        assert interfile.shape(term(bed, name))[0] == 1, \
+            f"{name} has a timing axis; every correction term must be per LOR"
+
+
+def test_a_tof_estimate_leaves_the_scatter_time_axis_beside_the_terms(bed):
+    """`scatter_tof.npy` exists exactly when the estimate ran with reconMethod 3.
+
+    Not "when the prompts are TOF": the two are independent settings, and a TOF
+    decode paired with a non-TOF estimate is a real configuration -- OSEM then
+    falls back to a measured profile and says so. What must not happen is
+    `to_stir.json` claiming a TOF estimate with no weights on disk.
+    """
+    meta = json.load(open(os.path.join(bed["terms"], "to_stir.json")))
+    claimed = bool(meta.get("estimate", {}).get("tof_scatter"))
+    present = os.path.exists(os.path.join(bed["terms"], "scatter_tof.npy"))
+    assert present == claimed, (
+        f"to_stir.json says tof_scatter={claimed} but scatter_tof.npy "
+        f"{'exists' if present else 'is missing'}")
 
 
 def test_the_terms_are_float32_and_the_prompts_are_not(bed):
@@ -267,7 +306,10 @@ def test_cached_attenuation_factors_are_survival_probabilities(bed, sirf):
     if not os.path.exists(hs):
         pytest.skip("attn.hs not cached for this bed")
     a = sirf.AcquisitionData(hs).as_array()
-    assert a.shape == interfile.shape(bed["hs"])
+    # Non-TOF like every other correction term: attenuation is the survival
+    # probability of the photon PAIR along the LOR and does not depend on when
+    # either photon arrived. STIR enforces it too -- see `utils/attn.py`.
+    assert a.shape == (1,) + interfile.shape(bed["hs"])[1:]
     v = a[0, a.shape[1] // 4].astype(np.float64)
     assert v.min() > 0.0
     assert v.max() <= 1.0 + 1e-5

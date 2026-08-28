@@ -42,6 +42,17 @@ Outputs (float32, all in the raw detected-count domain, no WCC anywhere):
     background.hs/.s  randoms + scatter      -> `b` in y = S(Gx) + b
     normdt.hs/.s      normalisation x dead time -> `S` (before attenuation)
     norm_only.hs/.s   normalisation alone; dead time = normdt / norm_only
+    scatter_tof.npy   TOF distribution of the scatter (TOF estimates only)
+
+``scatter_tof.npy`` is deliberately **not** an Interfile.  It is GE's own coarse
+grid -- ``(55 TOF, 288 view, 43 downsampled tangential)``, 2.7 MB -- and it is a
+*shape*, not a sinogram: the amplitude lives in ``scatter.hs``.  Written out at
+full resolution it would be 13.4 GB per bed, which is exactly why GE does not
+store it either; ``utils.terms.expand_to_tof`` upsamples it per bed at load
+time, the same place the background gets assembled.  The view axis is reversed
+into STIR order here so nothing downstream has to know about GE's numbering, and
+the two length-4 axes of the vendor buffer are summed away -- measured on ped
+bed 1, keeping them moves the TOF centroid by a median 0.45 bins (40 ps, 6 mm).
 
 ``normdt`` is a **sensitivity**, not a correction factor: dividing the data by
 it is what corrects.  Two independent measurements fix that direction:
@@ -80,6 +91,10 @@ TERMS = [("randoms.f32", "<f4", "randoms"),
          ("normdt.f32", "<f4", "normdt"),
          ("norm_only.f32", "<f4", "norm_only")]
 
+#: The two trailing axes of ``scatter_tof.f32``: GE's downsampled axial
+#: sampling, 4 x 4.  They are summed away -- see the module docstring.
+TOF_AXIAL_SHAPE = (4, 4)
+
 
 def ge_to_stir(a: np.ndarray) -> np.ndarray:
     """``(view, plane, u)`` -> ``(tof=1, axial, view, tang)``.
@@ -111,6 +126,38 @@ def template_data_file(hs: str) -> str:
     raise SystemExit(f"error: {hs} has no 'name of data file' key")
 
 
+def template_tof_bins(hs: str) -> int:
+    """Timing positions the template declares; 1 for a non-TOF header.
+
+    Every correction term written here is non-TOF -- norm, dead time,
+    attenuation and randoms genuinely do not depend on arrival time, and the
+    scatter's time axis travels separately in ``scatter_tof.npy``.  So a TOF
+    template has to be handled in two places rather than followed blindly: the
+    prompts check below collapses it, and ``strip_tof`` takes the TOF keys back
+    out of the cloned header.
+    """
+    with open(hs) as f:
+        for line in f:
+            m = re.match(r"\s*!?\s*matrix size\s*\[5\]\s*:=\s*(\d+)\s*$",
+                         line, re.I)
+            if m:
+                return int(m.group(1))
+    return 1
+
+
+def strip_tof(hdr: str) -> str:
+    """Turn a 5-D TOF projdata header into the 4-D one these terms need.
+
+    The scanner block keeps its TOF keys -- they describe the hardware, and STIR
+    is happy to read non-TOF data from a TOF-capable scanner.  What has to go is
+    the *data* description: axis 5, its size, and the mashing factor.
+    """
+    hdr = re.sub(r"(?im)^\s*!?\s*matrix axis label\s*\[5\]\s*:=.*\n", "", hdr)
+    hdr = re.sub(r"(?im)^\s*!?\s*matrix size\s*\[5\]\s*:=.*\n", "", hdr)
+    hdr = re.sub(r"(?im)^\s*TOF mashing factor\s*:=.*\n", "", hdr)
+    return re.sub(r"(?im)^(\s*number of dimensions\s*:=).*$", r"\1 4", hdr)
+
+
 def verify(vendor: str, template: str) -> dict:
     """Re-prove the bin mapping on this exam's own data.
 
@@ -127,24 +174,32 @@ def verify(vendor: str, template: str) -> dict:
         raise SystemExit(f"error: the template names {ts}, which does not exist")
 
     ge = read_ge(pu, "<u2")
-    stir = ge_to_stir(ge)
+    stir = ge_to_stir(ge).astype(np.int64)
+    n_tof = template_tof_bins(template)
     ref = np.fromfile(ts, dtype="<i2")
-    if ref.size != stir.size:
+    if ref.size != stir.size * n_tof:
         raise SystemExit(
             f"error: {ts} holds {ref.size:,} samples but the vendor array has "
-            f"{stir.size:,} -- template and vendor run are not the same bed")
+            f"{stir.size:,} x {n_tof} TOF bins -- template and vendor run are "
+            "not the same bed")
+    # A TOF template is the SAME acquisition with the time axis kept, and
+    # mashing preserves counts exactly, so summing it back down is not an
+    # approximation -- the comparison stays bit-exact.  int64 because 11 int16
+    # bins of a busy LOR do not fit an int16 once added.
+    ref = ref.reshape((n_tof,) + stir.shape[1:]).sum(axis=0, dtype=np.int64)
     ref = ref.reshape(stir.shape)
-    exact = bool(np.array_equal(stir.astype("<i2"), ref))
+    exact = bool(np.array_equal(stir, ref))
     total = int(ge.sum(dtype=np.int64))
     if not exact:
-        bad = int((stir.astype("<i2") != ref).sum())
+        bad = int((stir != ref).sum())
         raise SystemExit(
             f"error: the bin mapping does not reproduce {ts}: {bad:,} of "
             f"{ref.size:,} bins differ.\n"
             "  Vendor total %d, decoded total %d.\n"
             "  Refusing to write correction sinograms whose bin order is "
             "unproven." % (total, int(ref.sum(dtype=np.int64))))
-    return {"bit_exact_vs_decoded": True, "prompts": total}
+    return {"bit_exact_vs_decoded": True, "prompts": total,
+            "template_tof_bins": n_tof}
 
 
 def write_term(arr_ge: np.ndarray, stem: str, out: str, template: str) -> dict:
@@ -156,6 +211,8 @@ def write_term(arr_ge: np.ndarray, stem: str, out: str, template: str) -> dict:
                  r"\1 " + data_name, hdr)
     hdr = re.sub(r"(?im)^(\s*!?\s*number format\s*:=).*$", r"\1 float", hdr)
     hdr = re.sub(r"(?im)^(\s*!?\s*number of bytes per pixel\s*:=).*$", r"\1 4", hdr)
+    # Every term written here is non-TOF, whatever the prompts are.
+    hdr = strip_tof(hdr)
     with open(os.path.join(out, stem + ".hs"), "w") as f:
         f.write(hdr)
 
@@ -164,6 +221,117 @@ def write_term(arr_ge: np.ndarray, stem: str, out: str, template: str) -> dict:
     return {"min": float(a.min()), "max": float(a.max()),
             "mean": float(a.mean()), "sum": float(a.sum(dtype=np.float64)),
             "nonzero": int(np.count_nonzero(a))}
+
+
+def convert_scatter_tof(vendor: str, out: str, scatter_ge=None) -> dict | None:
+    """``scatter_tof.f32`` -> ``scatter_tof.npy``, or ``None`` if not a TOF run.
+
+    The vendor buffer is one CViewBuffer of ``number_phi`` views, each holding
+    ``[tof][ds_nu][4][4]`` floats in C order.  That layout is not a guess: the
+    last thing ``CScatterFully3dModel::PhiUpsampleTofScatter`` does is
+
+        permute_41253(buf, 4, ds_nu, number_phi, 4, numTOF_bins, m_pScatterTOF)
+
+    a column-major 5-D permutation, so the output runs (slowest first)
+    ``number_phi, numTOF_bins, ds_nu, 4, 4``.  The sidecar ``estimate.py`` wrote
+    carries ``ds_nu`` and ``numTOF_bins``, so the shape is read rather than
+    assumed and a scanner with different downsampling still works.
+
+    Returns the stats dict, and writes ``(tof, view, ds_nu)`` float32 in **STIR
+    view order** -- the same ``287 - ge_view`` reversal every other term gets.
+
+    Given ``scatter_ge`` (the full ``scatter.f32``, still in GE order) the two
+    are checked against each other: summed over TOF, the compact buffer is the
+    same distribution as the full one, so their ``(view, tangential)`` maps must
+    correlate. That is what catches the mistake this conversion is actually
+    exposed to -- reversing the view axis of one term and not the other, which
+    is invisible in every per-term statistic and ruins the reconstruction.
+    """
+    src = os.path.join(vendor, "scatter_tof.f32")
+    meta = src + ".json"
+    if not os.path.exists(src):
+        return None
+    if not os.path.exists(meta):
+        raise SystemExit(f"error: {src} has no sidecar {meta}; without it the "
+                         "ds_nu / numTOF_bins of this run are unknown and the "
+                         "buffer cannot be reshaped")
+    with open(meta) as f:
+        m = json.load(f)
+    nview = int(m.get("number_phi") or GE_SHAPE[0])
+    ntof = int(m.get("numTOF_bins") or 0)
+    dsnu = int(m.get("ds_nu") or 0)
+    if not (ntof and dsnu):
+        raise SystemExit(f"error: {meta} does not give numTOF_bins and ds_nu")
+
+    a = np.fromfile(src, dtype="<f4")
+    want = nview * ntof * dsnu * TOF_AXIAL_SHAPE[0] * TOF_AXIAL_SHAPE[1]
+    if a.size != want:
+        raise SystemExit(
+            f"error: {src} holds {a.size:,} floats, expected {want:,} "
+            f"({nview} view x {ntof} tof x {dsnu} ds_nu x "
+            f"{TOF_AXIAL_SHAPE[0]} x {TOF_AXIAL_SHAPE[1]}).")
+    a = a.reshape((nview, ntof, dsnu) + TOF_AXIAL_SHAPE).sum(axis=(3, 4))
+
+    # A TOF bin with no scatter anywhere would make the per-LOR normalisation in
+    # terms.py divide by zero, and an all-zero buffer means the run was not
+    # really TOF -- report both rather than let either pass silently.
+    per_tof = a.sum(axis=(0, 2), dtype=np.float64)
+    total = float(per_tof.sum())
+    stats = {"shape": [ntof, nview, dsnu],
+             "axes": "tof x view(STIR order) x ds_nu",
+             "num_tof_bins": ntof, "ds_nu": dsnu,
+             "sum": total,
+             "empty_tof_bins": int((per_tof == 0).sum()),
+             "peak_tof_bin": int(per_tof.argmax()),
+             # None rather than a NaN from 0/0: an all-zero buffer means the
+             # estimate did not really run in TOF mode, and `terms` says so with
+             # a usable message. A NaN here would just look like a shape bug.
+             "peak_over_mean": (float(per_tof.max() / per_tof.mean())
+                                if total > 0 else None)}
+
+    if scatter_ge is not None:
+        # Both maps in GE view order, before the reversal below.
+        #   x: (view, ds_nu) from the compact buffer, summed over TOF
+        #   y: the same map from the full scatter, its tangential axis binned
+        #      down to ds_nu so neither side has to be interpolated
+        x = a.sum(axis=1)
+        edges = np.linspace(0, scatter_ge.shape[2], dsnu + 1).astype(int)
+        y = np.add.reduceat(scatter_ge.sum(axis=1), edges[:-1], axis=1)
+
+        def corr(u, v):
+            return float(np.corrcoef(u.ravel(), v.ravel())[0, 1])
+
+        c, c_tang = corr(x, y), corr(x, y[:, ::-1])
+        stats["corr_vs_scatter"] = c
+        stats["corr_vs_scatter_tangential_flipped"] = c_tang
+        # What this catches: a wrong reshape, and a tangential axis running the
+        # wrong way -- measured on ped bed 1, 0.9949 the right way round against
+        # 0.8592 flipped.
+        #
+        # What it does NOT catch, said plainly: anything that only permutes the
+        # VIEW axis, including its direction.  Scatter is nearly symmetric in
+        # view, so the reversed orientation still scores 0.9895 here and no
+        # threshold separates them.  The view reversal is
+        # `ge_to_stir`'s, the same one `verify` above proves bit-exact against
+        # independently decoded prompts, and it is applied to this buffer by the
+        # single transpose below -- so it is right for the same reason the other
+        # terms are, not because this check says so.
+        if c < 0.95 or c_tang > c:
+            raise SystemExit(
+                "error: scatter_tof.f32 summed over TOF correlates %.4f with "
+                "scatter.f32 over\n"
+                "  (view, tangential), against %.4f with the tangential axis "
+                "flipped.  They come\n"
+                "  from the same model and must agree, so the reshape or the "
+                "axis order in this\n"
+                "  file is wrong for this run.  Nothing written."
+                % (c, c_tang))
+
+    # (view, tof, ds_nu) -> (tof, view, ds_nu), views reversed into STIR order.
+    # Written last, so a failed check leaves no file for the next step to trust.
+    w = np.ascontiguousarray(a.transpose(1, 0, 2)[:, ::-1, :]).astype("<f4")
+    np.save(os.path.join(out, "scatter_tof.npy"), w)
+    return stats
 
 
 def main() -> int:
@@ -212,9 +380,25 @@ def main() -> int:
         print("   %-14s -> background.hs  sum %s"
               % ("randoms+scatter", f"{stats['background']['sum']:,.0f}"))
 
+    # `scatter` is still in GE order here, which is what the cross-check wants.
+    tof = convert_scatter_tof(vendor, out, scatter_ge=scatter)
+    if tof:
+        print("   %-14s -> scatter_tof.npy  %s, peak TOF bin %d (%sx mean), "
+              "corr vs scatter %.4f"
+              % ("scatter_tof.f32", tuple(tof["shape"]), tof["peak_tof_bin"],
+                 "%.2f" % tof["peak_over_mean"] if tof["peak_over_mean"]
+                 else "n/a ", tof.get("corr_vs_scatter", float("nan"))))
+        if tof["empty_tof_bins"]:
+            print("   !! %d TOF bins are empty" % tof["empty_tof_bins"],
+                  file=sys.stderr)
+    else:
+        print("   %-14s absent -- non-TOF estimate; OSEM will fall back to a "
+              "measured TOF profile" % "scatter_tof.f32")
+
     meta = {"vendor": vendor, "template": template,
             "mapping": "stir[0, plane, 287 - ge_view, u] = ge[ge_view, plane, u]",
             "verified": checks,
+            "scatter_tof": tof,
             "sensitivity_term": "normdt (a sensitivity: divide data by it to correct)",
             "background_term": "background = randoms + scatter",
             "wcc_applied": False,

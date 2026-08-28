@@ -30,6 +30,19 @@ For Poisson ML, `Var(x̂) ≈ x / sens`, so the inverse-variance weight is exact
 The plane indices can be rounded because the table step really is an integer
 number of planes; a half-plane offset would pile two beds into the same cell with
 a 1.6 mm axial error. `tests/test_notebook_contract.py` pins exactly that down.
+
+### The post-filter is not cosmetic — it is the missing half of the algorithm
+
+Unregularised OSEM has no noise control at all: no prior, no inter-iteration
+filter. GE's does not either — `(0009,10B6) ir_loop_filter = 0` and
+`(0009,10BC) ir_regularize = 0`. What GE has and this did not is a **post**
+filter, and without it the two images are not comparable: measured against GE's
+own VPFXS of the same exam, the liver CoV was 36.5 % against GE's 18.3 %, while
+the *means* agreed to 5.7 %. Noise, not bias.
+
+`post_filter` runs on the STITCHED volume, not per bed. Filtering a bed on its
+own convolves its 47-plane ends against zeros, which deepens exactly the axial
+roll-off the sensitivity weighting above exists to avoid.
 """
 
 from __future__ import annotations
@@ -39,6 +52,68 @@ import datetime as dt
 import numpy as np
 
 from utils.geometry import PLANE_MM
+
+#: Transaxial post-filter, FWHM in mm. Not a guess and not a tuning knob: it is
+#: GE's own setting for this protocol, read off the private tags of the vendor's
+#: reconstruction of this very exam — `(0009,10BB) post_filt_parm = 6.4`, with
+#: `(0009,10BA) post_filter = 1` saying it is on. Any slice of a GE `PT` series
+#: carries them, so a new protocol can be checked rather than assumed.
+POST_FILTER_FWHM_MM = 6.4
+
+#: Axial post-filter, from `(0009,10DC) ir_z_filter_ratio = 4.0` (enabled by
+#: `(0009,10DB) ir_z_filter_flag = 2`). The vendor tag gives the RATIO; the
+#: three-tap `[1, ratio, 1]` shape is INFERRED, not read out of `pet_recon`.
+#: What supports the inference: at ratio 4 it normalises to
+#: `[0.1666667, 0.6666667, 0.1666667]`, which is character-for-character the
+#: `PSF_AXIAL_KERNEL[]` in `sharcAp.cfg.XR` next to `PSF_AXIAL_WINDOW_WIDTH 3`.
+#: Same three-tap family, same machine. Treat it as a good reconstruction of
+#: GE's filter, not as decoded ground truth.
+POST_FILTER_Z_RATIO = 4.0
+
+
+def post_filter(vol, vox, fwhm_mm: float = POST_FILTER_FWHM_MM,
+                z_ratio: float = POST_FILTER_Z_RATIO, verbose: bool = True):
+    """GE's two-part post-filter on the stitched volume. Returns a new array.
+
+    `vox` is `(z, y, x)` in mm — `sirf.STIR` image `voxel_sizes()` order, which
+    is what `osem/__main__.py` already holds. Two different filters, because GE
+    uses two:
+
+    * **transaxial** — Gaussian, `fwhm_mm` FWHM, applied in-plane only.
+    * **axial** — the three-tap `[1, z_ratio, 1]`.
+
+    `fwhm_mm = 0` skips the transaxial half, `z_ratio = 0` the axial one, so a
+    run can be compared against an unfiltered one without editing anything.
+
+    **Edge handling differs by axis, on purpose.** Transaxially the filter runs
+    against zeros: outside the reconstructed FOV there genuinely is no activity,
+    so letting the rim decay is correct. Axially it replicates the end plane
+    instead — the volume does not stop because the patient does, it stops
+    because the beds ran out, and convolving that against zeros would darken the
+    end planes for a reason that is an artefact of where the scan ended.
+    """
+    from scipy.ndimage import gaussian_filter
+
+    out = np.asarray(vol, dtype=np.float32)
+
+    if fwhm_mm and fwhm_mm > 0:
+        # FWHM -> sigma, then mm -> voxels, per axis: the grid is not isotropic.
+        sig = fwhm_mm / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+        out = gaussian_filter(out, sigma=(0.0, sig / vox[1], sig / vox[2]),
+                              mode="constant", cval=0.0)
+
+    if z_ratio and z_ratio > 0:
+        k = np.array([1.0, z_ratio, 1.0], dtype=np.float32)
+        k /= k.sum()
+        p = np.pad(out, ((1, 1), (0, 0), (0, 0)), mode="edge")
+        out = k[0] * p[:-2] + k[1] * p[1:-1] + k[2] * p[2:]
+
+    if verbose:
+        sig = fwhm_mm / (2.0 * np.sqrt(2.0 * np.log(2.0))) if fwhm_mm else 0.0
+        print(f"post-filter: transaxial FWHM {fwhm_mm:g} mm "
+              f"(sigma {sig / vox[2]:.2f} voxel), axial [1,{z_ratio:g},1]")
+
+    return out.astype(np.float32)
 
 
 def injection_epoch(hdr) -> float:
@@ -81,8 +156,8 @@ def stitch(case, beds, img: dict, sens: dict, verbose: bool = True):
     if verbose:
         up = (case.header(beds[0])["bed_start_time"] - t_inj) / 60
         inj = dt.datetime.fromtimestamp(t_inj, dt.timezone.utc)
-        print(f"tiêm {inj:%Y-%m-%d %H:%M:%S} UTC   "
-              f"uptake tới bed {beds[0]}: {up:.1f} phút")
+        print(f"injection {inj:%Y-%m-%d %H:%M:%S} UTC   "
+              f"uptake up to bed {beds[0]}: {up:.1f} min")
         for n in beds:
             print(f"  bed {n}: × {factors[n]:.4f}")
 
@@ -101,7 +176,7 @@ def stitch(case, beds, img: dict, sens: dict, verbose: bool = True):
     vol = vol.astype(np.float32)
 
     if verbose:
-        print(f"\ntoàn thân: {vol.shape}  "
+        print(f"\nwhole body: {vol.shape}  "
               f"z {z0:.1f} .. {z0 + (nz - 1) * PLANE_MM:.1f} mm")
     return vol, z0, factors
 
@@ -114,12 +189,12 @@ def overlap_report(case, beds, img: dict, factors: dict, out=print):
     it collapses immediately — while the stitched image still looks like a body.
     """
     idx, _z0, _nz = plane_index(case, beds)
-    out(f"\n{'cặp bed':>10} {'plane chồng':>12} {'tương quan':>11} {'tỉ lệ biên độ':>14}")
+    out(f"\n{'bed pair':>10} {'overlap pl.':>12} {'correlation':>11} {'amplitude ratio':>14}")
     rows = []
     for a, b in zip(beds, beds[1:]):
         common = np.intersect1d(idx[a], idx[b])
         if not common.size:
-            out(f"{f'{a}-{b}':>10} {0:>12}   (không chồng)")
+            out(f"{f'{a}-{b}':>10} {0:>12}   (no overlap)")
             continue
         va = img[a][np.searchsorted(idx[a], common)].ravel() * factors[a]
         vb = img[b][np.searchsorted(idx[b], common)].ravel() * factors[b]

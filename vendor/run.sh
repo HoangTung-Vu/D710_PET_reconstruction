@@ -90,11 +90,13 @@ docker image inspect "$image" >/dev/null 2>&1 || {
     echo "(../Dockerfile records what is inside it.)" >&2
     exit 1; }
 
-# estimate.py drives this: --data mounts a data directory at /data, and
-# D710_JOB tells extract.gdb which job to source instead of /vendor/job.gdb.
+# estimate.py drives this: --data mounts a data directory at /data, D710_JOB
+# tells extract.gdb which job to source instead of /vendor/job.gdb, and D710_TOF
+# selects reconMethod 3 vs 2 (TOF scatter on or off).
 extra=()
 [[ -n "$DATA" ]] && extra+=(-v "$(cd "$DATA" && pwd):/data:ro")
 [[ -n "${D710_JOB:-}" ]] && extra+=(-e "D710_JOB=$D710_JOB")
+[[ -n "${D710_TOF:-}" ]] && extra+=(-e "D710_TOF=$D710_TOF")
 
 args=(--rm -i
       # NO --user here, unlike every other container this project starts.

@@ -37,11 +37,20 @@ Outputs (all float32 unless noted, view x v x u = 288 x 553 x 381):
 
     randoms.f32     randoms
     scatter.f32     model-based (SSS) scatter
+    scatter_tof.f32 the TOF distribution of that scatter, on GE's coarse grid
+                    (288 x 55 x 43 x 4 x 4); TOF runs only
     normdt.f32      normalisation x dead time   <- the sensitivity term
     norm_only.f32   normalisation alone; dead time = normdt / norm_only
     prompts.u16     the emission sinogram as the vendor loaded it
     singles.i32     per-crystal singles          576 x 24
     dt_int.f32      per-block dead time          256
+
+TOF is on by default, matching `d710 decode`.  It costs one extra SSS pass and
+41.6 MB, and it is the only way to get a scatter estimate that knows *when*
+along the LOR the photon scattered -- which is the whole point of TOF OSEM.
+`--no-tof` reverts to `reconMethod = 2`, the plain 3D OSEM job.  Measured on ped
+bed 1, turning it on leaves `randoms.f32` bit-identical and moves `scatter.f32`
+by 0.04 % in total, so the non-TOF outputs of a TOF run stay usable.
 
 No well-counter (WCC) scaling is applied anywhere, so the absolute scale is
 yours to calibrate -- but the exam's own WCC factor is recorded in
@@ -67,6 +76,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 OUTPUTS = ["randoms.f32", "scatter.f32", "normdt.f32", "norm_only.f32",
            "prompts.u16", "singles.i32", "dt_int.f32", "dt_mux.f32"]
+
+#: Written only when TOF is on, so it is kept out of OUTPUTS' completeness check
+#: and added back in `main` when it applies.
+TOF_OUTPUT = "scatter_tof.f32"
 
 
 def raw_header(raw):
@@ -221,12 +234,17 @@ def main():
                     help="do not resolve the norm from the exam header; fall "
                          "back to GE's selftest norm unless --norm is given")
     ap.add_argument("--out", required=True, help="output directory for THIS bed")
+    ap.add_argument("--no-tof", action="store_true",
+                    help="run GE's plain 3D OSEM job (reconMethod 2) instead of "
+                         "the TOF one, so no scatter_tof.f32 is produced")
     ap.add_argument("--table-location", type=float,
                     help="override the bed table position read from the RDF")
     ap.add_argument("--timeout", type=int, default=3000)
     ap.add_argument("--keep-going", action="store_true",
                     help="do not stop if the container exits non-zero")
     args = ap.parse_args()
+    tof = not args.no_tof
+    outputs = OUTPUTS + ([TOF_OUTPUT] if tof else [])
 
     container.ensure_image()
 
@@ -291,13 +309,19 @@ def main():
     # --------------------------------------------------------- 4. the recon
     # --out IS /out.  extract.gdb writes the final files straight into it, so
     # there is no staging directory to collide over and nothing to move.
-    for f in OUTPUTS:
+    # Clear scatter_tof.f32 even on a --no-tof run: leaving a stale one behind
+    # would let `to_stir` pick up the TOF distribution of an earlier, different
+    # estimate and pair it with this run's scatter.
+    for f in OUTPUTS + [TOF_OUTPUT]:
         for p in (os.path.join(out, f), os.path.join(out, f + ".json")):
             if os.path.exists(p):
                 os.remove(p)
 
     print("== running GE's pet_recon (this takes a few minutes)")
-    env = dict(os.environ, D710_JOB="/out/job.gdb")
+    print("   scatter: %s" % ("TOF (reconMethod 3)" if tof
+                              else "non-TOF (reconMethod 2)"))
+    env = dict(os.environ, D710_JOB="/out/job.gdb",
+               D710_TOF="1" if tof else "0")
     log = os.path.join(out, "extract.log")
     with open(log, "wb") as lf:
         rc = subprocess.run(["timeout", str(args.timeout),
@@ -310,7 +334,7 @@ def main():
                          "(use --keep-going to collect partial output)" % log)
 
     # --------------------------------------------------------- 5. the sidecar
-    got = [f for f in OUTPUTS if os.path.exists(os.path.join(out, f))]
+    got = [f for f in outputs if os.path.exists(os.path.join(out, f))]
 
     # The exam's own well-counter factor, recorded here rather than looked up
     # again at export time: this is the one moment the cal UID and a container
@@ -330,6 +354,11 @@ def main():
                                    "vendor selftest fallback"),
                    "mu_orientation": "DICOM LPS (measured; no flips)",
                    "table_position_mm": table, "rdf_header": info,
+                   # Which branch of GE's scatter model ran.  Travels with the
+                   # data because scatter.f32 alone does not say whether a TOF
+                   # distribution for it exists.
+                   "recon_method": 3 if tof else 2,
+                   "tof_scatter": tof,
                    "outputs": got, "container_exit": rc,
                    "wcc_applied": False,
                    "wcc_name": (wcc or {}).get("name"),
@@ -340,7 +369,7 @@ def main():
     print()
     for f in got:
         print("   %s/%s" % (out, f))
-    missing = [f for f in OUTPUTS if f not in got]
+    missing = [f for f in outputs if f not in got]
     if missing:
         print("\n!! missing: %s -- check %s" % (", ".join(missing), log),
               file=sys.stderr)

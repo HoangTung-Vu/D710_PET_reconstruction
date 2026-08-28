@@ -101,7 +101,7 @@ def test_load_sorts_by_z_not_by_file_name(tmp_path):
 
 def test_load_refuses_a_directory_with_no_ct(tmp_path):
     (tmp_path / "empty").mkdir()
-    with pytest.raises(SystemExit, match="không có instance CT"):
+    with pytest.raises(SystemExit, match="no CT instance"):
         attenuation.load(str(tmp_path / "empty"))
 
 
@@ -115,7 +115,7 @@ def test_load_refuses_a_tilted_series(tmp_path):
         ds = pydicom.dcmread(f)
         ds.ImageOrientationPatient = ["1", "0", "0", "0", "0.9848", "0.1736"]
         ds.save_as(f, enforce_file_format=True)
-    with pytest.raises(SystemExit, match="bị xiên"):
+    with pytest.raises(SystemExit, match="is tilted"):
         attenuation.load(d)
 
 
@@ -125,8 +125,8 @@ def test_load_refuses_a_partial_export(tmp_path):
     with pytest.raises(SystemExit) as e:
         attenuation.load(d)
     msg = str(e.value)
-    assert "bản export thiếu" in msg
-    assert "1 lỗ hổng" in msg                       # exactly one gap found
+    assert "incomplete export" in msg
+    assert "1 gaps" in msg                       # exactly one gap found
     assert "6.5 mm" in msg                          # and it is the doubled step
 
 
@@ -180,14 +180,14 @@ def test_mu_image_refuses_a_grid_that_is_not_a_bed(ct_dir, bed24, sirf):
     ad, _template = bed24
     ct = attenuation.load(ct_dir)
     wrong = ad.create_uniform_image(1.0, (10, 32, 32))
-    with pytest.raises(SystemExit, match="không phải"):
+    with pytest.raises(SystemExit, match="is not"):
         attenuation.mu_image(ct, _bed_start(ct), wrong)
 
 
 def test_mu_image_refuses_a_bed_far_outside_the_ct(ct_dir, bed24):
     _ad, template = bed24
     ct = attenuation.load(ct_dir)
-    with pytest.raises(SystemExit, match="thò ra"):
+    with pytest.raises(SystemExit, match="overhang"):
         attenuation.mu_image(ct, float(ct.z[-1]) + 50.0, template)
 
 
@@ -203,7 +203,7 @@ def test_mu_image_clamps_a_small_overhang_instead_of_filling_air(ct_dir, bed24, 
     over = float(ct.z[0]) - 1.0 * attenuation.PLANE_MM      # one plane short
     mu_in = attenuation.mu_image(ct, inside, template).as_array()
     mu_over = attenuation.mu_image(ct, over, template).as_array()
-    assert "cảnh báo" in capsys.readouterr().out
+    assert "warning" in capsys.readouterr().out
     # The overhanging plane repeats slice 0 rather than going to air (mu = 0).
     assert mu_over[0].max() > 0.5 * mu_in[0].max()
 
@@ -225,7 +225,7 @@ def test_overhang_tolerance_is_counted_in_pet_planes(ct_dir, bed24, tmp_path):
     for ct in (coarse, fine):
         assert float(ct.z[-1] - ct.z[0]) > span + out_mm, "series too short to test"
         attenuation.mu_image(ct, float(ct.z[0]) - out_mm, template)
-        with pytest.raises(SystemExit, match="thò ra"):
+        with pytest.raises(SystemExit, match="overhang"):
             attenuation.mu_image(ct, float(ct.z[0]) - 3.0 * attenuation.PLANE_MM,
                                  template)
 

@@ -1,30 +1,38 @@
 #!/usr/bin/env bash
-# d710_isolate_stir.sh -- y hệt `d710`, nhưng SIRF/STIR chạy trong DOCKER.
+# d710_isolate_stir.sh -- exactly like `d710`, but SIRF/STIR runs in DOCKER.
 #
-# Lý do tồn tại: `d710 osem` và `d710 export` là hai lệnh duy nhất cần SIRF, và
-# SIRF trên host phải cài đặt sâu vào hệ thống. Ở đây SIRF lấy từ một image dựng
-# sẵn (mặc định `sirf-local:0.1`), host chỉ cần bash + docker.
+# Why it exists: `d710 osem` and `d710 export` are the only two commands that
+# need SIRF, and SIRF on the host has to be installed deep into the system.
+# Here SIRF comes from a prebuilt image (default `sirf-local:0.1`), and the host
+# only needs bash + docker.
 #
 #   ./d710_isolate_stir.sh osem   --case ped [--beds ...] [--iters n]
 #   ./d710_isolate_stir.sh export --case ped [--format nifti|dicom]
 #
-# Mọi lệnh KHÁC (decode / estimate / tostir / exam / read / shell) được chuyển
-# thẳng cho `./d710` không sửa gì -- chúng vốn đã chạy trong `d710:full`.
+# Every OTHER command (decode / estimate / tostir / exam / read / shell) is
+# forwarded to `./d710` untouched -- they already run inside `d710:full`.  So
+# `--tof` / `--no-tof` pass through here unchanged; see `./d710 --help`.
 #
-# MOUNT ĐÚNG ĐƯỜNG DẪN HOST (`-v /x:/x`), không dịch đường dẫn:
-#   $D710_OUT           rw   cây đầu ra
-#   thư mục mã D710/    ro   `-m osem` / `-m utils.export` chạy từ đây
-#   thư mục CT          ro   lấy từ `--ct` và từ `work/bed<n>/to_stir.json`
-# Nhờ vậy đường CT tuyệt đối ghi trong sidecar và trong recon.npz vẫn đúng
-# nguyên si cả trong container lẫn khi mở lại trên host.
+# `--tof` / `--no-tof` configure decode + estimate, not osem: osem reads TOF
+# from the prompts header itself.  The two commands here SWALLOW them without
+# complaint, just like `./d710` -- so that `d710 osem --tof` and
+# `d710_isolate_stir.sh osem --tof` behave the same, instead of one staying
+# silent while the other dies because `-m osem`'s argparse does not know the flag.
 #
-# Biến môi trường:
-#   D710_OUT           gốc cây đầu ra (bắt buộc, hoặc truyền --out)
-#   D710_CASE          tên ca mặc định cho --case
-#   D710_SIRF_IMAGE    image SIRF          (mặc định sirf-local:0.1)
-#   D710_SIRF_ENV_SH   script env của SIRF trong image
-#                      (mặc định /opt/SIRF-SuperBuild/INSTALL/bin/env_sirf.sh)
-#   D710_PYTHON        python3 TRÊN HOST, chỉ để đọc sidecar (stdlib, không cần conda)
+# MOUNTED AT THE EXACT HOST PATHS (`-v /x:/x`), with no path translation:
+#   $D710_OUT           rw   output tree
+#   D710/ source dir    ro   `-m osem` / `-m utils.export` run from here
+#   CT directory        ro   taken from `--ct` and from `work/bed<n>/to_stir.json`
+# That way the absolute CT paths written in the sidecar and in recon.npz stay
+# valid verbatim, both inside the container and when reopened on the host.
+#
+# Environment variables:
+#   D710_OUT           root of the output tree (required, or pass --out)
+#   D710_CASE          default case name for --case
+#   D710_SIRF_IMAGE    SIRF image          (default sirf-local:0.1)
+#   D710_SIRF_ENV_SH   SIRF's env script inside the image
+#                      (default /opt/SIRF-SuperBuild/INSTALL/bin/env_sirf.sh)
+#   D710_PYTHON        python3 ON THE HOST, only to read sidecars (stdlib, no conda needed)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -39,13 +47,13 @@ CMD="${1:-}"
 case "$CMD" in
   ""|-h|--help|help) usage; exit $([[ -z "$CMD" ]] && echo 2 || echo 0) ;;
   osem|export) ;;
-  # Không phải bước SIRF -> `d710` gốc lo, không đụng vào.
+  # Not a SIRF step -> the original `d710` handles it, untouched.
   *) exec "$HERE/d710" "$@" ;;
 esac
 shift
 
 # ------------------------------------------------------------------ parse
-# Chỉ những cờ mà osem/export dùng; phần còn lại chuyển nguyên cho module
+# Only the flags osem/export use; everything else is forwarded to the module
 # (--iters, --subsets, --xy, ...).
 CASE="${D710_CASE:-}"; OUT=""; CT=""; BED=""; FORMAT=""; REST=()
 while [[ $# -gt 0 ]]; do
@@ -55,29 +63,32 @@ while [[ $# -gt 0 ]]; do
     --ct)      CT="$2"; shift 2 ;;
     --bed)     BED="$2"; shift 2 ;;
     --format)  FORMAT="$2"; shift 2 ;;
+    --tof|--no-tof|--collapse-tof) shift ;;      # decode+estimate flags; swallowed like `./d710`
+    --tof-mash) shift 2 ;;                       # same, but it takes an argument
     -h|--help) usage; exit 0 ;;
     *)         REST+=("$1"); shift ;;
   esac
 done
-[[ -n "$CASE" ]] || die "--case là bắt buộc (hoặc đặt \$D710_CASE)"
+[[ -n "$CASE" ]] || die "--case is required (or set \$D710_CASE)"
 
-# --out > $D710_OUT > lỗi -- cùng một luật với `d710`, cố ý không có mặc định.
+# --out > $D710_OUT > error -- the same rule as `d710`, deliberately no default.
 O="${OUT:-${D710_OUT:-}}"
-[[ -n "$O" ]] || die "không biết ghi đầu ra vào đâu.
-  đặt  export D710_OUT=~/UET/d710_out
-  hoặc truyền  --out <thư mục>"
+[[ -n "$O" ]] || die "no idea where to write the output.
+  set   export D710_OUT=~/UET/d710_out
+  or pass  --out <directory>"
 O="${O/#\~/$HOME}"
 mkdir -p "$O"
 O="$(cd "$O" && pwd)"
 
-docker image inspect "$SIRF_IMAGE" >/dev/null 2>&1 || die "không có image SIRF '$SIRF_IMAGE'.
-  đổi tên image bằng \$D710_SIRF_IMAGE, hoặc chạy bản host:
+docker image inspect "$SIRF_IMAGE" >/dev/null 2>&1 || die "no SIRF image '$SIRF_IMAGE'.
+  change the image name with \$D710_SIRF_IMAGE, or run the host version:
       conda activate petct_reconstruction && $HERE/d710 $CMD --case $CASE"
 
 # --------------------------------------------------------------- mount CT
-# Thư mục CT mà từng bed đã dùng: `work/bed<n>/to_stir.json` -> `estimate.ct`,
-# đúng chỗ `utils/terms.py:ct_dir()` đọc.  attenuation (osem) và header DICOM
-# (export) mở lại chúng theo đường TUYỆT ĐỐI, nên chúng phải có trong container.
+# The CT directory each bed used: `work/bed<n>/to_stir.json` -> `estimate.ct`,
+# exactly where `utils/terms.py:ct_dir()` reads it.  attenuation (osem) and the
+# DICOM header (export) reopen them by ABSOLUTE path, so they must be present
+# inside the container.
 ct_dirs_of() {
     local casedir="$1"
     [[ -d "$casedir" ]] || return 0
@@ -95,7 +106,8 @@ print("\n".join(seen))
 PY
 }
 
-# docker từ chối hai mount trùng đích, và mount lồng trong $O/$HERE là thừa.
+# docker refuses two mounts with the same target, and a mount nested inside
+# $O/$HERE is redundant.
 EXTRA_RO=()
 add_ro() {
     local d p q
@@ -115,13 +127,14 @@ while IFS= read -r d; do add_ro "$d"; done < <(ct_dirs_of "$O/$CASE")
 MOUNTS=(-v "$HERE:$HERE:ro" -v "$O:$O")
 for d in ${EXTRA_RO[@]+"${EXTRA_RO[@]}"}; do MOUNTS+=(-v "$d:$d:ro"); done
 
-# --------------------------------------------- docker BÊN TRONG container SIRF
-# `d710 export` đọc hệ số WCC từ các file cal DICOM nằm trong image `d710:full`
-# (utils/container.py), tức là nó tự gọi `docker run`.  Nên container SIRF phải
-# nói chuyện được với docker của HOST: mount socket + CLI, và vào đúng group của
-# socket.  Đây KHÔNG phải docker-in-docker: container con do daemon của host tạo,
-# nên mọi `-v` của nó là đường dẫn host -- và vì ở đây mount theo đường dẫn đồng
-# nhất, đường dẫn con nhìn thấy vẫn đúng.
+# ------------------------------------------------ docker INSIDE the SIRF container
+# `d710 export` reads the WCC factor from the DICOM cal files that live inside
+# the `d710:full` image (utils/container.py), i.e. it calls `docker run` itself.
+# So the SIRF container must be able to talk to the HOST's docker: mount the
+# socket + CLI, and join the socket's group.  This is NOT docker-in-docker: the
+# child container is created by the host daemon, so every `-v` of its own is a
+# host path -- and because everything here is mounted at identical paths, the
+# paths the child sees are still correct.
 DOCKER_BIN="$(command -v docker || true)"
 GROUPS_ADD=()
 if [[ "$CMD" == export && -S /var/run/docker.sock && -n "$DOCKER_BIN" ]]; then
@@ -130,7 +143,7 @@ if [[ "$CMD" == export && -S /var/run/docker.sock && -n "$DOCKER_BIN" ]]; then
     GROUPS_ADD=(--group-add "$(stat -c %g /var/run/docker.sock)")
 fi
 
-# ------------------------------------------------------------------ chạy
+# ------------------------------------------------------------------- run
 case "$CMD" in
   osem)   MOD=(osem --case "$CASE" ${BED:+--beds "$BED"} ${CT:+--ct "$CT"}) ;;
   export) MOD=(utils.export --case "$CASE" ${FORMAT:+--format "$FORMAT"}) ;;
@@ -139,21 +152,21 @@ MOD+=(${REST[@]+"${REST[@]}"})
 
 TTY=(); [[ -t 1 ]] && TTY=(-t)
 
-# --user: file sinh ra thuộc về người chạy, không phải root -- bind mount đưa
-# thẳng uid của container ra host.
-# --entrypoint bash: entrypoint gốc của image là start.sh của Jupyter.
-# env_sirf.sh phải source bằng tay: trong image nó chỉ được gọi từ ~/.bashrc của
-# jovyan, mà đây là shell không tương tác và $HOME đã đổi thành /tmp.
-# --no-healthcheck: HEALTHCHECK của image ping server Jupyter ở cổng 8888.  Ở đây
-# không có Jupyter nào chạy, nên container sẽ hiện "unhealthy" trong `docker ps`
-# suốt thời gian tái tạo -- báo động giả, tắt đi cho đỡ nhiễu.
+# --user: created files belong to the caller, not to root -- a bind mount passes
+# the container's uid straight through to the host.
+# --entrypoint bash: the image's own entrypoint is Jupyter's start.sh.
+# env_sirf.sh has to be sourced by hand: inside the image it is only called from
+# jovyan's ~/.bashrc, and this is a non-interactive shell with $HOME set to /tmp.
+# --no-healthcheck: the image's HEALTHCHECK pings a Jupyter server on port 8888.
+# No Jupyter runs here, so the container would show as "unhealthy" in `docker ps`
+# for the whole reconstruction -- a false alarm, turned off to cut the noise.
 ARGV=(docker run --rm -i "${TTY[@]}" --no-healthcheck
       --user "$(id -u):$(id -g)" ${GROUPS_ADD[@]+"${GROUPS_ADD[@]}"} -e HOME=/tmp
       -e D710_OUT="$O" -e PYTHONPATH="$HERE" -w "$O"
       "${MOUNTS[@]}" --entrypoint bash "$SIRF_IMAGE"
       -c '. "$0"; exec python3 -u -m "$@"' "$SIRF_ENV_SH" "${MOD[@]}")
 
-# In ra nguyên lệnh, cùng lối với utils/container.py: khi có gì sai thì cái cần
-# nhìn đầu tiên luôn là danh sách mount.
+# Print the whole command, same style as utils/container.py: when something goes
+# wrong, the mount list is always the first thing worth looking at.
 printf '+ %s\n' "${ARGV[*]}" >&2
 exec "${ARGV[@]}"

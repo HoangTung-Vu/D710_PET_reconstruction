@@ -9,6 +9,15 @@ Cached to `work/bed<n>/attn.hs` so it sits alongside the other three terms
 are present on disk and can be opened with any STIR tool. Recomputing costs
 ~16 s/bed.
 
+`af` is **always non-TOF**, even when the prompts are not. That is not a
+simplification: attenuation is the survival probability of a photon PAIR along
+the LOR and does not depend on when either photon arrived, which is why GE has
+one `COsemTofMain::GetAttnViewData(view, out)` with no TOF parameter and
+multiplies the same non-TOF buffer into every TOF bin. STIR agrees, and says so
+out loud — `BinNormalisationFromAttenuationImage` refuses TOF input with
+"currently can only handle non_TOF data", so the template used below has to be
+a non-TOF one whatever was passed in.
+
 ⚠ Delete `attn.hs`/`attn.s` if the CT or the image grid changes — the file cannot
 tell by itself.
 """
@@ -28,7 +37,7 @@ def check_same_exam(ct, hdr) -> None:
     got, want = ct.meta["frame_of_reference_uid"], hdr["sop_instance_uid"]
     if got != want:
         raise SystemExit(
-            "error: CT không thuộc cùng exam với bed này\n"
+            "error: this CT does not belong to the same exam as this bed\n"
             f"  CT  FrameOfReferenceUID {got}\n"
             f"  RDF sop_instance_uid    {want}")
 
@@ -51,6 +60,29 @@ class Attenuation:
     def describe(self) -> str:
         return self.ct.describe()
 
+    def _nontof_template(self, n: int):
+        """A non-TOF acquisition template with this bed's geometry.
+
+        `self.acq` is normally the prompts, which are TOF, and
+        `compute_attenuation_factors` rejects those outright. `normdt.hs` is the
+        obvious stand-in: `vendor/to_stir.py` writes it non-TOF from the same
+        header, for the same bed, so the geometry is identical by construction
+        and `terms.load` already requires it to exist.
+        """
+        import sirf.STIR as pet
+
+        if int(self.acq.dimensions()[0]) == 1:
+            return self.acq
+        p = self.case.work_bed(n) / "normdt.hs"
+        if not p.exists():
+            raise SystemExit(
+                "error: the prompts of bed %d are TOF, so the attenuation "
+                "factors need a\n"
+                "  non-TOF template, and %s is missing.\n"
+                "  run: d710 tostir --case %s --bed %d"
+                % (n, p, self.case.name, n))
+        return pet.AcquisitionData(str(p))
+
     def af(self, n: int):
         """Attenuation factors for bed `n` — survival probability ∈ (0, 1]."""
         import sirf.STIR as pet
@@ -65,13 +97,13 @@ class Attenuation:
         if path.exists():
             self._cache[n] = pet.AcquisitionData(str(path)).as_array()
             if self.verbose:
-                print(f"  bed {n}: attn.hs có sẵn         "
+                print(f"  bed {n}: attn.hs already present "
                       f"af mean {self._cache[n].mean():.4f}")
             return self._cache[n]
 
         path.parent.mkdir(parents=True, exist_ok=True)
         mu = attenuation.mu_image(self.ct, hdr["table_position_mm"], self.image)
-        af, _acf = attenuation.factors(self.acq, mu)
+        af, _acf = attenuation.factors(self._nontof_template(n), mu)
         af.write(str(path))                          # -> attn.hs + attn.s
         self._cache[n] = af.as_array()
         if self.verbose:

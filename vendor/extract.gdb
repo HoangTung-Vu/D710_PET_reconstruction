@@ -8,12 +8,52 @@
 #   normdt.f32     norm x dead time, 288 x 553 x 381 float32   <- the sensitivity
 #   randoms.f32    randoms sinogram, same shape, from GE's own prep stage
 #   scatter.f32    SSS scatter sinogram, same shape, from the mu-map
+#   scatter_tof.f32  TOF-resolved scatter, compact: 288 x 55 x 43 x 4 x 4
+#                  (TOF mode only -- see below)
 #   norm_only.f32  the same with dead time skipped, so
 #                  deadtime = normdt / norm_only
 #   prompts.u16    the emission sinogram as loaded, 288 x 553 x 381 uint16
 #   singles.i32    per-crystal singles, 576 x 24 int32
 #   dt_int.f32     per-block integral dead time, 256 float32
 #   dt_mux.f32     per-block mux dead time (all zero: dt_3dmux = 0)
+#
+# ---------------------------------------------------------------------------
+# TOF (D710_TOF=1, the default).  One job field and one constructor argument.
+#
+# CIgManager::Do3dEmissionImage builds the scatter model like this (0x42a6fc):
+#
+#     cmpl  $0x3, IgJobReq+0x59c            <- reconMethod
+#     sete  %cl
+#     call  CScatterFully3dModel::CScatterFully3dModel(this, ig, nThreads, cl)
+#
+# and the constructor stores that bool straight into m_bTOFDim (0x48e184,
+# member offset 0x2d8).  CreateTaskList then gates five extra task types on it:
+#
+#     MSCAT_CREATE_IMAGE_PATHS_TOF          MSCAT_CALC_SCAT_ESTIMATE_TOF
+#     MSCAT_COMBINE_DS_SINGLE_SCAT_SINO_TOF MSCAT_PHI_UPSAMPLE_TOF_SCAT
+#     MSCAT_CONVERT_PHIUP_SCAT_TO_3D
+#
+# So TOF scatter is NOT a second model and NOT a different stage: it is the same
+# CScatterFully3dModel this script already drives, told to keep the time axis.
+# GE runs five non-TOF SSS iterations to converge the tail fit and then one
+# final TOF pass, which is why scatter.f32 comes out of a TOF run essentially
+# unchanged (measured on ped bed 1: 0.04 % different in total, randoms bit-
+# identical) and scatter_tof.f32 arrives alongside it.
+#
+# The destination, CCorrDataMem::m_pScatterTOF, is allocated on EVERY run
+# already -- CorrDataMem.cpp:715, 288 views x 151360 B -- because the RDF header
+# says the data is TOF (emissionSorterData.dataOrientation == 7).  Without
+# reconMethod = 3 it simply stays empty.
+#
+# Its shape comes from the last call in PhiUpsampleTofScatter (0x484b92):
+#
+#     permute_41253(buf, 4, ds_nu, number_phi, 4, numTOF_bins, m_pScatterTOF)
+#
+# a 5-D permutation in column-major order, so per view the C-order layout is
+# [numTOF_bins][ds_nu][4][4] = 55 x 43 x 16 = 37840 floats.  ds_nu (43) is the
+# downsampled tangential axis; the two 4s are the downsampled axial sampling
+# that DOWNSAMPLE_EMIS_IMG produces (47 planes -> 4).
+# ---------------------------------------------------------------------------
 #
 # NO WCC is applied anywhere: neither ApplyNormalization nor ApplyDeadtime
 # touches wccActivityFactor / wccSensitivityFactor / m_fwccScaleFactor, and
@@ -41,12 +81,24 @@ import os
 # The job is sourced from here rather than by a fixed `source` line so that
 # estimate.py can point it at a generated one:  D710_JOB=/out/job.gdb
 JOB = os.environ.get("D710_JOB", "/vendor/job.gdb")
+# TOF is the default here for the same reason it is the default in `d710`: the
+# RDF stores 55 uncompressed TOF bins and GE's own VPFXS product is TOF OSEM, so
+# throwing the axis away discards information that is already on disk.
+TOF = os.environ.get("D710_TOF", "1") not in ("", "0", "no", "off")
 # --------------------------------------------------------------- 1. allocate
 # Everything here runs with the processing threads frozen (boot.gdb sets
 # scheduler-locking on).  Running any of it unlocked lets the pool race the
 # allocator inside CCyclicMemBuffer::AllocateMem.
 banner("job: %s" % JOB)
 gdb.execute("source " + JOB)
+
+# reconMethod has to be set BEFORE sharcCmpOpenDataFiles: CIgManager::
+# InitParamStruct and both ReallocateBuffs read it while sizing buffers.
+banner("recon method")
+if TOF:
+    gdb.execute("set var IgJobReq.reconMethod = 3")
+show("IgJobReq.reconMethod")
+say("   TOF scatter: %s\n" % ("ON" if TOF else "off (D710_TOF=0)"))
 
 banner("open data files + allocate buffers")
 show("((int (*)(void *)) sharcCmpOpenDataFiles)(&IgJobReq)")
@@ -72,12 +124,16 @@ NU    = int(deep("$ig->m_pParamStruct._M_ptr", "rawData", "number_u")       or 0
 NV    = int(deep("$ig->m_pParamStruct._M_ptr", "rawData", "number_v_theta") or 0)
 NVIEW = int(deep("$ig->m_pParamStruct._M_ptr", "rawData", "number_phi")     or 0)
 NTOF  = int(deep("$ig->m_pParamStruct._M_ptr", "rawData", "numTOF_bins")    or 0)
-say("   number_u=%d  number_v_theta=%d  number_phi=%d  numTOF_bins=%d\n"
-    % (NU, NV, NVIEW, NTOF))
+# scatterData.ds_nu is the downsampled tangential axis the SSS works on, and it
+# is the only geometry number scatter_tof.f32 needs that the other dumps do not.
+DSNU  = int(deep("$ig->m_pParamStruct._M_ptr", "scatterData", "ds_nu")      or 0)
+say("   number_u=%d  number_v_theta=%d  number_phi=%d  numTOF_bins=%d  ds_nu=%d\n"
+    % (NU, NV, NVIEW, NTOF, DSNU))
 if not (NU and NV and NVIEW):
     raise gdb.GdbError("geometry is zero -- InitParamStruct did not run")
 n = NU * NV
 GEOM = dict(number_u=NU, number_v_theta=NV, number_phi=NVIEW, numTOF_bins=NTOF,
+            ds_nu=DSNU,
             axes="view(%d) x v(%d) x u(%d)" % (NVIEW, NV, NU))
 
 # ------------------------------------------------------------------ 3. loads
@@ -294,14 +350,22 @@ else:
         % (len(mu), nviews * vsize, nviews, vsize))
 
 banner("contexts at nThreads = 1")
+# The scatter model's third argument IS the TOF switch -- see the TOF block at
+# the top of this file.  Do3dEmissionImage computes it as (reconMethod == 3), so
+# it is derived from the same job field rather than set twice.
 for nm_, size, expr in (
         ("$ctac", 344, "((int (*)(void *, void *)) 0x441510)($ctac, $ig)"),
-        ("$scat", 864, "((int (*)(void *, void *, int, char)) 0x48e070)($scat, $ig, 1, (char) 0)"),
+        ("$scat", 864, "((int (*)(void *, void *, int, char)) 0x48e070)"
+                       "($scat, $ig, 1, (char) %d)" % (1 if TOF else 0)),
         ("$prep", 896, "((int (*)(void *, void *, int, void *, void *)) 0x482500)"
                        "($prep, $ig, 1, $ctac, $scat)")):
     setv("set %s = (char *) malloc(%d)" % (nm_, size))
     setv("set $x = (int) memset(%s, 0, %d)" % (nm_, size))
     show(expr)
+# Read the byte back rather than trusting the argument landed: everything the
+# TOF path produces hangs off it, and a silent 0 here would look exactly like a
+# successful non-TOF run with an empty scatter_tof.f32.
+show("*(unsigned char *) ($scat + 0x2d8)")     # CScatterFully3dModel::m_bTOFDim
 show("((int (*)(void *)) 0x482290)($prep)")    # COsem3dPrep::Initialize
 show("((int (*)(void *)) 0x434de0)($prep)")    # CPrep3d::CreateTaskList
 
@@ -312,7 +376,7 @@ with unlocked():
     # failure is expected; unwindonsignal keeps it from poisoning the run.
     show("((int (*)(void *)) 0x435e70)($prep)")
 
-for b in ("m_pPrompts", "m_pRandoms", "m_pScatter", "m_pAttn"):
+for b in ("m_pPrompts", "m_pRandoms", "m_pScatter", "m_pScatterTOF", "m_pAttn"):
     show("$cd->%s->m_pCyclicMemBuff->m_uiCounterElement" % b)
 
 dump_views("$cd->m_pRandoms", "randoms.f32", "f4",
@@ -321,6 +385,24 @@ dump_views("$cd->m_pRandoms", "randoms.f32", "f4",
 dump_views("$cd->m_pScatter", "scatter.f32", "f4",
            dict(GEOM, produced_by="CScatterFully3dModel (SSS) via CPrep3d::DoTask",
                 note="from the mu-map injected into m_pAttn"))
+
+# The TOF distribution of that same scatter, on GE's own coarse grid.  Small
+# (41.6 MiB) because it is never upsampled here: GE upsamples it per view inside
+# the OSEM loop and so does utils/terms.py.
+if TOF:
+    dump_views("$cd->m_pScatterTOF", "scatter_tof.f32", "f4",
+               dict(GEOM,
+                    produced_by="CScatterFully3dModel with m_bTOFDim = 1, via "
+                                "MSCAT_CALC_SCAT_ESTIMATE_TOF -> "
+                                "MSCAT_PHI_UPSAMPLE_TOF_SCAT",
+                    axes="view(%d) x tof(%d) x ds_nu(%d) x 4 x 4"
+                         % (NVIEW, NTOF, DSNU),
+                    note="C order per view is [tof][ds_nu][4][4], from "
+                         "permute_41253(buf, 4, ds_nu, number_phi, 4, "
+                         "numTOF_bins, out) at PhiUpsampleTofScatter+0x2d2; "
+                         "ds_nu is the downsampled tangential axis, the two 4s "
+                         "the downsampled axial sampling.  Summing the TOF axis "
+                         "gives the same distribution as scatter.f32."))
 
 banner("DONE")
 end

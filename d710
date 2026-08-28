@@ -1,40 +1,84 @@
 #!/usr/bin/env bash
-# d710 -- điểm vào DUY NHẤT của pipeline tái tạo GE Discovery 710.
+# d710 -- the SINGLE entry point of the GE Discovery 710 reconstruction pipeline.
 #
-#   d710 decode   --raw D --case N [...]           RDF -> Interfile, mọi bed
-#   d710 estimate --raw D --ct D --case N [--bed n]  kernel GE -> .f32
-#   d710 tostir   --case N [--bed n]               .f32 -> Interfile STIR
+#   d710 decode   --raw D --case N [--tof]         RDF -> Interfile, all beds
+#   d710 estimate --raw D --ct D --case N [--bed n] [--tof]  GE kernel -> .f32
+#   d710 tostir   --case N [--bed n]               .f32 -> STIR Interfile
 #   d710 exam     --raw D --ct D --case N          = decode + estimate + tostir
-#   d710 osem     --case N [--beds ...] [--iters]  OSEM + ghép bed
+#   d710 osem     --case N [--beds ...] [--iters]  OSEM + bed stitching
 #   d710 export   --case N [--format nifti|dicom]  Bq/mL + SUV -> NIfTI/DICOM
-#   d710 read     <file.f32>                       đọc một dump của vendor
-#   d710 shell    [--case N]                       shell trong container
+#   d710 read     <file.f32>                       read one vendor dump
+#   d710 shell    [--case N]                       shell inside the container
 #
-# ĐẦU RA đi đâu:  --out  >  $D710_OUT  >  LỖI.
-# Cố ý không có mặc định — đầu ra không bao giờ được rơi vào cây mã.
+# TOF IS OFF BY DEFAULT.  Not because it does not work -- it does, and the TOF
+# scatter is the vendor's own (see below) -- but because of the time COST on
+# this machine:
+#
+#   measured 2026-08-27, ped bed 1, parallelproj, 16 cores, NO GPU
+#   non-TOF                          ~2 min/bed
+#   TOF 5 bins,  grid 128            9.6 min/bed
+#   TOF 5 bins,  grid 328 (default)  ~48 min/bed
+#   TOF 11 bins, grid 328            ~1.6 h/bed   -> 6 beds x 3 iter ~ 29 HOURS
+#
+# The machine has no NVIDIA GPU and parallelproj ships CPU-only here
+# (`libparallelproj_c.so`, no CUDA build) -- both in the conda env and in
+# `sirf-local:0.1`.  With a GPU the table above changes completely and TOF
+# should become the default again.
+#
+#   --tof            enable TOF (decode mashing 5 bins + estimate reconMethod 3)
+#   --tof-mash N     implies --tof, changes the mash factor (N must divide 55)
+#   --no-tof         the default; spelled out for clarity
+#
+# Why mash 5 when enabled.  55 = 5 x 11, so there are only four choices:
+# 1, 5, 11, 55.
+#
+#   mash  bins  RAM for OSEM  effective TOF resolution   SNR benefit retained
+#      1   55        40 GB      681 ps = 102 mm                     100 %
+#      5   11         8 GB      809 ps = 121 mm                      92 %
+#     11    5       3.6 GB     1191 ps = 179 mm                      76 %
+#
+# (effective resolution = quadrature of 675 ps -- TIMING_RESOLUTION in
+# sharcAp.cfg.XR -- with the bin width; SNR ~ sqrt(D/dx).)
+#
+# Keeping all 55 bins is NOT feasible here: OSEM needs prompts + background +
+# sensitivity at the same time, float32, which is ~40 GB, and this machine has
+# 30 GB.  Mashing 11 fits comfortably but its 982 ps bins are wider than the
+# scanner's 675 ps, losing 24 %.  Mashing 5 loses 8 %.
+#
+# When ENABLED, `estimate` runs TOF too: `IgJobReq.reconMethod = 3` turns on
+# `CScatterFully3dModel::m_bTOFDim`, and GE's own scatter model keeps the time
+# axis -> `scatter_tof.f32`.  That is the vendor's REAL TOF scatter, not an
+# improvised measured profile.  See `TOF_SCATTER_REVERSE.md`.
+#
+# One switch drives both decode and estimate, deliberately: TOF prompts with
+# non-TOF scatter make OSEM silently fall back to an improvised profile.
+#
+# WHERE THE OUTPUT GOES:  --out  >  $D710_OUT  >  ERROR.
+# Deliberately no default -- output must never land inside the source tree.
 #
 #   export D710_OUT=~/UET/d710_out
 #   d710 exam --raw ~/Documents/11082026/petRDFS/NQLHQWPU/SYQGRVWD/QONDOBON \
 #             --ct  ~/Documents/11082026/PESI/p1/e1/s2 --case ped
 #
-# IMAGE `d710:full` được BÀN GIAO NGUYÊN CON, không dựng lại:
+# The `d710:full` IMAGE is HANDED OVER AS-IS, never rebuilt:
 #   docker load -i d710_full.tar
-# Nên không có `d710 build`. Dockerfile ở đây chỉ để ghi lại image chứa gì —
-# dựng lại nó cần cây custom_tool/petsw/ 18 GB không nằm trong repo. Mã của
-# D710/ KHÔNG bake vào image mà mount lúc chạy, nên sửa mã là có hiệu lực ngay.
+# So there is no `d710 build`. The Dockerfile here only records what the image
+# contains -- rebuilding it needs the 18 GB custom_tool/petsw/ tree, which is
+# not in the repo. The D710/ code is NOT baked into the image but mounted at
+# run time, so code edits take effect immediately.
 #
-# CHẠY Ở ĐÂU
-#   decode, tostir, read   -> trong container (chỉ cần bash + docker)
-#   estimate               -> host điều phối bằng python3 TRẦN, mọi bước con
-#                             trong container
-#   osem, export           -> host, cần môi trường project (SIRF):
+# WHERE EACH COMMAND RUNS
+#   decode, tostir, read   -> in the container (only bash + docker needed)
+#   estimate               -> host orchestrates with a BARE python3, every
+#                             sub-step runs in the container
+#   osem, export           -> host, needs the project environment (SIRF):
 #                             conda activate petct_reconstruction
 #
-# Biến môi trường:
-#   D710_OUT     gốc cây đầu ra
-#   D710_IMAGE   tên image (mặc định d710:full)
-#   D710_CASE    tên ca mặc định cho --case
-#   D710_PYTHON  interpreter cho osem/export (mặc định python3)
+# Environment variables:
+#   D710_OUT     root of the output tree
+#   D710_IMAGE   image name (default d710:full)
+#   D710_CASE    default case name for --case
+#   D710_PYTHON  interpreter for osem/export (default python3)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -43,73 +87,83 @@ PY="${D710_PYTHON:-python3}"
 
 die() { echo "error: $*" >&2; exit 2; }
 usage() {
-    # Cả khối chú thích đầu file, tới dòng đầu tiên không phải chú thích.
+    # The whole comment block at the top of the file, up to the first non-comment line.
     awk 'NR==1 {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "${BASH_SOURCE[0]}"
 }
 
-# --------------------------------------------------------------- đầu ra
-# --out > $D710_OUT > lỗi.  Đây là chỗ duy nhất luật đó được áp trong bash;
-# phía Python nó nằm ở utils/paths.py:out_root().
+# --------------------------------------------------------------- output
+# --out > $D710_OUT > error.  This is the only place that rule is enforced in
+# bash; on the Python side it lives in utils/paths.py:out_root().
 resolve_out() {
     local o="${OUT:-${D710_OUT:-}}"
-    [[ -n "$o" ]] || die "không biết ghi đầu ra vào đâu.
-  đặt  export D710_OUT=~/UET/d710_out
-  hoặc truyền  --out <thư mục>
-  (cố ý không có mặc định: đầu ra không bao giờ được rơi vào cây mã)"
+    [[ -n "$o" ]] || die "no idea where to write the output.
+  set   export D710_OUT=~/UET/d710_out
+  or pass  --out <directory>
+  (deliberately no default: output must never land inside the source tree)"
     o="${o/#\~/$HOME}"
     mkdir -p "$o"
     (cd "$o" && pwd)
 }
 
-need_case() { [[ -n "${CASE:-}" ]] || die "--case là bắt buộc (hoặc đặt \$D710_CASE)"; }
+need_case() { [[ -n "${CASE:-}" ]] || die "--case is required (or set \$D710_CASE)"; }
 
 need_image() {
-    docker image inspect "$IMAGE" >/dev/null 2>&1 || die "không có image '$IMAGE'.
-  image được bàn giao nguyên con, không dựng lại:
+    docker image inspect "$IMAGE" >/dev/null 2>&1 || die "no image '$IMAGE'.
+  the image is handed over as-is, never rebuilt:
       docker load -i d710_full.tar
-  (D710/Dockerfile ghi lại image chứa gì.)"
+  (D710/Dockerfile records what the image contains.)"
 }
 
-# Chỉ `osem` và `export` cần môi trường project.  Kiểm SỚM, vì nếu không thì
-# `python3` trần đi thẳng vào `import numpy` sâu trong package rồi chết bằng
-# một ModuleNotFoundError chẳng nói lên điều gì.
+# Only `osem` and `export` need the project environment.  Check EARLY, because
+# otherwise a bare `python3` walks straight into an `import numpy` deep inside a
+# package and dies with a ModuleNotFoundError that says nothing.
 #
-# Hai lệnh cần hai thứ khác nhau, và khác nhau ở mức đáng phân biệt:
-#   osem   -> sirf.STIR, mà SIRF chỉ nạp khi env đã ACTIVATE (loader cần
-#             LD_LIBRARY_PATH của env; trỏ đúng đường dẫn interpreter là chưa đủ)
-#   export -> numpy + nibabel + pydicom, thuần Python, đường dẫn interpreter là đủ
-# Bắt `export` phải activate như `osem` là đòi thừa.
+# The two commands need two different things, and the difference matters:
+#   osem   -> sirf.STIR, and SIRF only loads once the env is ACTIVATED (the loader
+#             needs the env's LD_LIBRARY_PATH; the interpreter path is not enough)
+#   export -> numpy + nibabel + pydicom, pure Python, interpreter path is enough
+# Forcing `export` to activate like `osem` would be asking for too much.
 need_py() {
     local mods="$1" what="$2"
     "$PY" -c "import ${mods}" 2>/dev/null && return
-    die "\`$PY\` không nạp được: ${mods}
+    # The project's conda env only has `python`, NOT `python3`, so a bare
+    # `python3` is the system one -- and someone who just activated the right
+    # env gets told to go activate it. Try `python` before concluding, but only
+    # while PY is still the default: someone who set D710_PYTHON has chosen,
+    # and must not be silently overridden.
+    if [[ -z "${D710_PYTHON:-}" ]] && command -v python >/dev/null 2>&1 \
+       && python -c "import ${mods}" 2>/dev/null; then
+        PY=python
+        return
+    fi
+    die "\`$PY\` cannot import: ${mods}
   ${what}
       conda activate petct_reconstruction
-  hoặc trỏ thẳng:
+  or point straight at it:
       export D710_PYTHON=\$HOME/miniconda3/envs/petct_reconstruction/bin/python
-  (chỉ \`osem\` và \`export\` cần; decode/estimate/tostir chạy bằng python3 trần.)"
+  (only \`osem\` and \`export\` need it; decode/estimate/tostir run on a bare python3.)"
 }
 
 need_sirf() {
     need_py "numpy, sirf.STIR" \
-        "SIRF/STIR chỉ nạp khi env đã ACTIVATE — đường dẫn interpreter thôi là
-  chưa đủ, loader cần cả LD_LIBRARY_PATH của env:"
+        "SIRF/STIR only loads once the env is ACTIVATED -- the interpreter path
+  alone is not enough, the loader needs the env's LD_LIBRARY_PATH too:"
 }
 
 need_export_py() {
-    need_py "numpy, nibabel, pydicom" "Cần môi trường project:"
+    need_py "numpy, nibabel, pydicom" "The project environment is required:"
 }
 
-# docker run với --user, để mọi file sinh ra thuộc về người chạy.  Không có nó
-# thì tất cả dưới thư mục đầu ra quay về sở hữu của root.
+# docker run with --user, so every file created belongs to the caller.  Without
+# it everything under the output directory ends up owned by root.
 #
-# Là hàm nên KHÔNG `exec` được — người gọi để nó chạy bình thường rồi tự thoát
-# theo mã trả về.  (Ngoại lệ duy nhất của --user là đường pet_recon, xem
-# vendor/run.sh.)
+# It is a function, so it CANNOT `exec` -- callers let it run normally and then
+# exit on its return code.  (The only exception to --user is the pet_recon path,
+# see vendor/run.sh.)
 drun() { docker run --rm -i --user "$(id -u):$(id -g)" -e HOME=/tmp "$@"; }
 
-# beds_from <dir> <glob> <hậu tố cần bỏ> -> mảng $beds, đã sắp theo SỐ.
-# Sắp theo số chứ không theo chuỗi: bed10 phải đứng sau bed9, không phải sau bed1.
+# beds_from <dir> <glob> <suffix to strip> -> array $beds, sorted NUMERICALLY.
+# Numerically, not lexically: bed10 must come after bed9, not after bed1.
 beds=()
 beds_from() {
     local dir="$1" pat="$2" strip="$3" p b
@@ -124,8 +178,8 @@ beds_from() {
     mapfile -t beds < <(printf '%s\n' "${beds[@]}" | sort -n)
 }
 
-# SINO* nào ứng với bed n — lấy từ sidecar mà decode đã ghi, không đoán theo
-# thứ tự file: số bed nằm TRONG header, và LIST0000 là bed 1.
+# Which SINO* corresponds to bed n -- taken from the sidecar decode wrote, never
+# guessed from file order: the bed number is IN the header, and LIST0000 is bed 1.
 sino_for_bed() {
     local dec="$1" n="$2"
     "$PY" - "$dec/bed$n.json" <<'PY'
@@ -139,7 +193,15 @@ CMD="${1:-}"; shift || true
 case "$CMD" in ""|-h|--help|help) usage; exit $([[ -z "$CMD" ]] && echo 2 || echo 0) ;; esac
 
 RAW=""; CT=""; LISTS=""; CASE="${D710_CASE:-}"; OUT=""; BED=""
-FORCE=0; LISTMODE=0; TOF="--collapse-tof"; FORMAT=""; REST=()
+# TOF is OFF by default (see top of file: 29 hours vs 12 minutes for a 6-bed case).
+#
+# ONE switch, three derived flags, because all three steps must agree:
+#   TOF       -> `gerdf convert --collapse-tof`   (decode)
+#   TOF_MASH  -> `gerdf convert --tof-mash N`     (decode)
+#   NO_TOF    -> `estimate.py --no-tof`           (reconMethod 2 instead of 3)
+# TOF prompts with non-TOF scatter make OSEM silently fall back to an improvised
+# profile; the reverse wastes the scatter's TOF axis. So they cannot be set apart.
+FORCE=0; LISTMODE=0; TOF_ON=0; MASH=5; FORMAT=""; REST=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --raw)      RAW="$2"; shift 2 ;;
@@ -150,61 +212,75 @@ while [[ $# -gt 0 ]]; do
     --bed)      BED="$2"; shift 2 ;;
     --format)   FORMAT="$2"; shift 2 ;;
     --listmode) LISTMODE=1; shift ;;
-    --tof)      TOF=""; shift ;;
+    --tof)      TOF_ON=1; shift ;;
+    --no-tof|--collapse-tof) TOF_ON=0; shift ;;
+    # --tof-mash IMPLIES --tof: asking for a mash factor while running non-TOF is
+    # meaningless, and ignoring it silently is the kind of bug that only surfaces
+    # after hours of reconstruction.
+    --tof-mash) TOF_ON=1; MASH="$2"; shift 2 ;;
     --force)    FORCE=1; shift ;;
     -h|--help)  usage; exit 0 ;;
     *)          REST+=("$1"); shift ;;
   esac
 done
 
+# One switch -> three derived flags, derived in exactly one place.
+if (( TOF_ON )); then
+    TOF=""; TOF_MASH="--tof-mash $MASH"; NO_TOF=""
+else
+    TOF="--collapse-tof"; TOF_MASH=""; NO_TOF="--no-tof"
+fi
+
 case "$CMD" in
 
 # --------------------------------------------------------------- decode
 decode)
     need_case; need_image
-    [[ -n "$RAW" ]] || die "--raw là bắt buộc"
-    [[ -d "$RAW" ]] || die "không có thư mục raw: $RAW"
+    [[ -n "$RAW" ]] || die "--raw is required"
+    [[ -d "$RAW" ]] || die "no such raw directory: $RAW"
     O="$(resolve_out)"; DEC="$O/$CASE/decoded"
     mkdir -p "$DEC"
     RAW="$(cd "$RAW" && pwd)"
 
     mounts=(-v "$RAW:/raw:ro" -v "$DEC:/out" -v "$HERE/decode:/decode:ro")
     if (( LISTMODE )); then
-        [[ -n "$LISTS" ]] || die "--listmode cần --lists <thư mục petLists>"
-        [[ -d "$LISTS" ]] || die "không có thư mục lists: $LISTS"
+        [[ -n "$LISTS" ]] || die "--listmode needs --lists <petLists directory>"
+        [[ -d "$LISTS" ]] || die "no such lists directory: $LISTS"
         mounts+=(-v "$(cd "$LISTS" && pwd):/lists:ro")
     fi
-    # KHÔNG COPY GÌ VÀO CONTAINER: raw mount read-only, mọi kết quả rơi lên
-    # mount đầu ra.  Một exam là hàng chục GB.
-    drun "${mounts[@]}" "$IMAGE" bash /decode/decode_in.sh "$LISTMODE" "$FORCE" "$TOF"
+    # NOTHING IS COPIED INTO THE CONTAINER: raw is mounted read-only, every
+    # result lands on the output mount.  One exam is tens of GB.
+    drun "${mounts[@]}" "$IMAGE" bash /decode/decode_in.sh \
+         "$LISTMODE" "$FORCE" "$TOF $TOF_MASH"
     exit $?
     ;;
 
 # ------------------------------------------------------------- estimate
 estimate)
     need_case; need_image
-    [[ -n "$RAW" && -n "$CT" ]] || die "--raw và --ct đều bắt buộc"
-    [[ -d "$RAW" ]] || die "không có thư mục raw: $RAW"
-    [[ -d "$CT"  ]] || die "không có thư mục CT: $CT"
+    [[ -n "$RAW" && -n "$CT" ]] || die "--raw and --ct are both required"
+    [[ -d "$RAW" ]] || die "no such raw directory: $RAW"
+    [[ -d "$CT"  ]] || die "no such CT directory: $CT"
     O="$(resolve_out)"; DEC="$O/$CASE/decoded"
-    [[ -d "$DEC" ]] || die "ca $CASE chưa decode; chạy: d710 decode --raw ... --case $CASE"
+    [[ -d "$DEC" ]] || die "case $CASE has not been decoded; run: d710 decode --raw ... --case $CASE"
 
     if [[ -n "$BED" ]]; then beds=("$BED"); else beds_from "$DEC" 'bed*.hs' .hs; fi
-    [[ ${#beds[@]} -gt 0 ]] || die "không thấy bed nào trong $DEC"
+    [[ ${#beds[@]} -gt 0 ]] || die "no bed found in $DEC"
 
     rc=0
     for n in "${beds[@]}"; do
         VOUT="$O/$CASE/vendor/bed$n"
         if (( ! FORCE )) && [[ -f "$VOUT/normdt.f32" ]]; then
-            echo "=== bed $n: đã có $VOUT -- bỏ qua"; continue
+            echo "=== bed $n: $VOUT already exists -- skipping"; continue
         fi
         sino="$(sino_for_bed "$DEC" "$n")"
         echo "=============== bed $n  <- $sino ==============="
-        # estimate.py copy raw vào <out>/data/, nên --raw phải là file SINO*
-        # thật, không phải symlink trong decoded/.
+        # estimate.py copies raw into <out>/data/, so --raw must be the real
+        # SINO* file, not the symlink in decoded/.
         PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}" \
             "$PY" "$HERE/vendor/estimate.py" \
-                --raw "$RAW/$sino" --ct "$CT" --out "$VOUT" || { rc=1; echo "  !! bed $n hỏng" >&2; }
+                --raw "$RAW/$sino" --ct "$CT" --out "$VOUT" $NO_TOF \
+                || { rc=1; echo "  !! bed $n failed" >&2; }
     done
     exit "$rc"
     ;;
@@ -214,9 +290,10 @@ tostir)
     need_case; need_image
     O="$(resolve_out)"; DEC="$O/$CASE/decoded"
     if [[ -n "$BED" ]]; then beds=("$BED"); else beds_from "$O/$CASE/vendor" 'bed*' ''; fi
-    [[ ${#beds[@]} -gt 0 ]] || die "không thấy bed nào đã estimate trong $O/$CASE/vendor"
+    [[ ${#beds[@]} -gt 0 ]] || die "no estimated bed found in $O/$CASE/vendor"
 
-    # numpy đủ rồi, và image có sẵn -- nên bước này không cần môi trường project.
+    # numpy is enough, and the image already has it -- so this step does not need
+    # the project environment.
     rc=0
     for n in "${beds[@]}"; do
         echo "=============== tostir bed $n ==============="
@@ -225,7 +302,7 @@ tostir)
              python3 /d710/vendor/to_stir.py \
                 --vendor "/case/vendor/bed$n" \
                 --template "/case/decoded/bed$n.hs" \
-                --out "/case/work/bed$n" || { rc=1; echo "  !! bed $n hỏng" >&2; }
+                --out "/case/work/bed$n" || { rc=1; echo "  !! bed $n failed" >&2; }
     done
     exit "$rc"
     ;;
@@ -233,19 +310,22 @@ tostir)
 # ------------------------------------------------------------------ exam
 exam)
     need_case
-    [[ -n "$RAW" && -n "$CT" ]] || die "--raw, --ct và --case đều bắt buộc"
+    [[ -n "$RAW" && -n "$CT" ]] || die "--raw, --ct and --case are all required"
     args=(--case "$CASE"); [[ -n "$OUT" ]] && args+=(--out "$OUT")
     (( FORCE )) && args+=(--force)
-    echo "=============== bước 1: giải mã mọi bed ==============="
+    # The TOF choice must reach BOTH decode AND estimate: if prompts and scatter
+    # disagree, OSEM has to improvise, and no command reports an error.
+    if (( TOF_ON )); then args+=(--tof-mash "$MASH"); else args+=(--no-tof); fi
+    echo "=============== step 1: decode every bed ==============="
     "$HERE/d710" decode "${args[@]}" --raw "$RAW"
     echo
-    echo "=============== bước 2: kernel của GE ==============="
+    echo "=============== step 2: GE's kernel ==============="
     "$HERE/d710" estimate "${args[@]}" --raw "$RAW" --ct "$CT"
     echo
-    echo "=============== bước 3: -> Interfile STIR ==============="
+    echo "=============== step 3: -> STIR Interfile ==============="
     "$HERE/d710" tostir "${args[@]}"
     echo
-    echo "xong.  tiếp:  d710 osem --case $CASE"
+    echo "done.  next:  d710 osem --case $CASE"
     ;;
 
 # ------------------------------------------------------------------ osem
@@ -269,7 +349,7 @@ export)
 # ------------------------------------------------------------------ read
 read)
     need_image
-    [[ ${#REST[@]} -gt 0 ]] || die "cần một file, ví dụ: d710 read \$D710_OUT/ped/vendor/bed6/scatter.f32"
+    [[ ${#REST[@]} -gt 0 ]] || die "a file is required, e.g.: d710 read \$D710_OUT/ped/vendor/bed6/scatter.f32"
     f="$(cd "$(dirname "${REST[0]}")" && pwd)/$(basename "${REST[0]}")"
     drun -v "$(dirname "$f"):/data:ro" -v "$HERE:/d710:ro" "$IMAGE" \
         python3 /d710/vendor/read_out.py "/data/$(basename "$f")" "${REST[@]:1}"
@@ -283,7 +363,7 @@ shell)
     if [[ -n "$CASE" ]]; then
         O="$(resolve_out)"; mkdir -p "$O/$CASE"
         mounts+=(-v "$O/$CASE:/case")
-        echo ">> ca $CASE mount ở /case" >&2
+        echo ">> case $CASE mounted at /case" >&2
     fi
     exec docker run --rm -it --user "$(id -u):$(id -g)" -e HOME=/tmp \
         -e PYTHONPATH=/opt/custom_tool:/d710 \
@@ -295,5 +375,5 @@ shell)
     ;;
 
 *)
-    echo "lệnh không biết: $CMD" >&2; echo >&2; usage >&2; exit 2 ;;
+    echo "unknown command: $CMD" >&2; echo >&2; usage >&2; exit 2 ;;
 esac

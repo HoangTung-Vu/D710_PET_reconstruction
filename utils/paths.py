@@ -39,10 +39,10 @@ class NoOutputRoot(SystemExit):
 
     def __init__(self) -> None:
         super().__init__(
-            "error: không biết ghi đầu ra vào đâu.\n"
-            "  đặt  export D710_OUT=~/UET/d710_out\n"
-            "  hoặc truyền  --out <thư mục>\n"
-            "  (cố ý không có mặc định: đầu ra không bao giờ được rơi vào cây mã)")
+            "error: no idea where to write the output.\n"
+            "  set   export D710_OUT=~/UET/d710_out\n"
+            "  or pass  --out <directory>\n"
+            "  (deliberately no default: output must never land inside the source tree)")
 
 
 def out_root(explicit: str | os.PathLike | None = None) -> Path:

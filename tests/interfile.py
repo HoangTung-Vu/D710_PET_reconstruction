@@ -49,11 +49,20 @@ def _check_layout(hs: str, k: dict[str, str]) -> None:
 
 
 def shape(hs: str) -> tuple[int, int, int, int]:
-    """`(tof, axial, view, tangential)` -- STIR's own storage order."""
+    """`(tof, axial, view, tangential)` -- STIR's own storage order.
+
+    Axis 5 is the timing-position axis and is absent from a non-TOF header, so
+    it defaults to 1.  It has to be **read**, not assumed: a TOF `.s` is
+    `n_tof` times the size, and hard-coding 1 builds a memmap over the first
+    slice of the file only -- which looks like a perfectly ordinary sinogram
+    holding a fraction of the counts.
+    """
     k = keys(hs)
     _check_layout(hs, k)
     axial = [int(n) for n in re.findall(r"-?\d+", k["matrix size [3]"])]
-    return (1, sum(axial), int(k["matrix size [2]"]), int(k["matrix size [1]"]))
+    n_tof = int(k.get("matrix size [5]", 1))
+    return (n_tof, sum(axial), int(k["matrix size [2]"]),
+            int(k["matrix size [1]"]))
 
 
 def axial_sizes(hs: str) -> list[int]:
@@ -82,9 +91,15 @@ def load(hs: str) -> np.memmap:
 
 
 def per_plane(hs: str) -> np.ndarray:
-    """Sum over view and tangential, in float64, one value per stored plane."""
+    """Sum over TOF, view and tangential, in float64, one value per stored plane.
+
+    **Over TOF as well**, so the result is per LOR whether or not the file has a
+    timing axis.  Every invariant built on this compares prompts against
+    non-TOF terms (randoms, scatter), and taking one timing bin of the prompts
+    would compare a fraction of them against the whole of a correction.
+    """
     a = load(hs)
-    return a[0].sum(axis=(1, 2), dtype=np.float64)
+    return a.sum(axis=(0, 2, 3), dtype=np.float64)
 
 
 def edge_distance(hs: str) -> np.ndarray:

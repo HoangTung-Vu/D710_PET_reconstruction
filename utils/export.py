@@ -200,17 +200,17 @@ def main(argv=None) -> int:
         prog="export", description=main.__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--case", required=True)
-    ap.add_argument("--out", help="gốc đầu ra; mặc định $D710_OUT")
+    ap.add_argument("--out", help="output root; defaults to $D710_OUT")
     ap.add_argument("--format", choices=("nifti", "dicom", "both"), default="both")
     ap.add_argument("--K", type=float,
-                    help="(Bq/mL)/(count/voxel). Mặc định: K riêng của export "
-                         "($D710_K hoặc quant.K_EXPORT); không có thì WCC của "
-                         "chính exam; không có nữa thì CHẶN TRÊN theo liều.")
+                    help="(Bq/mL)/(count/voxel). Default: export's own K "
+                         "($D710_K or quant.K_EXPORT); failing that, the exam's "
+                         "own WCC; failing that, the dose-based UPPER BOUND.")
     args = ap.parse_args(argv)
 
     C = get_case(args.case, args.out)
     if not C.recon.exists():
-        raise SystemExit("error: chưa có %s -- chạy `d710 osem --case %s` trước"
+        raise SystemExit("error: %s does not exist -- run `d710 osem --case %s` first"
                          % (C.recon, C.name))
 
     z = np.load(C.recon, allow_pickle=False)
@@ -221,11 +221,11 @@ def main(argv=None) -> int:
     # --- K ---------------------------------------------------------------
     K = args.K
     if K is not None:
-        print(f"K từ --K = {K:,.2f}")
+        print(f"K from --K = {K:,.2f}")
     if K is None:
         K = quant.k_export()
         if K is not None:
-            print(f"K riêng của export = {K:,.2f}"
+            print(f"export's own K = {K:,.2f}"
                   + ("   (D710_K)" if os.environ.get("D710_K") else
                      "   (quant.K_EXPORT)"))
     if K is None:
@@ -235,10 +235,10 @@ def main(argv=None) -> int:
             print(f"  hrActivityFactor = {f:.6f}   (× {quant.WCC_UNIT_SCALE:g}"
                   f" = {K:,.2f})")
     k_dose = quant.k_from_dose(vol, vox, quant.dose_bq(hdr))
-    print(f"K chặn trên (100 % liều trong FOV) = {k_dose:,.1f}")
+    print(f"K upper bound (100 % of the dose inside the FOV) = {k_dose:,.1f}")
     if K is None:
         K = k_dose
-        print("không có WCC -> lấy mốc liều")
+        print("no WCC -> falling back to the dose bound")
 
     r = quant.report(vol, K, hdr, vox)
 
@@ -248,7 +248,7 @@ def main(argv=None) -> int:
         for name, arr in (("bqml", r["bqml"]), ("suvbw", r["suv"])):
             p = write_nifti(arr, str(C.export / f"{C.name}_{name}.nii.gz"),
                             vox[2], vox[1], vox[0], z0)
-            print(f"ghi {p}")
+            print(f"wrote {p}")
     if args.format in ("dicom", "both"):
         # The DICOM deliberately carries ONLY Bq/mL: the viewer computes SUV
         # itself from Units=BQML + dose + weight, and the reader can switch
@@ -258,10 +258,10 @@ def main(argv=None) -> int:
         paths = write_dicom(r["bqml"], str(C.export / "dicom"), hdr,
                             vox[2], vox[1], vox[0], z0,
                             series_desc=f"OSEM SIRF {n_it}x{n_sub} BQML")
-        print(f"ghi {len(paths)} file DICOM -> {C.export / 'dicom'}")
-        print("   Units=BQML + liều + cân nặng + DecayCorrection=START -> "
-              "viewer tự tính SUV;\n   FrameOfReferenceUID = của exam -> "
-              "tự chồng khít CT.")
+        print(f"wrote {len(paths)} DICOM files -> {C.export / 'dicom'}")
+        print("   Units=BQML + dose + weight + DecayCorrection=START -> "
+              "the viewer computes SUV itself;\n   FrameOfReferenceUID = the "
+              "exam's -> it overlays the CT exactly.")
     return 0
 
 

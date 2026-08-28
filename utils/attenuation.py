@@ -50,7 +50,7 @@ class CTAC:
         return (f"CT {self.meta['series_description']}: {self.hu.shape[0]} slice "
                 f"{self.hu.shape[1]}x{self.hu.shape[2]} @ {self.pixel_mm:.4f} mm, "
                 f"{self.kvp:.0f} kVp, z {self.z[0]:.2f}..{self.z[-1]:.2f} "
-                f"bước {self.dz:.4f} mm")
+                f"step {self.dz:.4f} mm")
 
 
 def load(path: str) -> CTAC:
@@ -68,12 +68,12 @@ def load(path: str) -> CTAC:
         if getattr(d, "Modality", None) == "CT":
             ds.append(d)
     if not ds:
-        raise SystemExit(f"lỗi: không có instance CT nào dưới {path}")
+        raise SystemExit(f"error: no CT instance under {path}")
     ds.sort(key=lambda d: float(d.ImagePositionPatient[2]))
 
     iop = [float(v) for v in ds[0].ImageOrientationPatient]
     if not np.allclose(iop, [1, 0, 0, 0, 1, 0], atol=1e-6):
-        raise SystemExit(f"lỗi: {path} bị xiên (IOP {iop}); resample trước đã")
+        raise SystemExit(f"error: {path} is tilted (IOP {iop}); resample it first")
 
     z = np.array([float(d.ImagePositionPatient[2]) for d in ds])
     step = np.round(np.diff(z), 3)
@@ -83,10 +83,10 @@ def load(path: str) -> CTAC:
         modal = float(np.bincount((step * 100).astype(int)).argmax()) / 100
         gaps = step[np.abs(step - modal) > 0.01]
         raise SystemExit(
-            f"lỗi: {path} là bản export thiếu, không phải series thưa đều.\n"
-            f"  {len(ds)} slice, bước {modal:.2f} mm ở {len(step) - len(gaps)}/"
-            f"{len(step)} khoảng, {len(gaps)} lỗ hổng tới {gaps.max():.1f} mm.\n"
-            f"  Một bed cần {PLANES_PER_BED * PLANE_MM:.1f} mm liên tục.")
+            f"error: {path} is an incomplete export, not an evenly sparse series.\n"
+            f"  {len(ds)} slices, step {modal:.2f} mm over {len(step) - len(gaps)}/"
+            f"{len(step)} intervals, {len(gaps)} gaps up to {gaps.max():.1f} mm.\n"
+            f"  One bed needs {PLANES_PER_BED * PLANE_MM:.1f} mm of continuous coverage.")
 
     hu = np.stack([d.pixel_array * float(getattr(d, "RescaleSlope", 1))
                    + float(getattr(d, "RescaleIntercept", 0)) for d in ds])
@@ -117,10 +117,10 @@ def mu_image(ct: CTAC, table_position_mm: float, template, edge_tol_planes: floa
 
     shape = tuple(int(s) for s in template.shape)
     if shape[0] != PLANES_PER_BED or shape[1] != shape[2]:
-        raise SystemExit(f"lỗi: lưới ảnh {shape} không phải (47, xy, xy)")
+        raise SystemExit(f"error: image grid {shape} is not (47, xy, xy)")
     vz, vy, vx = (float(v) for v in template.voxel_sizes())
     if abs(vy - vx) > 1e-3:
-        raise SystemExit(f"lỗi: voxel ngang không đẳng hướng {vy} × {vx}")
+        raise SystemExit(f"error: transaxial voxels are not isotropic {vy} × {vx}")
 
     # Axially: PET plane p sits at table_position + p·PLANE_MM.
     zc = table_position_mm + np.arange(PLANES_PER_BED) * PLANE_MM
@@ -134,15 +134,15 @@ def mu_image(ct: CTAC, table_position_mm: float, template, edge_tol_planes: floa
     over = max(out_mm - ct.dz / 2, 0.0) / PLANE_MM
     if over > edge_tol_planes:
         raise SystemExit(
-            f"lỗi: bed ở {table_position_mm:.2f} mm cần CT z "
-            f"{zc[0]:.1f}..{zc[-1]:.1f} mm, series chỉ phủ "
+            f"error: bed at {table_position_mm:.2f} mm needs CT z "
+            f"{zc[0]:.1f}..{zc[-1]:.1f} mm, the series only covers "
             f"{ct.z[0]:.1f}..{ct.z[-1]:.1f} mm "
-            f"(thò ra {out_mm:.1f} mm = {over:.2f} plane > cho phép "
+            f"(overhang {out_mm:.1f} mm = {over:.2f} planes > tolerance "
             f"{edge_tol_planes})")
     if over > 0:
         # Report the ACTUAL overhang (mm), not the amount over tolerance.
-        print(f"  cảnh báo: bed {table_position_mm:.2f} mm thò khỏi CT "
-              f"{out_mm:.1f} mm; kẹp về lát CT ngoài cùng")
+        print(f"  warning: bed {table_position_mm:.2f} mm overhangs the CT by "
+              f"{out_mm:.1f} mm; clamping to the outermost CT slice")
         gz = np.clip(gz, 0.0, len(ct.z) - 1.0)
 
     # Transversely: the PET grid is centred at index xy//2, the scanner axis at DICOM (x, y) = (0, 0).

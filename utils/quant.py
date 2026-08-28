@@ -37,19 +37,21 @@ import numpy as np
 #: Only a NEMA measurement will settle it.
 WCC_UNIT_SCALE = 1e4
 
-#: `K` riêng cho phần export, tính bằng (Bq/mL)/(count/voxel).
+#: Export's own `K`, in (Bq/mL)/(count/voxel).
 #:
-#: Đây là hệ số ĐỘC LẬP với WCC của máy: đặt thẳng con số đo được vào đây
-#: (hoặc qua biến môi trường `D710_K`) thay vì nhân/chia `hrActivityFactor`
-#: với một quy ước đơn vị chưa dẫn ra được. `None` = chưa có, export sẽ lùi
-#: về WCC rồi tới chặn trên theo liều.
+#: This factor is INDEPENDENT of the scanner's WCC: put the measured number here
+#: directly (or via the `D710_K` environment variable) instead of multiplying or
+#: dividing `hrActivityFactor` by a unit convention that has never been derived.
+#: `None` = not set, and export falls back to the WCC and then to the dose-based
+#: upper bound.
 #:
-#: ⚠ Chỉ đúng cho ĐÚNG chuỗi hiệu chỉnh đã đo ra nó và cho MỘT cỡ voxel.
+#: ⚠ Only valid for the EXACT correction chain it was measured with, and for ONE
+#: voxel size.
 K_EXPORT = None
 
 
 def k_export():
-    """`K` riêng của export: `D710_K` > `K_EXPORT` > `None`."""
+    """Export's own `K`: `D710_K` > `K_EXPORT` > `None`."""
     raw = os.environ.get("D710_K")
     if raw:
         return float(raw)
@@ -82,23 +84,23 @@ def wcc_activity_factor(case, bed: int, verbose: bool = True):
 
     if est.get("wcc_activity_factor"):
         if verbose:
-            print("WCC exam khai báo: %s" % est.get("wcc_name", "?"))
+            print("WCC declared by the exam: %s" % est.get("wcc_name", "?"))
         return float(est["wcc_activity_factor"])
 
     uid = (est.get("rdf_header") or {}).get("wcc_cal_uid")
     if not uid:
         if verbose:
-            print("không có wcc_cal_uid trong sidecar của bed %d" % bed)
+            print("no wcc_cal_uid in the sidecar of bed %d" % bed)
         return None
 
     got = container.cal_tags(uid, "3dwcc",
                             [("name", 0x00191006), ("factor", 0x0019100B)])
     if not got or not got.get("factor"):
         if verbose:
-            print("không đọc được %s.3dwcc trong container" % uid)
+            print("could not read %s.3dwcc inside the container" % uid)
         return None
     if verbose:
-        print("WCC exam khai báo: %s" % got.get("name"))
+        print("WCC declared by the exam: %s" % got.get("name"))
     return float(got["factor"])
 
 
@@ -170,16 +172,16 @@ def suv_table(bqml, mask, hdr, out=print) -> dict:
         got["SUVbsa"] = suv_bsa(bqml, dose, w, h)
     # No SUVlbm: the Janmahasatian formula needs sex, which the RDF header lacks.
 
-    out(f"{w} kg   {h} m   liều thực {dose / 1e6:.1f} MBq")
-    out(f"mẫu số SUVbw = {dose / (w * 1000):,.1f} Bq/mL"
+    out(f"{w} kg   {h} m   actual dose {dose / 1e6:.1f} MBq")
+    out(f"SUVbw denominator = {dose / (w * 1000):,.1f} Bq/mL"
         + (f"   BSA = {bsa_m2(w, h):.3f} m²" if h > 0 else ""))
     out("")
     for name, s in got.items():
         v = s[mask]
-        out(f"{name:7s} trung vị {np.median(v):6.3f}   "
+        out(f"{name:7s} median {np.median(v):6.3f}   "
             f"p90 {np.percentile(v, 90):6.2f}   p99 {np.percentile(v, 99):6.2f}   "
             f"max {s.max():8.1f}")
-    out("\n[cơ/mỡ ~0,5–1 | gan ~1,5–2,5 | não trẻ em cao | bàng quang >20]")
+    out("\n[muscle/fat ~0.5-1 | liver ~1.5-2.5 | paediatric brain high | bladder >20]")
     return got
 
 
@@ -192,12 +194,12 @@ def report(vol, K: float, hdr, vox, out=print) -> dict:
     mask = body_mask(vol)
     in_fov = float(bqml.sum(dtype=np.float64)) * vml
 
-    out(f">>> K đang dùng = {K:,.2f} (Bq/mL)/(count/voxel)")
-    out(f"tổng trong FOV {in_fov / 1e6:6.1f} MBq = {100 * in_fov / dose:.1f} % liều"
-        "     [<100 % là đúng: scan không phủ hết người]")
-    out(f"Bq/mL  max {bqml.max():>12,.0f}   trung vị thân {np.median(bqml[mask]):>10,.0f}")
-    out(f"SUVbw  max {suv.max():>12.1f}   trung vị thân {np.median(suv[mask]):>10.3f}"
-        "     [mô mềm ~0,5–1; não/bàng quang cao hơn nhiều]")
+    out(f">>> K in use = {K:,.2f} (Bq/mL)/(count/voxel)")
+    out(f"total inside the FOV {in_fov / 1e6:6.1f} MBq = {100 * in_fov / dose:.1f} % of the dose"
+        "     [<100 % is correct: the scan does not cover the whole body]")
+    out(f"Bq/mL  max {bqml.max():>12,.0f}   body median {np.median(bqml[mask]):>10,.0f}")
+    out(f"SUVbw  max {suv.max():>12.1f}   body median {np.median(suv[mask]):>10.3f}"
+        "     [soft tissue ~0.5-1; brain/bladder much higher]")
 
     return {"bqml": bqml, "suv": suv, "mask": mask, "K": float(K),
             "dose_bq": dose, "voxel_ml": vml, "mbq_in_fov": in_fov / 1e6}

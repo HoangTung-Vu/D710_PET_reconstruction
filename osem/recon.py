@@ -35,8 +35,8 @@ import numpy as np
 from utils import terms
 
 #: 288 views, so the number of subsets must divide 288.
-N_SUBSETS = 12
-N_ITERATIONS = 3
+N_SUBSETS = 24
+N_ITERATIONS = 2
 
 #: The default of 1 LOR/bin is too coarse for this geometry.
 #:
@@ -49,7 +49,7 @@ TANGENTIAL_LORS = 5
 
 #: Number of transverse voxels. STIR pins the voxel size at 2.1306 mm regardless
 #: of this value, so it sets the **FOV**, not the resolution.
-XY = 328
+XY = 256
 
 
 def image_grid(case, bed: int, xy: int = XY):

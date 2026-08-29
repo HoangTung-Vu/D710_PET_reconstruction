@@ -24,6 +24,12 @@ difference is two index conventions:
   mirrors the reconstruction transaxially -- see ``gerdf.cli._view_index``,
   which settled the direction against this scanner's own CT of the NEMA
   phantom.
+* for ``scatter_tof.npy`` alone, the **TOF axis is reversed** as well.  STIR
+  numbers timing positions signed from the most negative; GE numbers its bins
+  by increasing ``deltaTime``, and ``CListRecordGEHDF5::get_tof_bin()`` is
+  ``-deltaTime``.  ``gerdf.cli._tof_to_stir`` does the same to the prompts, and
+  the two reversals are one change: doing either alone puts the scatter on the
+  wrong half of every LOR.
 
 Neither is assumed.  ``prompts.u16`` (what the vendor's kernel loaded) and the
 template's ``.s`` (what ``custom_tool`` decoded) are the same acquisition
@@ -95,6 +101,12 @@ TERMS = [("randoms.f32", "<f4", "randoms"),
 #: sampling, 4 x 4.  They are summed away -- see the module docstring.
 TOF_AXIAL_SHAPE = (4, 4)
 
+#: Recorded in ``to_stir.json`` next to every ``scatter_tof.npy``, and checked
+#: by ``utils.terms.vendor_tof_weights``.  A weights file written before
+#: 2026-08-29 runs GE's way round and is indistinguishable from a correct one
+#: by any statistic -- so it is told apart by this key alone.
+TOF_AXIS = "stir"
+
 
 def ge_to_stir(a: np.ndarray) -> np.ndarray:
     """``(view, plane, u)`` -> ``(tof=1, axial, view, tang)``.
@@ -150,11 +162,15 @@ def strip_tof(hdr: str) -> str:
 
     The scanner block keeps its TOF keys -- they describe the hardware, and STIR
     is happy to read non-TOF data from a TOF-capable scanner.  What has to go is
-    the *data* description: axis 5, its size, and the mashing factor.
+    the *data* description: axis 5, its size, the mashing factor, and the
+    ``; TOF axis`` stamp -- a term with no time axis must not claim one, or the
+    guard in ``utils.terms`` would accept these headers as evidence about an
+    axis they do not have.
     """
     hdr = re.sub(r"(?im)^\s*!?\s*matrix axis label\s*\[5\]\s*:=.*\n", "", hdr)
     hdr = re.sub(r"(?im)^\s*!?\s*matrix size\s*\[5\]\s*:=.*\n", "", hdr)
     hdr = re.sub(r"(?im)^\s*TOF mashing factor\s*:=.*\n", "", hdr)
+    hdr = re.sub(r"(?im)^\s*;\s*TOF axis\s*:=.*\n", "", hdr)
     return re.sub(r"(?im)^(\s*number of dimensions\s*:=).*$", r"\1 4", hdr)
 
 
@@ -275,10 +291,13 @@ def convert_scatter_tof(vendor: str, out: str, scatter_ge=None) -> dict | None:
     # A TOF bin with no scatter anywhere would make the per-LOR normalisation in
     # terms.py divide by zero, and an all-zero buffer means the run was not
     # really TOF -- report both rather than let either pass silently.
-    per_tof = a.sum(axis=(0, 2), dtype=np.float64)
+    # ... reported on the axis as WRITTEN, i.e. already reversed, so that
+    # `peak_tof_bin` can be compared straight against the prompts.
+    per_tof = a.sum(axis=(0, 2), dtype=np.float64)[::-1]
     total = float(per_tof.sum())
     stats = {"shape": [ntof, nview, dsnu],
-             "axes": "tof x view(STIR order) x ds_nu",
+             "axes": "tof(STIR order) x view(STIR order) x ds_nu",
+             "tof_axis": TOF_AXIS,
              "num_tof_bins": ntof, "ds_nu": dsnu,
              "sum": total,
              "empty_tof_bins": int((per_tof == 0).sum()),
@@ -327,9 +346,19 @@ def convert_scatter_tof(vendor: str, out: str, scatter_ge=None) -> dict | None:
                 "  file is wrong for this run.  Nothing written."
                 % (c, c_tang))
 
-    # (view, tof, ds_nu) -> (tof, view, ds_nu), views reversed into STIR order.
+    # (view, tof, ds_nu) -> (tof, view, ds_nu), with BOTH GE axes reversed into
+    # STIR order: views (287 - ge_view, as every other term gets) and TOF.
+    #
+    # The TOF reversal is the same one `gerdf.cli._tof_to_stir` applies to the
+    # prompts, and the two MUST be made together: STIR's timing positions run
+    # signed from the most negative, GE's bins run by increasing deltaTime, and
+    # `CListRecordGEHDF5::get_tof_bin()` is `return -deltaTime`.  Flip one term
+    # and not the other and the scatter is subtracted from the wrong half of
+    # every LOR -- which no check here can see, because each term on its own
+    # looks exactly as it should.
+    #
     # Written last, so a failed check leaves no file for the next step to trust.
-    w = np.ascontiguousarray(a.transpose(1, 0, 2)[:, ::-1, :]).astype("<f4")
+    w = np.ascontiguousarray(a.transpose(1, 0, 2)[::-1, ::-1, :]).astype("<f4")
     np.save(os.path.join(out, "scatter_tof.npy"), w)
     return stats
 

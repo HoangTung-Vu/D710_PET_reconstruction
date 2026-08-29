@@ -43,6 +43,8 @@ def write_vendor(tmp_path, buf=None, ntof=NTOF, dsnu=DSNU, nview=VIEWS):
 class FakeCase:
     """Just enough of `utils.paths.Case` for `vendor_tof_weights`."""
 
+    name = "fake"
+
     def __init__(self, work):
         self.work = work
 
@@ -67,19 +69,38 @@ def test_the_sidecar_is_required(tmp_path):
         to_stir.convert_scatter_tof(str(d), str(tmp_path))
 
 
-def test_reshape_and_view_reversal(tmp_path):
-    """`(view, tof, ds_nu, 4, 4)` -> `(tof, 287 - view, ds_nu)`, the 4s summed."""
+def test_reshape_and_axis_reversals(tmp_path):
+    """`(view, tof, ds_nu, 4, 4)` -> `(54 - tof, 287 - view, ds_nu)`, the 4s summed.
+
+    BOTH GE axes reverse. The view one mirrors the image transaxially; the TOF
+    one puts the scatter on the wrong half of every LOR, and is the mirror of
+    what `gerdf.cli._tof_to_stir` does to the prompts -- the two are one change,
+    and doing either alone is worse than doing neither.
+    """
     rng = np.random.default_rng(1)
     buf = rng.random((VIEWS, NTOF, DSNU) + to_stir.TOF_AXIAL_SHAPE)
     d = write_vendor(tmp_path, buf)
     stats = to_stir.convert_scatter_tof(str(d), str(tmp_path))
     assert stats["shape"] == [NTOF, VIEWS, DSNU]
+    assert stats["tof_axis"] == "stir"
 
     w = np.load(tmp_path / "scatter_tof.npy")
     want = buf.sum(axis=(3, 4))
     for v in range(VIEWS):
         for t in range(NTOF):
-            assert w[t, VIEWS - 1 - v] == pytest.approx(want[v, t], rel=1e-6)
+            assert w[NTOF - 1 - t, VIEWS - 1 - v] == pytest.approx(want[v, t],
+                                                                   rel=1e-6)
+
+
+def test_the_reported_peak_bin_is_on_the_axis_as_written(tmp_path):
+    """`peak_tof_bin` must index the file, or it cannot be compared to anything."""
+    buf = np.zeros((VIEWS, NTOF, DSNU) + to_stir.TOF_AXIAL_SHAPE)
+    buf[:, 2] = 1.0                                    # GE bin 2
+    d = write_vendor(tmp_path, buf)
+    stats = to_stir.convert_scatter_tof(str(d), str(tmp_path))
+    assert stats["peak_tof_bin"] == NTOF - 1 - 2
+    w = np.load(tmp_path / "scatter_tof.npy")
+    assert int(w.sum(axis=(1, 2)).argmax()) == stats["peak_tof_bin"]
 
 
 def full_scatter_from(prof):
@@ -221,6 +242,42 @@ def test_an_empty_buffer_is_refused(tmp_path):
 
 def test_missing_weights_return_none_so_the_caller_can_fall_back(tmp_path):
     assert terms.vendor_tof_weights(FakeCase(tmp_path), 1, NTOF, VIEWS, TANG) is None
+
+
+# ------------------------------------------------- the mirrored-axis guards
+
+def test_weights_from_before_the_axis_fix_are_refused(tmp_path):
+    """A sidecar with no `tof_axis` means GE's order -- mirrored against the prompts.
+
+    The weights themselves are a smooth hump either way round, so this key is
+    the only thing that separates a correct file from a ruinous one.
+    """
+    d = write_vendor(tmp_path)
+    to_stir.convert_scatter_tof(str(d), str(tmp_path))
+    (tmp_path / "to_stir.json").write_text(json.dumps({"scatter_tof": {}}))
+    with pytest.raises(SystemExit, match="2026-08-29"):
+        terms.vendor_tof_weights(FakeCase(tmp_path), 1, NTOF, VIEWS, TANG)
+
+
+class FakeCaseWithPrompt(FakeCase):
+    """`check_tof_axis` reads the prompts header text."""
+
+    def prompt(self, n):
+        return self.work / f"bed{n}.hs"
+
+
+def test_tof_prompts_without_the_axis_stamp_are_refused(tmp_path):
+    c = FakeCaseWithPrompt(tmp_path)
+    c.prompt(1).write_text("!matrix size [5] := 11\nTOF mashing factor := 5\n")
+    with pytest.raises(SystemExit, match="MIRRORED"):
+        terms.check_tof_axis(c, 1)
+
+
+def test_stamped_tof_prompts_are_accepted(tmp_path):
+    c = FakeCaseWithPrompt(tmp_path)
+    c.prompt(1).write_text("!matrix size [5] := 11\n"
+                           f"{terms.TOF_AXIS_KEY} := STIR timing positions\n")
+    terms.check_tof_axis(c, 1)          # must not raise
 
 
 # ------------------------------------------------- the --tof-scatter override

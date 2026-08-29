@@ -46,6 +46,17 @@ NSEG0 = 47
 #: What `to_stir.py` writes out. `attn` is added later by `utils.attn`.
 ON_DISK = ("randoms", "scatter", "background", "normdt", "norm_only")
 
+#: The comment line `gerdf.interfile` stamps into every TOF prompts header
+#: (`custom_tool/gerdf/interfile.py:TOF_AXIS_KEY` -- spelled out rather than
+#: imported, because `gerdf` lives inside `d710:full` and this module runs on the
+#: host). Its presence is the ONLY thing that distinguishes prompts whose TOF
+#: axis runs STIR's way from prompts that run GE's, and the difference is not
+#: cosmetic: STIR's timing positions are signed displacements ALONG the LOR, so
+#: a mirrored axis puts the activity on the wrong half of every one of them.
+#: Counts, file size and every invariant in `invariant_table` are identical
+#: either way -- this key is the check.
+TOF_AXIS_KEY = "; TOF axis"
+
 
 def total(a) -> float:
     """Sum in float64.
@@ -94,6 +105,8 @@ def load(case, n: int, af=None, tof_scatter=None, lean: bool = False):
 
     A = {k: v.as_array() for k, v in objs.items()}
     n_tof = A["prompts"].shape[0]                 # as_array is (tof, axial, view, tang)
+    if n_tof > 1:
+        check_tof_axis(case, n)
 
     if not lean:
         # Non-TOF `trues` even when the prompts are TOF: it is a DIAGNOSTIC, and
@@ -120,6 +133,42 @@ def load(case, n: int, af=None, tof_scatter=None, lean: bool = False):
     return objs, A
 
 
+def check_tof_axis(case, n: int) -> None:
+    """Refuse TOF prompts written before the axis was turned the right way round.
+
+    Until 2026-08-29 the decoder wrote GE's TOF bin order straight through,
+    while STIR reads index 0 as the **most negative** timing position and turns
+    it into a signed displacement along the LOR (`ProjDataInfo::get_k`: timing
+    position -2 is -294.31 mm on this scanner, +2 is +294.31 mm). The two
+    conventions are mirror images, so every TOF reconstruction made before then
+    placed activity on the wrong half of every LOR and came out worse than the
+    same bed with no TOF at all.
+
+    Nothing else can catch it. The prompts and the scatter travel down the same
+    axis, so they agree with each other whichever way it points; the counts, the
+    file size, `Sum(p) >= Sum(r)` and every invariant in `invariant_table` are
+    the same in both. Only the image differs. That is why the fix came with a
+    stamp in the header rather than only a code change: an old `.s` on disk is
+    otherwise indistinguishable from a new one.
+
+    `tools/tof_direction.py` is the measurement this stamp stands in for.
+    """
+    hs = case.prompt(n)
+    if TOF_AXIS_KEY in hs.read_text():
+        return
+    raise SystemExit(
+        "error: %s has a TOF axis but does not declare which way it runs, so it\n"
+        "  was decoded before 2026-08-29 and its TOF bins are MIRRORED with\n"
+        "  respect to STIR's signed timing positions.  Reconstructing it would\n"
+        "  put the activity on the wrong half of every LOR -- worse than no TOF.\n"
+        "  Nothing else detects this: the counts and every invariant are\n"
+        "  identical either way.\n"
+        "  Decode the case again (the decoder now reverses the axis):\n"
+        "      d710 decode --raw <SINO dir> --case %s --tof --force\n"
+        "      d710 tostir --case %s\n"
+        "  or reconstruct without TOF:  d710 decode ... --no-tof" % (hs, case.name, case.name))
+
+
 def vendor_tof_weights(case, n: int, n_tof: int, n_view: int, n_tang: int):
     """GE's own TOF distribution for this bed's scatter, or `None`.
 
@@ -141,7 +190,11 @@ def vendor_tof_weights(case, n: int, n_tof: int, n_view: int, n_tang: int):
     * **TOF** — the vendor works at the RDF's full 55 bins while the decoded
       prompts are mashed (`d710` defaults to mash 5 → 11 bins). Adjacent bins are
       summed, exactly the grouping `gerdf.cli.mash_tof` applied to the prompts,
-      so the two axes stay aligned bin for bin.
+      so the two axes stay aligned bin for bin. Both arrive already reversed
+      into STIR's timing-position order — `to_stir.py` for these weights,
+      `gerdf.cli._tof_to_stir` for the prompts — and reversing commutes with the
+      mashing because the mash factor divides the bin count, so bin `t` here is
+      bin `t` there whichever mash is in force.
     * **tangential** — GE's SSS runs on `ds_nu = 43` downsampled bins. They are
       interpolated up to the full 381 with cell-centred linear weights. The
       profile is smooth in `u` (the centroid moves by 0.5 bins across the whole
@@ -158,6 +211,21 @@ def vendor_tof_weights(case, n: int, n_tof: int, n_view: int, n_tang: int):
     path = case.work_bed(n) / "scatter_tof.npy"
     if not path.exists():
         return None
+    # Same mirror, same reason as `check_tof_axis`, other term. The prompts are
+    # stamped in their header; these weights are stamped in `to_stir.json`. Both
+    # reversals were made together and neither is meaningful alone -- half a fix
+    # subtracts the scatter from the wrong half of every LOR.
+    try:
+        axis = (meta(case, n).get("scatter_tof") or {}).get("tof_axis")
+    except OSError:
+        axis = "stir"      # weights supplied by hand, with no sidecar to check
+    if axis != "stir":
+        raise SystemExit(
+            "error: %s was written before 2026-08-29 and its TOF axis runs GE's\n"
+            "  way round, mirrored against the prompts.  Re-run:\n"
+            "      d710 tostir --case %s --bed %d\n"
+            "  (cheap -- it only re-reads the vendor .f32 that is already there)"
+            % (path, case.name, n))
     w = np.load(path).astype(np.float64)          # (tof_full, view, ds_nu)
     n_full, got_views, ds_nu = w.shape
     if got_views != n_view:

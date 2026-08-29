@@ -27,8 +27,11 @@ CLONED_KEYS = ("name of data file", "number format", "number of bytes per pixel"
 
 #: Keys that describe the DATA's timing axis, which the correction terms do not
 #: have. `to_stir.strip_tof` removes exactly these; the scanner block's own TOF
-#: keys stay, because those describe the hardware.
-TOF_DATA_KEYS = ("matrix axis label [5]", "matrix size [5]", "tof mashing factor")
+#: keys stay, because those describe the hardware. `; tof axis` is the comment
+#: line naming the direction that axis runs in (`utils.terms.TOF_AXIS_KEY`) and
+#: goes with it: a term with no timing axis must make no claim about one.
+TOF_DATA_KEYS = ("matrix axis label [5]", "matrix size [5]", "tof mashing factor",
+                 "; tof axis")
 
 _cache: dict[str, np.ndarray] = {}
 

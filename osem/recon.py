@@ -179,18 +179,97 @@ def reconstruct(case, bed: int, af, image, n_sub: int = N_SUBSETS,
     return out, sens.astype(np.float32)
 
 
-def reconstruct_all(case, beds, af: dict, image, out=print, **kw):
+def bed_key(case, n: int, image, af, kw: dict) -> str:
+    """Fingerprint of everything that changes bed `n`'s reconstruction.
+
+    What goes in is the whole point. A resume cache that reuses a bed made with
+    different settings is worse than no cache at all — it produces a plausible
+    volume that no measurement will ever flag. So this covers, explicitly:
+
+    * the prompts file, by size **and** mtime — a re-decode changes both, which
+      is exactly what a TOF axis fix does;
+    * the image grid, i.e. `--xy`;
+    * the attenuation factors, by sum in float64 — these carry the CT, so
+      pointing `--ct` at a different series lands here;
+    * every keyword that reaches `reconstruct`: subsets, iterations, projector,
+      tangential LORs, and any supplied TOF scatter profile (arrays by their sum,
+      for the same reason).
+    """
+    import hashlib
+
+    import numpy as np
+
+    hs = case.prompt(n)
+    st = hs.stat()
+    parts = [f"prompts={hs.name}:{st.st_size}:{int(st.st_mtime)}",
+             f"grid={tuple(image.as_array().shape)}",
+             f"af={np.shape(af)}:{float(np.asarray(af, np.float64).sum()):.12e}"]
+    for k in sorted(kw):
+        v = kw[k]
+        parts.append(f"{k}=" + (f"sum:{float(np.asarray(v, np.float64).sum()):.12e}"
+                                if isinstance(v, np.ndarray) else repr(v)))
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:32]
+
+
+def reconstruct_all(case, beds, af: dict, image, out=print, resume: bool = False,
+                    **kw):
     """`reconstruct` for every bed, timed. Returns `(img, sens)`, two dicts.
 
     The `sens edge/centre` value printed per bed is worth a glance: it
     shows how far sensitivity drops off at the end of a bed, i.e. how weak the
     overlap region is when stitching.
+
+    **Each bed is written to `work/bed<n>/osem.npz` the moment it finishes.**
+    Until this existed the only output was `recon.npz`, written after all seven
+    beds had been reconstructed *and* stitched — so a whole-body TOF run stopped
+    at bed 2 threw away every finished bed, and there was no way to look at one
+    bed on its own. That is not a hypothetical: it cost 95 minutes of bed 1 on
+    2026-08-29. At 25 MB a bed the trade was never worth making.
+
+    `resume=True` reads those files back instead of recomputing — but **only**
+    when `bed_key` matches to the byte. A mismatch is reported and the bed is
+    reconstructed again; nothing is ever reused silently.
+
+    What the key promises is that the **settings** match, not that the numbers
+    are the ones a fresh run would produce — because a fresh run does not
+    reproduce itself either. Measured on ped2 bed 1, twice at identical
+    settings: `img` differs by up to 1.7e-06 and `sens` by 1.2e-03, from the
+    thread-order of the OpenMP reduction in the back-projector. The npz round
+    trip itself is lossless, so a resumed bed is exactly as valid as a recomputed
+    one and no more identical to it than two recomputes are to each other. Do not
+    read a bit-level difference between a resumed and a fresh volume as a bug.
+
+    Note what this does *not* fix: peak memory. All seven beds' images and
+    sensitivities together are 172 MB, while ONE bed's TOF sinograms are ~3.6 GB
+    (prompts, background and sensitivity at 1.21 GB each) plus STIR's own working
+    set. That is where the 12 GB goes, and `reconstruct` already hands it back
+    per bed — measured on ped2tof bed 1, RSS drops 11.89 -> 5.01 GB at the
+    boundary. Holding one bed's *image* at a time instead of seven would save
+    150 MB of the 12 GB.
     """
+    import numpy as np
+
     img, sens = {}, {}
     for n in beds:
+        p = case.work_bed(n) / "osem.npz"
+        key = bed_key(case, n, image, af[n], kw)
+        if resume and p.exists():
+            z = np.load(p, allow_pickle=False)
+            if str(z["key"]) == key:
+                img[n], sens[n] = z["img"], z["sens"]
+                out(f"bed {n}: reused {p.name} "
+                    f"(took {float(z['seconds']):.0f} s when it was made)")
+                continue
+            out(f"bed {n}: {p.name} was made with different settings "
+                f"-- reconstructing again")
+
         t0 = time.time()
         img[n], sens[n] = reconstruct(case, n, af[n], image, **kw)
+        el = time.time() - t0
         sp = sens[n].mean(axis=(1, 2))
-        out(f"bed {n}: {time.time() - t0:5.0f} s   max {img[n].max():9.4g}   "
-            f"mean {img[n].mean():9.4g}   sens edge/centre {sp[0] / sp.max():.4f}")
+        np.savez_compressed(p, img=img[n], sens=sens[n], key=key, bed=n,
+                            seconds=el)
+        out(f"bed {n}: {el:5.0f} s   max {img[n].max():9.4g}   "
+            f"mean {img[n].mean():9.4g}   sens edge/centre {sp[0] / sp.max():.4f}"
+            f"   -> {p.name}")
     return img, sens

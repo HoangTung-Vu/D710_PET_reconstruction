@@ -53,6 +53,12 @@ def main(argv=None) -> int:
     ap.add_argument("--z-ratio", type=float, default=stitch.POST_FILTER_Z_RATIO,
                     metavar="R",
                     help="three-tap axial filter [1,R,1] (default %(default)g; 0 disables)")
+    ap.add_argument("--resume", action="store_true",
+                    help="reuse any bed already in work/bed<n>/osem.npz whose "
+                         "settings match this run exactly (prompts file, grid, "
+                         "attenuation, subsets, iterations, projector, LORs).  "
+                         "A bed that does not match is reconstructed again -- "
+                         "nothing is ever reused silently")
     ap.add_argument("--tof-scatter", metavar="PROF.npy",
                     help="OVERRIDE how the scatter is spread over TOF with a "
                          "single saved profile (tools/tof_profile.py --save). "
@@ -112,7 +118,7 @@ def main(argv=None) -> int:
     tof_scatter = np.load(args.tof_scatter) if args.tof_scatter else None
 
     print()
-    img, sens = recon.reconstruct_all(C, beds, af, x0,
+    img, sens = recon.reconstruct_all(C, beds, af, x0, resume=args.resume,
                                       n_sub=args.subsets, n_it=args.iters,
                                       tof_scatter=tof_scatter,
                                       tangential_lors=args.lors,

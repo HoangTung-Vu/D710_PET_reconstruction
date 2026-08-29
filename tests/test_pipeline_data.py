@@ -74,8 +74,19 @@ def test_the_bed_used_the_norm_its_own_header_declares(bed):
     assert est, "to_stir.json has no estimate sidecar"
     assert est["norm_source"] == "resolved from norm_cal_uid", est["norm_source"]
     assert "selftest" not in est["norm"], est["norm"]
-    # The console path the exam's cal record names, reached inside its own drop.
-    assert est["norm"].endswith("/SINO0001"), est["norm"]
+    # Two legitimate routes to the SAME calibration, and the check has to allow
+    # both or it fails on any drop that does not ship its own cal:
+    #   * the console path the exam's cal record names, inside its own drop
+    #     (`.../SINO0001`) -- how `ped` resolved it;
+    #   * `vendor/cal/norm_*.rdf`, the bundled copy -- how `ped2` resolved it,
+    #     because that drop carries no calibration.  `estimate.py` hands that
+    #     copy over ONLY when the `(0017,1007)` in `vendor/cal/<uid>.3dnorm`
+    #     equals the console path this exam declares, i.e. only when it is the
+    #     very same normalisation scan.  Substituting a different one is the
+    #     failure this test exists for, and that guard is what prevents it --
+    #     not the file name.
+    assert (est["norm"].endswith("/SINO0001")
+            or "/vendor/cal/" in est["norm"]), est["norm"]
 
 
 def test_every_bed_of_an_exam_used_the_same_norm():

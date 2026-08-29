@@ -29,6 +29,21 @@
 #   --tof-mash N     implies --tof, changes the mash factor (N must divide 55)
 #   --no-tof         the default; spelled out for clarity
 #
+# The TOF axis was MIRRORED until 2026-08-29 -- GE's bin order written straight
+# through, against STIR's signed timing positions -- so OSEM put the activity on
+# the wrong half of every LOR and TOF came out worse than non-TOF.  Fixed by
+# reversing it where it is written: gerdf.cli._tof_to_stir for the prompts and
+# vendor/to_stir.py for the scatter weights, one change in two places.  Measured
+# again afterwards with tools/tof_direction.py on ped/pedtof5 bed 1: the model
+# now agrees with the data at +0.983 and the TOF centroid to 0.055 bins, exactly
+# swapping the two columns of the 2026-08-27 run.
+#
+# ANYTHING DECODED BEFORE THAT DATE IS MIRRORED AND MUST BE DECODED AGAIN.
+# Nothing else can tell: counts, file size and every invariant are identical
+# either way, only the image differs.  So TOF headers now carry a `; TOF axis`
+# line, and `utils.terms.load` refuses prompts that lack it -- re-run
+# `d710 decode --tof --force` and then `d710 tostir` (both are seconds).
+#
 # Why mash 5 when enabled.  55 = 5 x 11, so there are only four choices:
 # 1, 5, 11, 55.
 #

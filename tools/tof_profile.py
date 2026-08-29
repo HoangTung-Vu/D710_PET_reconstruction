@@ -30,6 +30,16 @@ is enough to separate three components without any model:
 None of the three needs `GetScatterViewDataTof`.  They are measurements, and
 they measure what that function is supposed to produce -- so they are also the
 yardstick to GRADE it against once it can be called.
+
+## Bin numbering
+
+Everything printed is in **GE's** bin order, because that is the order a raw
+decoded view is stored in and this tool reports on that file.  `--save` writes
+the profile **reversed**, into STIR's timing-position order, because its only
+consumer is `d710 osem --tof-scatter`, which applies it to prompts the decoder
+has already reversed (`gerdf.cli._tof_to_stir`).  So a peak bin printed here and
+a peak bin reported by `utils.terms` are mirror images of each other, and both
+are right.
 """
 
 from __future__ import annotations
@@ -147,8 +157,18 @@ def main(argv=None) -> int:
 
     res = report(load(args.views))
     if args.save:
-        np.save(args.save, res["scatter_profile"])
-        print(f"\nwrote {args.save}  ({res['scatter_profile'].size} bins, sum = 1)")
+        # Everything above is in GE's own bin order, because that is what a raw
+        # decoded view holds and the numbers printed describe that file. What
+        # gets SAVED is consumed by `d710 osem --tof-scatter`, against prompts
+        # the decoder has already reversed into STIR's timing-position order
+        # (`gerdf.cli._tof_to_stir`), so the profile has to be reversed to match.
+        # Save it GE's way round and it would peak on the wrong side of the LOR,
+        # silently -- it is a smooth hump either way.
+        prof = res["scatter_profile"][::-1]
+        np.save(args.save, prof)
+        print(f"\nwrote {args.save}  ({prof.size} bins, sum = 1, "
+              f"reversed into STIR order -- peak bin "
+              f"{prof.size - 1 - int(res['scatter_profile'].argmax())})")
     return 0 if res["monotonic"] and res["randoms_flat"] else 1
 
 

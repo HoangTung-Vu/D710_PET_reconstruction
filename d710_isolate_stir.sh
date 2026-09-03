@@ -26,19 +26,43 @@
 # That way the absolute CT paths written in the sidecar and in recon.npz stay
 # valid verbatim, both inside the container and when reopened on the host.
 #
-# Environment variables:
+# Environment variables, all of which can also be set in `D710/.env`
+# (copy `.env.example` -- they are identical -- and edit):
 #   D710_OUT           root of the output tree (required, or pass --out)
 #   D710_CASE          default case name for --case
 #   D710_SIRF_IMAGE    SIRF image          (default sirf-local:0.1)
 #   D710_SIRF_ENV_SH   SIRF's env script inside the image
 #                      (default /opt/SIRF-SuperBuild/INSTALL/bin/env_sirf.sh)
+#   D710_IMAGE         the vendor image (default d710:full) -- `export` reads the
+#                      WCC factor from the cal files inside it, so it is needed
+#                      here too, and is forwarded into the SIRF container
 #   D710_PYTHON        python3 ON THE HOST, only to read sidecars (stdlib, no conda needed)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+ENV_FILE="${D710_ENV_FILE:-$HERE/.env}"
+if [[ -f "$ENV_FILE" ]]; then
+    while IFS='=' read -r k v; do
+        k="${k#"${k%%[![:space:]]*}"}"                       # ltrim
+        [[ "$k" == export[[:space:]]* ]] && k="${k#export}"
+        k="${k//[[:space:]]/}"
+        [[ "$k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue   # comments, blanks
+        [[ -v "$k" ]] && continue                            # the shell wins
+        v="${v%$'\r'}"; v="${v%%[[:space:]]#*}"              # CRLF, # comment
+        v="${v#"${v%%[![:space:]]*}"}"                       # ltrim (KEY = val)
+        v="${v%"${v##*[![:space:]]}"}"                       # rtrim
+        [[ "$v" == \"*\" || "$v" == \'*\' ]] && v="${v:1:${#v}-2}"
+        [[ "$v" == '~/'* ]] && v="$HOME${v:1}"
+        export "$k=$v"
+    done < "$ENV_FILE"
+fi
+
 PY="${D710_PYTHON:-python3}"
 SIRF_IMAGE="${D710_SIRF_IMAGE:-sirf-local:0.1}"
 SIRF_ENV_SH="${D710_SIRF_ENV_SH:-/opt/SIRF-SuperBuild/INSTALL/bin/env_sirf.sh}"
+IMAGE="${D710_IMAGE:-d710:full}"
+export D710_IMAGE="$IMAGE"
 
 die() { echo "error: $*" >&2; exit 2; }
 usage() { awk 'NR==1 {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "${BASH_SOURCE[0]}"; }
@@ -81,7 +105,10 @@ mkdir -p "$O"
 O="$(cd "$O" && pwd)"
 
 docker image inspect "$SIRF_IMAGE" >/dev/null 2>&1 || die "no SIRF image '$SIRF_IMAGE'.
-  change the image name with \$D710_SIRF_IMAGE, or run the host version:
+  check \`docker images\` and put the real name in D710/.env:
+      D710_SIRF_IMAGE=<name:tag>
+  or, for one run:  D710_SIRF_IMAGE=<name:tag> $(basename "${BASH_SOURCE[0]}") $CMD ...
+  or run the host version instead:
       conda activate petct_reconstruction && $HERE/d710 $CMD --case $CASE"
 
 # --------------------------------------------------------------- mount CT
@@ -162,7 +189,7 @@ TTY=(); [[ -t 1 ]] && TTY=(-t)
 # for the whole reconstruction -- a false alarm, turned off to cut the noise.
 ARGV=(docker run --rm -i "${TTY[@]}" --no-healthcheck
       --user "$(id -u):$(id -g)" ${GROUPS_ADD[@]+"${GROUPS_ADD[@]}"} -e HOME=/tmp
-      -e D710_OUT="$O" -e PYTHONPATH="$HERE" -w "$O"
+      -e D710_OUT="$O" -e D710_IMAGE="$IMAGE" -e PYTHONPATH="$HERE" -w "$O"
       "${MOUNTS[@]}" --entrypoint bash "$SIRF_IMAGE"
       -c '. "$0"; exec python3 -u -m "$@"' "$SIRF_ENV_SH" "${MOD[@]}")
 

@@ -89,7 +89,8 @@
 #   osem, export           -> host, needs the project environment (SIRF):
 #                             conda activate petct_reconstruction
 #
-# Environment variables:
+# Environment variables, all of which can also be set in `D710/.env`
+# (copy `.env.example` -- they are identical -- and edit):
 #   D710_OUT     root of the output tree
 #   D710_IMAGE   image name (default d710:full)
 #   D710_CASE    default case name for --case
@@ -97,8 +98,36 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ------------------------------------------------------------------ .env
+# `D710/.env` holds this machine's settings -- above all the image names, which
+# are whatever `docker load` happened to restore them as.  $D710_ENV_FILE points
+# somewhere else.  See `.env.example`.
+ENV_FILE="${D710_ENV_FILE:-$HERE/.env}"
+if [[ -f "$ENV_FILE" ]]; then
+    while IFS='=' read -r k v; do
+        k="${k#"${k%%[![:space:]]*}"}"                       # ltrim
+        [[ "$k" == export[[:space:]]* ]] && k="${k#export}"
+        k="${k//[[:space:]]/}"
+        # Comments, blank lines and anything malformed fail this and are
+        # skipped in silence: a typo must not stop a reconstruction.
+        [[ "$k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+        [[ -v "$k" ]] && continue                            # the shell wins
+        v="${v%$'\r'}"; v="${v%%[[:space:]]#*}"              # CRLF, # comment
+        v="${v#"${v%%[![:space:]]*}"}"                       # ltrim (KEY = val)
+        v="${v%"${v##*[![:space:]]}"}"                       # rtrim
+        [[ "$v" == \"*\" || "$v" == \'*\' ]] && v="${v:1:${#v}-2}"
+        # docker and python both take these verbatim; neither expands a tilde.
+        [[ "$v" == '~/'* ]] && v="$HOME${v:1}"
+        export "$k=$v"
+    done < "$ENV_FILE"
+fi
+
 IMAGE="${D710_IMAGE:-d710:full}"
 PY="${D710_PYTHON:-python3}"
+
+
+export D710_IMAGE="$IMAGE"
 
 die() { echo "error: $*" >&2; exit 2; }
 usage() {
@@ -126,7 +155,11 @@ need_image() {
     docker image inspect "$IMAGE" >/dev/null 2>&1 || die "no image '$IMAGE'.
   the image is handed over as-is, never rebuilt:
       docker load -i d710_full.tar
-  (D710/Dockerfile records what the image contains.)"
+  (D710/Dockerfile records what the image contains.)
+  it keeps whatever name the tar was saved with -- if that is not '$IMAGE',
+  check \`docker images\` and put the real name in D710/.env:
+      D710_IMAGE=<name:tag>
+  or, for one run:  D710_IMAGE=<name:tag> d710 $CMD ..."
 }
 
 # Only `osem` and `export` need the project environment.  Check EARLY, because

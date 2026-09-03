@@ -152,20 +152,19 @@ def reconstruct(case, bed: int, af, image, n_sub: int = N_SUBSETS,
 
     obj = pet.make_Poisson_loglikelihood(objs["prompts"], acq_model=am)
     obj.set_num_subsets(n_sub)
-    obj.set_up(image)
-    # Summed over all subsets -> the full sensitivity of this bed.
-    sens = sum(obj.get_subset_sensitivity(s).as_array() for s in range(n_sub))
 
     rec = pet.OSMAPOSLReconstructor()
     rec.set_objective_function(obj)
     rec.set_num_subsets(n_sub)
     rec.set_num_subiterations(n_sub * n_it)
     rec.set_input(objs["prompts"])
-    rec.set_up(image)           # computes the sensitivity image — the slowest step
+    # Computes the sensitivity image — the slowest part of the set-up, one
+    # backprojection per subset.
+
+    rec.set_up(image)
+    sens = sum(obj.get_subset_sensitivity(s).as_array() for s in range(n_sub))
     rec.set_current_estimate(image)
-    # Report each subiteration. With TOF a bed runs for tens of minutes, and a
-    # run that prints nothing until it finishes is indistinguishable from one
-    # that has hung — which is exactly how the first TOF bed was misread.
+
     n = rec.get_num_subiterations()
     t0 = time.time()
     for k in range(n):

@@ -27,14 +27,47 @@ xong, nên chạy lại sau khi hỏng giữa chừng là an toàn (`--force` đ
 
 | lệnh | làm gì | chạy ở đâu |
 |---|---|---|
-| `d710 decode` | RDF → Interfile + singles (+ `.prd` list-mode) | container |
+| `d710 decode` | RDF → Interfile + singles (+ bảng sự kiện `bed<n>.lm.npy`) | container |
 | `d710 estimate` | kernel GE → `randoms/scatter/normdt/norm_only.f32` | host điều phối, mọi bước con trong container |
 | `d710 tostir` | `.f32` → Interfile STIR, tự kiểm bit-exact | container |
 | `d710 exam` | cả ba, mọi bed | ↑ |
-| `d710 osem` | OSEM từng bed + ghép trục → `recon.npz` | host, cần SIRF |
-| `d710 export` | Bq/mL + SUV → NIfTI/DICOM | host, cần SIRF env |
+| `d710 attn` | CT → `work/bed<n>/attn.hs` | **SIRF** |
+| `d710 osem` | OSEM từng bed + ghép trục → `recon.npz` | **SIRF** |
+| `d710 export` | Bq/mL + SUV → NIfTI/DICOM (`--lm` cho `recon_lm.npz`) | **SIRF** env |
+| `d710 lm` | LM-OSEM list-mode → `recon_lm.npz` | **PyTomography**, KHÔNG cần SIRF |
+| `d710 lowdose` | bản liều thấp của một ca | numpy thuần |
 | `d710 read` | đọc một `.f32` của vendor | container |
 | `d710 shell` | shell tương tác trong image | container |
+
+## Hai runtime, tách hẳn nhau
+
+| | SIRF/STIR | PyTomography |
+|---|---|---|
+| ở đâu | image `sirf-local:0.1`, gọi qua `./d710_isolate_stir.sh` | conda env `petct_reconstruction` |
+| lệnh | `attn`, `osem`, `export` | `lm`, `lowdose` |
+
+`lm/` và `lowdose/` **không import `sirf` hay `stir`** ở bất kỳ đâu: layout
+segment đọc thẳng từ header (`lm/interfile.py`), mọi số hạng đọc bằng
+`np.fromfile`. Đổi lại, `utils/attn.py` giờ ghi `attn.hs` bằng header clone từ
+prompts — cùng một layout với mọi file khác trong `work/bed<n>/` — thay vì
+layout riêng của SIRF. **File `attn.hs` cũ phải dựng lại:**
+`./d710_isolate_stir.sh attn --case <ca> --force`.
+
+### Một lưới ảnh duy nhất, cho cả hai runtime
+
+Hai bản SIRF hiểu `--xy` **khác nhau**: bản trong `sirf-local:0.1` khoá FOV ở
+718,01 mm rồi cho voxel chạy theo `xy`, bản trên host khoá voxel ở 2,1306 mm rồi
+cho FOV chạy theo. Cùng `--xy 256` ra 2,8047 mm trong container và 2,1306 mm trên
+host — hai thang khác nhau, và `K` tỉ lệ nghịch với thể tích voxel.
+
+Mọi hằng số hình học và cấu hình máy giờ nằm ở **`utils/scanner.py`**, một chỗ
+duy nhất. Mặc định `XY = 337` được **đo** chứ không chọn: đó là kích thước ma
+trận duy nhất cho ra 2,130600 mm ở **cả hai** bản (FOV 718,01 mm). `scanner.sirf_grid`
+kiểm lại lúc chạy và tự chỉnh `xy` nếu bản SIRF hiện tại sẽ cho voxel khác.
+
+**Mọi `recon.npz` / `lm.npz` / `recon_lm.npz` dựng ở lưới cũ phải chạy lại.**
+
+Chi tiết: `lm/README.md`, `lowdose/README.md`.
 
 Bước 1–3 chỉ cần **bash + docker + python3 trần** trên host. Không conda, không
 numpy, không pydicom, không i386 multiarch, không checkout `custom_tool/`. Chỉ
@@ -53,6 +86,7 @@ $D710_OUT/<ca>/
     work/bed<n>/    {randoms,scatter,background,normdt,norm_only,attn}.{hs,s},
                     to_stir.json
     recon.npz       khối đã ghép, count/voxel — cầu nối osem -> export
+    recon_lm.npz    như trên, từ đường list-mode (`d710 lm recon`)
     export/         <ca>_bqml.nii.gz, <ca>_suvbw.nii.gz, dicom/
     scratch/        tmp_*.hs/.s của SIRF — xoá lúc nào cũng được
     logs/
@@ -72,11 +106,13 @@ d710              CLI, điểm vào DUY NHẤT
 Dockerfile        ghi lại image chứa gì (image được bàn giao, không dựng lại)
 decode/           vòng lặp per-bed chạy trong container
 vendor/           trình điều khiển kernel của GE + tài liệu tham chiếu chính
-osem/             THUẬT TOÁN OSEM, không gì khác
+osem/             THUẬT TOÁN OSEM trên sinogram, không gì khác
+lm/               THUẬT TOÁN list-mode (PyTomography); xem lm/README.md
+lowdose/          mô phỏng liều thấp bằng cách tỉa event; xem lowdose/README.md
 utils/            mọi thứ không thuộc thuật toán, dùng chung
+utils/scanner.py    MỌI hằng số hình học + cấu hình máy + lưới ảnh, một chỗ
 tests/            kiểm các quy ước trên; xem tests/README.md
-tools/            migrate_out.sh
-osem_pipeline.ipynb
+tools/            migrate_out.sh, lm_frame.py, tof_direction.py, ...
 ```
 
 **Thuật toán sau này** — FBP, MLEM, deep prior — tạo package riêng **cùng cấp
@@ -187,7 +223,11 @@ CTAC) trên sinogram thật; `osem/` là chỗ ghép.
 | chạy đủ mọi bed | **xong** — `d710 exam` |
 | hiệu chỉnh phân rã + ghép trục | **xong** — quy về thời điểm tiêm, trọng số = sensitivity image |
 | xuất DICOM + NIfTI | **xong** — `utils/export.py`, `Units = BQML` |
-| **hằng số `K`** | **CHƯA** |
+| **list-mode (PyTomography)** | **xong** — `lm/`, ánh xạ bin bit-exact cả 6 bed; **TOF đủ 55 bin chạy 2m01s/bed, NHANH HƠN non-TOF** |
+| **FOV ngang** | **xong** — đĩa bán kính 356,7 mm áp vào ước lượng khởi tạo; trước đó 34% số đếm rơi ra góc lưới vuông |
+| **mô phỏng liều thấp** | **xong** — `lowdose/`, kiểm nhị thức + bất biến theo plane |
+| **lưới ảnh** | **xong** — `utils/scanner.py`, 337 × 2,1306 mm, giống hệt nhau ở cả hai runtime |
+| **hằng số `K`** | **CHƯA** — nhưng **một `K` cho cả hai đường**: thang lệch 0,60 trước đây là do voxel lệch, không phải vật lý |
 
 **`K` là việc còn lại duy nhất.** Ảnh ra là count/voxel, chưa phải Bq/mL. Không
 có WCC nào được áp trong `vendor/`, nên thang tuyệt đối phải tự đo trên NEMA:

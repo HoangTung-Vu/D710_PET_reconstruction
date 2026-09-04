@@ -32,6 +32,8 @@ import json
 
 import numpy as np
 
+from .scanner import NSEG0  # noqa: F401
+
 #: Terms in the count domain — adding them up is meaningful.
 COUNT_TERMS = ("prompts", "randoms", "scatter", "background", "trues")
 
@@ -39,9 +41,6 @@ COUNT_TERMS = ("prompts", "randoms", "scatter", "background", "trues")
 FACTOR_TERMS = ("norm_only", "deadtime", "normdt", "attenuation", "sensitivity")
 
 ALL_TERMS = COUNT_TERMS + FACTOR_TERMS
-
-#: Number of direct planes (segment 0) in the 553-plane sinogram.
-NSEG0 = 47
 
 #: What `to_stir.py` writes out. `attn` is added later by `utils.attn`.
 ON_DISK = ("randoms", "scatter", "background", "normdt", "norm_only")

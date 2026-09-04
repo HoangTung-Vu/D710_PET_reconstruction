@@ -14,15 +14,7 @@ from __future__ import annotations
 
 import numpy as np
 
-#: Plane spacing = half the ring spacing.
-PLANE_MM = 3.2699997
-
-#: GE numbers crystals opposite to STIR, offset by half a ring.
-#: Calibrated by histogramming NEMA bed 2 list-mode through all 1152 candidates
-#: and scoring against the vendor-decoded sinogram of that same bed
-#: (corr 0.990, runner-up 0.981).
-CRYSTAL_REVERSE = True
-CRYSTAL_OFFSET = 288
+from .scanner import CRYSTAL_OFFSET, CRYSTAL_REVERSE, PLANE_MM  # noqa: F401
 
 
 def open_projdata(hs: str):

@@ -98,6 +98,11 @@ class Case:
         """
         return self.root / "recon.npz"
 
+    @property
+    def recon_lm(self) -> Path:
+        """The same thing from the list-mode path (`d710 lm recon`)."""
+        return self.root / "recon_lm.npz"
+
     def vendor_bed(self, n: int) -> Path:
         return self.vendor / f"bed{n}"
 

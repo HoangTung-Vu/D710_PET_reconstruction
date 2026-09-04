@@ -206,14 +206,17 @@ def main(argv=None) -> int:
                     help="(Bq/mL)/(count/voxel). Default: export's own K "
                          "($D710_K or quant.K_EXPORT); failing that, the exam's "
                          "own WCC; failing that, the dose-based UPPER BOUND.")
+    ap.add_argument("--lm", action="store_true",
+                    help="export recon_lm.npz (d710 lm recon) instead of recon.npz")
     args = ap.parse_args(argv)
 
     C = get_case(args.case, args.out)
-    if not C.recon.exists():
-        raise SystemExit("error: %s does not exist -- run `d710 osem --case %s` first"
-                         % (C.recon, C.name))
+    src = C.recon_lm if args.lm else C.recon
+    if not src.exists():
+        raise SystemExit("error: %s does not exist -- run `d710 %s --case %s` first"
+                         % (src, "lm recon" if args.lm else "osem", C.name))
 
-    z = np.load(C.recon, allow_pickle=False)
+    z = np.load(src, allow_pickle=False)
     vol, z0, vox = z["vol"], float(z["z0"]), [float(v) for v in z["vox"]]
     beds = [int(b) for b in z["beds"]]
     hdr = C.header(beds[0])
@@ -240,13 +243,25 @@ def main(argv=None) -> int:
         K = k_dose
         print("no WCC -> falling back to the dose bound")
 
+    # A case built by `d710 lowdose` holds f x the counts, so its image is f x as
+    # bright and its K is 1/f x as large. Applied here rather than left to the
+    # operator: forgetting it makes SUV fall along the dose ladder for no
+    # physical reason.
+    ks = quant.lowdose_k_scale(C)
+    if ks != 1.0:
+        K *= ks
+        print(f"low-dose case: K x {ks:g} = {K:,.2f}")
+
     r = quant.report(vol, K, hdr, vox)
 
     # --- write -------------------------------------------------------------
+    # The two reconstruction paths write side by side, never on top of each
+    # other: same case, same K, different projector.
+    tag = "_lm" if args.lm else ""
     C.export.mkdir(parents=True, exist_ok=True)
     if args.format in ("nifti", "both"):
         for name, arr in (("bqml", r["bqml"]), ("suvbw", r["suv"])):
-            p = write_nifti(arr, str(C.export / f"{C.name}_{name}.nii.gz"),
+            p = write_nifti(arr, str(C.export / f"{C.name}{tag}_{name}.nii.gz"),
                             vox[2], vox[1], vox[0], z0)
             print(f"wrote {p}")
     if args.format in ("dicom", "both"):
@@ -255,10 +270,11 @@ def main(argv=None) -> int:
         # between bw/lbm/bsa.  Baking SUV into the DICOM would hard-code one
         # choice.
         n_it, n_sub = int(z["n_iterations"]), int(z["n_subsets"])
-        paths = write_dicom(r["bqml"], str(C.export / "dicom"), hdr,
+        engine = "LM-OSEM PyTomography" if args.lm else "OSEM SIRF"
+        paths = write_dicom(r["bqml"], str(C.export / f"dicom{tag}"), hdr,
                             vox[2], vox[1], vox[0], z0,
-                            series_desc=f"OSEM SIRF {n_it}x{n_sub} BQML")
-        print(f"wrote {len(paths)} DICOM files -> {C.export / 'dicom'}")
+                            series_desc=f"{engine} {n_it}x{n_sub} BQML")
+        print(f"wrote {len(paths)} DICOM files -> {C.export / ('dicom' + tag)}")
         print("   Units=BQML + dose + weight + DecayCorrection=START -> "
               "the viewer computes SUV itself;\n   FrameOfReferenceUID = the "
               "exam's -> it overlays the CT exactly.")

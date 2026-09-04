@@ -2,23 +2,49 @@
 # d710 -- the SINGLE entry point of the GE Discovery 710 reconstruction pipeline.
 #
 #   d710 decode   --raw D --case N [--tof]         RDF -> Interfile, all beds
+#                 [--listmode --lists D [--format npy|petsird]]  + the event table
 #   d710 estimate --raw D --ct D --case N [--bed n] [--tof]  GE kernel -> .f32
 #   d710 tostir   --case N [--bed n]               .f32 -> STIR Interfile
 #   d710 exam     --raw D --ct D --case N          = decode + estimate + tostir
+#   d710 attn     --case N                         CT -> work/bed<n>/attn.hs
 #   d710 osem     --case N [--beds ...] [--iters]  OSEM + bed stitching
-#   d710 export   --case N [--format nifti|dicom]  Bq/mL + SUV -> NIfTI/DICOM
+#   d710 lm       check|tofcheck|recon --case N    list-mode OSEM (PyTomography)
+#                 recon takes --resume, like osem
+#   d710 lowdose  --case N --drf D                 thinned copy of a case
+#
+#   d710 export   --case N [--format nifti|dicom] [--lm]
+#                                                 Bq/mL + SUV -> NIfTI/DICOM
+#                                                 --lm reads recon_lm.npz
 #   d710 read     <file.f32>                       read one vendor dump
 #   d710 shell    [--case N]                       shell inside the container
 #
+# TWO RUNTIMES, DELIBERATELY SEPARATE:
+#   SIRF/STIR      decode estimate tostir attn osem export
+#                  -- image `sirf-local:0.1`, via ./d710_isolate_stir.sh
+#   PyTomography   lm lowdose   -- conda env petct_reconstruction
+# Nothing in lm/ or lowdose/ imports sirf or stir.  See lm/README.md and
+# lowdose/README.md.
+#
+# ONE IMAGE GRID for both.  The two SIRF builds disagree about what --xy means:
+# sirf-local pins the FOV at 718.01 mm and scales the voxel, the host pins the
+# voxel at 2.1306 mm and scales the FOV.  utils/scanner.py holds every geometry
+# and machine constant, and its XY = 337 is the one matrix size that gives
+# 2.130600 mm in BOTH.  Anything built on the old 256 grid must be rerun.
+#
 # TOF IS OFF BY DEFAULT.  Not because it does not work -- it does, and the TOF
 # scatter is the vendor's own (see below) -- but because of the time COST on
-# this machine:
+# this machine.
+#
+# THIS APPLIES TO THE SINOGRAM PATH ONLY.  `d710 lm` pays nothing for TOF: each
+# event's ray is cut to +-3 sigma about its own TOF position, so it is SHORTER
+# than the full chord.  Measured, ped bed 1, grid 337, 2x24: TOF at all 55 bins
+# is 2m01s/bed against 2m39s non-TOF.  See lm/README.md.
 #
 #   measured 2026-08-27, ped bed 1, parallelproj, 16 cores, NO GPU
 #   non-TOF                          ~2 min/bed
 #   TOF 5 bins,  grid 128            9.6 min/bed
-#   TOF 5 bins,  grid 328 (default)  ~48 min/bed
-#   TOF 11 bins, grid 328            ~1.6 h/bed   -> 6 beds x 3 iter ~ 29 HOURS
+#   TOF 5 bins,  grid 337 (default)  ~48 min/bed
+#   TOF 11 bins, grid 337            ~1.6 h/bed   -> 6 beds x 3 iter ~ 29 HOURS
 #
 # The machine has no NVIDIA GPU and parallelproj ships CPU-only here
 # (`libparallelproj_c.so`, no CUDA build) -- both in the conda env and in
@@ -86,7 +112,10 @@
 #   decode, tostir, read   -> in the container (only bash + docker needed)
 #   estimate               -> host orchestrates with a BARE python3, every
 #                             sub-step runs in the container
-#   osem, export           -> host, needs the project environment (SIRF):
+#   attn, osem, export     -> SIRF.  Either `./d710_isolate_stir.sh <cmd>`, which
+#                             runs them in `sirf-local:0.1`, or a host install:
+#                             conda activate petct_reconstruction
+#   lm, lowdose            -> PyTomography, NO SIRF:
 #                             conda activate petct_reconstruction
 #
 # Environment variables, all of which can also be set in `D710/.env`
@@ -299,7 +328,7 @@ decode)
     # NOTHING IS COPIED INTO THE CONTAINER: raw is mounted read-only, every
     # result lands on the output mount.  One exam is tens of GB.
     drun "${mounts[@]}" "$IMAGE" bash /decode/decode_in.sh \
-         "$LISTMODE" "$FORCE" "$TOF $TOF_MASH"
+         "$LISTMODE" "$FORCE" "$TOF $TOF_MASH" "${FORMAT:-npy}"
     exit $?
     ;;
 
@@ -383,6 +412,42 @@ osem)
     exec env D710_OUT="$O" PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}" \
         "$PY" -u -m osem --case "$CASE" \
         ${BED:+--beds "$BED"} ${CT:+--ct "$CT"} "${REST[@]+"${REST[@]}"}"
+    ;;
+
+# ------------------------------------------------------------------ attn
+# The one term SIRF has to build.  Split out of `osem` so a case can be prepared
+# for the list-mode path without ever running OSEM.
+attn)
+    need_case; need_sirf
+    O="$(resolve_out)"
+    # --force is eaten by the global parser above, so it has to be put back --
+    # without it `d710 attn --force` silently refuses to rebuild an old attn.hs.
+    exec env D710_OUT="$O" PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}" \
+        "$PY" -u -m utils.attn_main --case "$CASE" \
+        ${BED:+--beds "$BED"} ${CT:+--ct "$CT"} $( ((FORCE)) && echo --force ) \
+        "${REST[@]+"${REST[@]}"}"
+    ;;
+
+# -------------------------------------------------------------------- lm
+# List-mode OSEM through PyTomography.  NO SIRF: the segment layout is parsed
+# from the header (lm/interfile.py) and every term is read with numpy, so this
+# runs in the PyTomography env while SIRF stays in the sirf-local image.
+lm)
+    need_case; need_py "numpy, torch, pytomography" \
+        "PyTomography is required (SIRF is NOT -- see lm/README.md):"
+    O="$(resolve_out)"
+    exec env D710_OUT="$O" PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}" \
+        "$PY" -u -m lm "${REST[@]+"${REST[@]}"}" --case "$CASE" \
+        ${BED:+--bed "$BED"} ${CT:+--ct "$CT"}
+    ;;
+
+# --------------------------------------------------------------- lowdose
+# numpy only -- no SIRF, no torch.
+lowdose)
+    need_case; need_py "numpy" "numpy is required:"
+    O="$(resolve_out)"
+    exec env D710_OUT="$O" PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}" \
+        "$PY" -u -m lowdose --case "$CASE" "${REST[@]+"${REST[@]}"}"
     ;;
 
 # ---------------------------------------------------------------- export

@@ -5,8 +5,10 @@
     python3 tools/pytomo_lm_probe.py                 # synthetic events, D710 geometry
     python3 tools/pytomo_lm_probe.py --events ev.npy # a real decoded event table
 
-This needs **no D710 module** and no SIRF -- it talks to PyTomography only, so it
-runs anywhere the env is active.
+No SIRF: it talks to PyTomography only. The geometry comes from
+`utils/scanner.py`, the one place every machine constant lives -- this file used
+to carry its own copy, with the wrong ring pitch (`axial_fov/nrings`) and a
+rounded TOF LSB.
 
 WHAT IT PROVES (measured 2026-08-30, this CPU, 16 threads, 14,809,731 events):
 
@@ -39,19 +41,19 @@ import time
 import numpy as np
 import torch
 
-# --- D710 geometry, straight out of the RDF header (custom_tool fixtures) ------
-NRINGS, NDET_RING = 24, 576
-R_MM, AXIAL_FOV_MM = 405.10, 156.70
-NXTAL = NRINGS * NDET_RING                      # 13,824
-N_TOF, LSB_PS, RES_PS = 55, 89.0, 550.0         # 55 unmashed bins, 550 ps FWHM
-C_MM_PER_PS = 299.792458 / 1000.0
+from utils.scanner import (C_MM_PS as C_MM_PER_PS,
+                           NXTAL, RING_PITCH_MM, R_MM, TIMING_PS as RES_PS,
+                           TOF_RANGE_MM)
+from utils.scanner import NDET as NDET_RING
+from utils.scanner import NRINGS
+from utils.scanner import N_TOF_RAW as N_TOF
 #: The non-TOF sinogram bin count, i.e. how many LORs the sensitivity runs over.
 N_VALID_LORS = 60_679_584
 
 
 def d710_scanner_lut() -> torch.Tensor:
     """`(13824, 3)` crystal coordinates. This is what replaces `info`."""
-    pitch = AXIAL_FOV_MM / NRINGS
+    pitch = RING_PITCH_MM
     i = torch.arange(NXTAL)
     ring, trans = i // NDET_RING, i % NDET_RING
     ang = 2 * np.pi * trans.double() / NDET_RING
@@ -63,7 +65,7 @@ def d710_scanner_lut() -> torch.Tensor:
 def d710_tof_meta(n_sigmas: float = 3.0):
     from pytomography.metadata.PET import PETTOFMeta
     return PETTOFMeta(num_bins=N_TOF,
-                      tof_range=N_TOF * C_MM_PER_PS * LSB_PS / 2,
+                      tof_range=TOF_RANGE_MM,
                       fwhm=C_MM_PER_PS * RES_PS / 2,
                       n_sigmas=n_sigmas)
 
@@ -115,7 +117,7 @@ def main(argv=None) -> int:
     from pytomography.projectors.PET import PETLMSystemMatrix
     from pytomography.transforms.shared import GaussianFilter
 
-    pitch = AXIAL_FOV_MM / NRINGS
+    pitch = RING_PITCH_MM
     print(f"pytomography device: {pytomography.device}")
     tof = d710_tof_meta()
     print(f"D710: {NXTAL} crystals, R={R_MM} mm, pitch={pitch:.3f} mm | "

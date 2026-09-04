@@ -49,8 +49,8 @@ import sys
 
 import numpy as np
 
-BIN_MM = 2.1306          # Default bin size, matches interfile.DEFAULT_BIN_SIZE_CM
-BIN_PS = 89.2459         # coincTimingPrecision of this scanner
+from utils.scanner import BIN_MM                 # sinogram bin width, mm
+from utils.scanner import TOF_LSB_PS as BIN_PS   # coincTimingPrecision
 
 #: Beyond this radius, treat the counts as randoms only. 280 mm is not a round
 #: number picked for looks: over 200-280 mm the measurement below still sees a

@@ -104,8 +104,8 @@ class Attenuation:
         path.parent.mkdir(parents=True, exist_ok=True)
         mu = attenuation.mu_image(self.ct, hdr["table_position_mm"], self.image)
         af, _acf = attenuation.factors(self._nontof_template(n), mu)
-        af.write(str(path))                          # -> attn.hs + attn.s
         self._cache[n] = af.as_array()
+        _write_like_the_others(self._cache[n], self.case, n, path)
         if self.verbose:
             m = mu.as_array()
             print(f"  bed {n}: table {hdr['table_position_mm']:>8.2f} mm  "
@@ -115,3 +115,27 @@ class Attenuation:
 
     def all(self, beds) -> dict:
         return {n: self.af(n) for n in beds}
+
+
+def _write_like_the_others(a, case, n: int, path) -> None:
+    """Write `attn.hs`/`.s` in the layout `vendor/to_stir.py` uses, not SIRF's.
+
+    `af.write()` would use SIRF's own segment order — segments ascending, view
+    before axial — which `as_array()` hides but `np.fromfile` does not. Every
+    other term in `work/bed<n>/` is a header cloned from the decoded prompts with
+    the array in `(1, plane, view, tang)` order, and `lm/` reads all of them with
+    plain numpy because it runs where there is no SIRF. So attenuation is written
+    the same way: one layout for the whole directory.
+    """
+    import re
+
+    import numpy as np
+
+    src = (case.work_bed(n) / "normdt.hs")
+    src = src if src.exists() else case.prompt(n)
+    hdr = src.read_text()
+    hdr = re.sub(r"(?im)^(\s*name of data file\s*:=).*$", r"\1 attn.s", hdr)
+    hdr = re.sub(r"(?im)^(\s*!?\s*number format\s*:=).*$", r"\1 float", hdr)
+    hdr = re.sub(r"(?im)^(\s*!?\s*number of bytes per pixel\s*:=).*$", r"\1 4", hdr)
+    path.write_text(hdr)
+    np.ascontiguousarray(a, "<f4").tofile(path.with_suffix(".s"))

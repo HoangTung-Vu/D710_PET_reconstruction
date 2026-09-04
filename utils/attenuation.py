@@ -11,14 +11,9 @@ import os
 
 import numpy as np
 
-#: PET plane spacing, and the number of planes in one bed (= 2·num_rings − 1).
-PLANE_MM = 3.2699997
-PLANES_PER_BED = 47
-
-# Carney bilinear HU -> mu(511 keV), 1/mm.
-MU_WATER_511 = 0.0096
-MU_BONE_511 = 0.0172
-CARNEY_B = {80: 0.681, 100: 0.755, 120: 0.837, 140: 1.0}
+from .scanner import (CARNEY_B, MU_BONE_511, MU_WATER_511,  # noqa: F401
+                      PLANE_MM)
+from .scanner import NSEG0 as PLANES_PER_BED
 
 
 def hu_to_mu(hu: np.ndarray, kvp: float = 120.0) -> np.ndarray:

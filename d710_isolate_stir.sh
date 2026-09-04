@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 # d710_isolate_stir.sh -- exactly like `d710`, but SIRF/STIR runs in DOCKER.
 #
-# Why it exists: `d710 osem` and `d710 export` are the only two commands that
-# need SIRF, and SIRF on the host has to be installed deep into the system.
-# Here SIRF comes from a prebuilt image (default `sirf-local:0.1`), and the host
-# only needs bash + docker.
+# Why it exists: `attn`, `osem` and `export` are the only commands that need
+# SIRF, and SIRF on the host has to be installed deep into the system.  Here
+# SIRF comes from a prebuilt image (default `sirf-local:0.1`), and the host only
+# needs bash + docker.  `lm` and `lowdose` are the other runtime -- PyTomography,
+# no SIRF at all -- and are forwarded to `./d710` like everything else.
 #
+#   ./d710_isolate_stir.sh attn   --case ped
 #   ./d710_isolate_stir.sh osem   --case ped [--beds ...] [--iters n]
-#   ./d710_isolate_stir.sh export --case ped [--format nifti|dicom]
+#   ./d710_isolate_stir.sh export --case ped [--format nifti|dicom] [--lm]
 #
-# Every OTHER command (decode / estimate / tostir / exam / read / shell) is
+# Every OTHER command (decode / estimate / tostir / exam / lm / lowdose / read /
+# shell) is
 # forwarded to `./d710` untouched -- they already run inside `d710:full`.  So
 # `--tof` / `--no-tof` pass through here unchanged; see `./d710 --help`.
 #
@@ -70,7 +73,7 @@ usage() { awk 'NR==1 {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "${BASH_
 CMD="${1:-}"
 case "$CMD" in
   ""|-h|--help|help) usage; exit $([[ -z "$CMD" ]] && echo 2 || echo 0) ;;
-  osem|export) ;;
+  attn|osem|export) ;;
   # Not a SIRF step -> the original `d710` handles it, untouched.
   *) exec "$HERE/d710" "$@" ;;
 esac
@@ -172,6 +175,7 @@ fi
 
 # ------------------------------------------------------------------- run
 case "$CMD" in
+  attn)   MOD=(utils.attn_main --case "$CASE" ${BED:+--beds "$BED"} ${CT:+--ct "$CT"}) ;;
   osem)   MOD=(osem --case "$CASE" ${BED:+--beds "$BED"} ${CT:+--ct "$CT"}) ;;
   export) MOD=(utils.export --case "$CASE" ${FORMAT:+--format "$FORMAT"}) ;;
 esac

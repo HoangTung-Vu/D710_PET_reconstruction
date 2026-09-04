@@ -31,23 +31,7 @@ import os
 
 import numpy as np
 
-#: ASSUMED unit convention between `hrActivityFactor` and (Bq/mL)/(count/voxel).
-#: Not yet derived; it puts 68 % of the dose inside the FOV in the paediatric
-#: case, consistent with a 77 cm scan of a 118 cm child (legs not covered).
-#: Only a NEMA measurement will settle it.
-WCC_UNIT_SCALE = 1e4
-
-#: Export's own `K`, in (Bq/mL)/(count/voxel).
-#:
-#: This factor is INDEPENDENT of the scanner's WCC: put the measured number here
-#: directly (or via the `D710_K` environment variable) instead of multiplying or
-#: dividing `hrActivityFactor` by a unit convention that has never been derived.
-#: `None` = not set, and export falls back to the WCC and then to the dose-based
-#: upper bound.
-#:
-#: ⚠ Only valid for the EXACT correction chain it was measured with, and for ONE
-#: voxel size.
-K_EXPORT = None
+from .scanner import K_EXPORT, WCC_UNIT_SCALE  # noqa: F401
 
 
 def k_export():
@@ -56,6 +40,22 @@ def k_export():
     if raw:
         return float(raw)
     return None if K_EXPORT is None else float(K_EXPORT)
+
+
+def lowdose_k_scale(case) -> float:
+    """`1/f` for a case built by `d710 lowdose`, else 1.
+
+    Thinning keeps a fraction `f` of the events, so the reconstruction comes out
+    `f` times as bright and its `K` has to be `1/f` times as large. One scalar --
+    which is also why the simulator does not touch the sensitivity model.
+    """
+    import json
+
+    p = case.root / "lowdose.json"
+    if not p.exists():
+        return 1.0
+    with open(p) as f:
+        return float(json.load(f)["k_scale"])
 
 
 def dose_bq(hdr) -> float:

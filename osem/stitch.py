@@ -51,24 +51,8 @@ import datetime as dt
 
 import numpy as np
 
-from utils.geometry import PLANE_MM
-
-#: Transaxial post-filter, FWHM in mm. Not a guess and not a tuning knob: it is
-#: GE's own setting for this protocol, read off the private tags of the vendor's
-#: reconstruction of this very exam — `(0009,10BB) post_filt_parm = 6.4`, with
-#: `(0009,10BA) post_filter = 1` saying it is on. Any slice of a GE `PT` series
-#: carries them, so a new protocol can be checked rather than assumed.
-POST_FILTER_FWHM_MM = 6.4
-
-#: Axial post-filter, from `(0009,10DC) ir_z_filter_ratio = 4.0` (enabled by
-#: `(0009,10DB) ir_z_filter_flag = 2`). The vendor tag gives the RATIO; the
-#: three-tap `[1, ratio, 1]` shape is INFERRED, not read out of `pet_recon`.
-#: What supports the inference: at ratio 4 it normalises to
-#: `[0.1666667, 0.6666667, 0.1666667]`, which is character-for-character the
-#: `PSF_AXIAL_KERNEL[]` in `sharcAp.cfg.XR` next to `PSF_AXIAL_WINDOW_WIDTH 3`.
-#: Same three-tap family, same machine. Treat it as a good reconstruction of
-#: GE's filter, not as decoded ground truth.
-POST_FILTER_Z_RATIO = 4.0
+from utils.scanner import (PLANE_MM, POST_FILTER_FWHM_MM,  # noqa: F401
+                           POST_FILTER_Z_RATIO)
 
 
 def post_filter(vol, vox, fwhm_mm: float = POST_FILTER_FWHM_MM,

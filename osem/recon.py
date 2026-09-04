@@ -32,36 +32,21 @@ import time
 
 import numpy as np
 
-from utils import terms
-
-#: 288 views, so the number of subsets must divide 288.
-N_SUBSETS = 24
-N_ITERATIONS = 2
-
-#: The default of 1 LOR/bin is too coarse for this geometry.
-#:
-#: It is also the single biggest cost knob in the whole reconstruction: the ray
-#: tracer traces this many rays per bin, so 5 -> 1 is a ~5x speedup for a
-#: coarser transaxial model. That matters much more with TOF, where each traced
-#: LOR is also spread over `n_tof` bins. Use `--lors 1` for a smoke test, not
-#: for a result.
-TANGENTIAL_LORS = 5
-
-#: Number of transverse voxels. STIR pins the voxel size at 2.1306 mm regardless
-#: of this value, so it sets the **FOV**, not the resolution.
-XY = 256
+from utils import scanner, terms
+from utils.scanner import (N_ITERATIONS, N_SUBSETS,  # noqa: F401
+                           TANGENTIAL_LORS, XY)
 
 
 def image_grid(case, bed: int, xy: int = XY):
-    """The image grid shared by every bed — same scanner, same geometry.
+    """`(acq_template, image_template)` — keep the acq alive, it carries ExamInfo.
 
-    Returns `(acq_template, image_template)`. `acq_template` must be kept alive:
-    it is the source of the ExamInfo for everything built from it.
+    `xy` is the transaxial matrix size at `scanner.DR_MM` voxels; `sirf_grid`
+    rescales it if this SIRF build would have given a different voxel.
     """
     import sirf.STIR as pet
 
     y0 = pet.AcquisitionData(str(case.prompt(bed)))
-    x0 = y0.create_uniform_image(1.0, xy)
+    x0 = scanner.sirf_grid(y0, xy)
     # `attenuation.mu_image` requires exactly a bed's 47-plane = 2·24 − 1 grid.
     if x0.as_array().shape[0] != terms.NSEG0:
         raise SystemExit("error: image grid has %d planes, must be %d"
@@ -163,7 +148,15 @@ def reconstruct(case, bed: int, af, image, n_sub: int = N_SUBSETS,
 
     rec.set_up(image)
     sens = sum(obj.get_subset_sensitivity(s).as_array() for s in range(n_sub))
-    rec.set_current_estimate(image)
+
+    # Round scanner, square grid. `image` is uniform 1, including corners no LOR
+    # reaches; OSMAPOSL is multiplicative, so starting them at zero keeps them
+    # there and the counts stay in the patient. See `scanner.fov_mask`.
+    n_tang = int(objs["prompts"].dimensions()[3])
+    mask = scanner.fov_mask(image.as_array().shape[-1], n_tang)
+    x0 = image.clone()
+    x0.fill(image.as_array() * mask)
+    rec.set_current_estimate(x0)
 
     n = rec.get_num_subiterations()
     t0 = time.time()
@@ -175,7 +168,7 @@ def reconstruct(case, bed: int, af, image, n_sub: int = N_SUBSETS,
 
     out = rec.get_current_estimate().as_array().copy()
     del objs
-    return out, sens.astype(np.float32)
+    return out * mask, (sens * mask).astype(np.float32)
 
 
 def bed_key(case, n: int, image, af, kw: dict) -> str:
@@ -254,7 +247,9 @@ def reconstruct_all(case, beds, af: dict, image, out=print, resume: bool = False
         key = bed_key(case, n, image, af[n], kw)
         if resume and p.exists():
             z = np.load(p, allow_pickle=False)
-            if str(z["key"]) == key:
+            # An npz from before the key existed has no settings to match, so it
+            # is a mismatch -- not a KeyError.
+            if "key" in z.files and str(z["key"]) == key:
                 img[n], sens[n] = z["img"], z["sens"]
                 out(f"bed {n}: reused {p.name} "
                     f"(took {float(z['seconds']):.0f} s when it was made)")

@@ -33,7 +33,12 @@ def main(argv=None) -> int:
     ap.add_argument("--iters", type=int, default=recon.N_ITERATIONS)
     ap.add_argument("--subsets", type=int, default=recon.N_SUBSETS)
     ap.add_argument("--xy", type=int, default=recon.XY,
-                    help="NUMBER OF transaxial VOXELS -> sets the FOV, not the resolution")
+                    help=f"transaxial matrix size at {recon.scanner.DR_MM} mm "
+                         f"voxels (default %(default)d).  The two SIRF builds "
+                         f"disagree about what `xy` means -- the host pins the "
+                         f"voxel, the sirf-local image pins the FOV -- so "
+                         f"anything but the default is rescaled to keep the "
+                         f"voxel, and with it K")
     ap.add_argument("--projector", choices=("auto", "ray", "parallelproj"),
                     default="auto",
                     help="G in y = S(Gx)+b.  auto = ray-tracing when non-TOF, "

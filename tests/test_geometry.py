@@ -100,11 +100,49 @@ def test_plane_pitch_is_half_the_ring_spacing(mini_info):
     assert geometry.PLANE_MM == pytest.approx(ring_mm / 2.0, rel=1e-6)
 
 
-def test_the_two_copies_of_plane_mm_agree():
-    """`attenuation` keeps its own copy; they index the same axis."""
+def test_the_two_names_for_plane_mm_agree():
+    """`attenuation` re-exports it under the same value; they index one axis."""
     from utils import attenuation
 
     assert attenuation.PLANE_MM == geometry.PLANE_MM
+
+
+# ------------------------------------------------- the FOV a LOR can reach
+def test_fov_radius_is_the_widest_chord_the_sinogram_holds(mini_hs):
+    """The outermost tangential bin's own |s|, straight out of STIR.
+
+    The miniature scanner shares the real one's radius and DOI, so this pins the
+    formula (the `n_tang - 1`, and the radius taken to the depth of interaction)
+    without needing the real 381-bin header.
+    """
+    from utils import scanner
+
+    s = geometry.tangential_s_mm(mini_hs)
+    got = scanner.fov_radius_mm(s.size, ndet=16)
+    # rel 1e-7: STIR reports it through float32, this computes in float64
+    assert got == pytest.approx(float(np.abs(s).max()), rel=1e-7)
+
+
+def test_fov_radius_of_the_real_scanner():
+    from utils import scanner
+
+    assert scanner.fov_radius_mm(381) == pytest.approx(356.6855, abs=1e-3)
+    # ... and the square grid reaches well past it, which is the whole point
+    corner = (scanner.XY - 1) / 2 * np.sqrt(2) * scanner.DR_MM
+    assert corner > 1.4 * scanner.fov_radius_mm(381)
+
+
+def test_fov_mask_is_a_centred_disc():
+    from utils import scanner
+
+    m = scanner.fov_mask(scanner.XY, 381)
+    assert m.shape == (scanner.XY, scanner.XY)
+    assert m[scanner.XY // 2, scanner.XY // 2]          # centre in
+    assert not m[0, 0] and not m[-1, -1]                # corners out
+    assert np.array_equal(m, m[::-1]) and np.array_equal(m, m[:, ::-1])
+    # a disc of radius 349.2 mm in a 337 x 2.1306 mm square
+    r = scanner.fov_radius_mm(381) / scanner.DR_MM
+    assert m.sum() == pytest.approx(np.pi * r * r, rel=0.01)
 
 
 def test_tangential_s_mm_is_not_arc_corrected(mini_hs):

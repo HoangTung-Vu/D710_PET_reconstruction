@@ -35,6 +35,11 @@ def code_cells():
     none today and the notebook is better off without them, but they should
     make this test skip that cell rather than error.
     """
+    # The contract is "if a notebook exists it holds no code", not "a notebook
+    # must exist" -- `osem_pipeline.ipynb` was removed in 2ffd732 and these two
+    # tests have been erroring ever since.
+    if not NOTEBOOK.exists():
+        pytest.skip(f"no {NOTEBOOK.name}; nothing to hold to the contract")
     with open(NOTEBOOK) as f:
         nb = json.load(f)
     out = []

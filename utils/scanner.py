@@ -15,12 +15,24 @@ NXTAL = NRINGS * NDET
 #: Ring radius, mm. Header: `Inner ring diameter (cm) := 81.02` / 2.
 R_MM = 405.10
 
-#: Where detector 0 sits. Header: `View offset (degrees)`.
-VIEW_OFFSET_DEG = -5.0210
+#: Azimuth of GE crystal 0 in the gantry frame. cmcfg.XR.xml:721 and every RDF.
+XTAL0_OFFSET_DEG = -5.0210
 
-#: Header: `Average depth of interaction (cm) := 0.94`. STIR places a LOR at
-#: `R_MM + DOI_MM`, not at `R_MM` — see `fov_radius_mm`.
-DOI_MM = 9.4
+#: Crystal / view pitch; GE's own `deltaAngle`.
+XTAL_PITCH_DEG = 360.0 / NDET          # 0.625
+
+#: STIR's `psi_offset`, NOT the same quantity as XTAL0_OFFSET_DEG, and PROVISIONAL.
+#: Was -5.0210, which cost 10.04 deg of image rotation on both paths.
+#: Derivation, measurements and the open +4.4 / +5.7 conflict: GEOMETRY_AUDIT.md.
+VIEW_OFFSET_DEG = -(XTAL0_OFFSET_DEG + XTAL_PITCH_DEG)      # +4.3960
+
+#: STIR places a LOR at `R_MM + DOI_MM`. GE: SYS_EFF_RING_DIAMETER 827.0
+#: (cmcfg.XR.xml:677, RDF effectiveRingDiameter) -> 413.50 - 405.10. Was 9.4,
+#: STIR's Discovery 690 default. See GEOMETRY_AUDIT.md.
+DOI_MM = 8.4
+
+#: Where STIR/GE put the LOR. Both paths must use this, not R_MM.
+R_EFF_MM = R_MM + DOI_MM        # 413.50
 
 #: Plane spacing = half the ring spacing, from `Distance between rings (cm)`.
 PLANE_MM = 3.2699997
@@ -40,8 +52,10 @@ CRYSTAL_REVERSE = True
 CRYSTAL_OFFSET = 288
 
 # ----------------------------------------------------------------------- TOF
-#: 55 bins of one coincidence-timing LSB, 550 ps FWHM.
-N_TOF_RAW, TOF_LSB_PS, TIMING_PS = 55, 89.2459, 550.0
+#: 55 bins of one coincidence-timing LSB; timing resolution 675 ps FWHM.
+#: Was 550.0 (STIR's Discovery 690 placeholder, 23 % too narrow). The machine's
+#: own value: sharcAp.cfg:46 TIMING_RESOLUTION 675.  See GEOMETRY_AUDIT.md.
+N_TOF_RAW, TOF_LSB_PS, TIMING_PS = 55, 89.2459, 675.0
 C_MM_PS = 0.299792458
 
 #: Total TOF range in mm — fixed by the hardware, so mashing changes the number
@@ -113,9 +127,10 @@ def fov_radius_mm(n_tang: int, ndet: int = NDET,
     The outermost of `n_tang` non-arc-corrected tangential bins is number
     `(n_tang - 1) / 2`, so its chord has half-width
     `r sin(pi (n_tang - 1) / 2 ndet)` — with `r` measured to the depth of
-    interaction, which is where STIR puts the LOR. D710: 381 of 576 -> 356.6855
+    interaction, which is where STIR puts the LOR. D710: 381 of 576 -> 355.8250
     mm, equal to `geometry.tangential_s_mm(hs).max()` to every digit STIR
-    prints (`tests/test_geometry.py`).
+    prints (`tests/test_geometry.py`) — for a header carrying the same DOI. It
+    was 356.6855 while `DOI_MM` was STIR's D690 default 9.4.
 
     Past that radius NO bin crosses the voxel, so its sensitivity is not small
     but meaningless — and OSEM divides by it.

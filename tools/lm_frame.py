@@ -9,6 +9,11 @@ image's. A correct `lm.geom.scanner_lut` gives **0 deg on the untransposed
 image**; a transpose winning means the crystal order is mirrored, and a non-zero
 rotation means the detector-0 position is wrong.
 
+⚠ **This compares the two paths to EACH OTHER, never to reality**, and only their
+rotation — so it is blind to a shared angle error (10.04 deg, found 2026-09-04)
+and to a scale error (list-mode is 2.3 % small). Use the vendor's own PT series
+or the CT for the absolute frame. See GEOMETRY_AUDIT.md.
+
 Angular profiles rather than voxel correlation: they are insensitive to the
 resolution and noise difference between the two reconstructions, which is what
 buries the signal in a plain voxel-wise comparison.

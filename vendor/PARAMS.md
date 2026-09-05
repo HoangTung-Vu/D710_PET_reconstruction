@@ -151,6 +151,9 @@ delaysCorrectionFactor   1.0          blockRepeatFactor  9
 VQC: X −4.1552  Y 0.4685  Z 1.3  tilt −0.1739  swivel −0.0385  roll 0.2000
 ```
 
+⚠ **Dòng VQC trên là của file selftest, KHÔNG phải của bay85ct.** Giá trị thật
+của máy này, và mọi đối chiếu hình học khác với `petsw/`: xem `GEOMETRY_AUDIT.md`.
+
 `576` và `24` khớp `GE_D710_raw_data_report.md`. `delaysCorrectionFactor = 1`
 nghĩa là GE **không** nhân thêm hệ số nào vào randoms.
 

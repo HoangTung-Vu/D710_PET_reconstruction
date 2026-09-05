@@ -24,6 +24,16 @@ import numpy as np
 #: Values that are the thing under test elsewhere keep their real numbers.
 PLANE_MM = 3.2699997
 BIN_SIZE_CM = 0.21306
+#: Kept spelled out rather than imported, like the two above, so this module
+#: stays free of `utils`. Must equal `utils.scanner.VIEW_OFFSET_DEG`
+#: = -(transaxial_crystal_0_offset + 360/NDET) = -(-5.021 + 0.625).
+VIEW_OFFSET_DEG = 4.3960
+
+#: Likewise `utils.scanner.DOI_MM / 10`. `test_fov_radius_is_the_widest_chord_
+#: the_sinogram_holds` compares STIR's own `s` off THIS header against
+#: `scanner.fov_radius_mm`, so the two DOIs have to agree or the test fails on
+#: the mismatch rather than on the formula it is meant to pin.
+AVG_DOI_CM = 0.84
 
 
 def segments(num_rings: int) -> list[tuple[int, int, int, int]]:
@@ -77,10 +87,10 @@ def header(num_rings: int = 6, num_det: int = 16, num_tang: int = 9,
         f"Number of rings := {num_rings}",
         f"Number of detectors per ring := {num_det}",
         "Inner ring diameter (cm) := 81.0200",
-        "Average depth of interaction (cm) := 0.9400",
+        f"Average depth of interaction (cm) := {AVG_DOI_CM:.4f}",
         f"Distance between rings (cm) := {2 * PLANE_MM / 10:.4f}",
         f"Default bin size (cm) := {BIN_SIZE_CM}",
-        "View offset (degrees) := -5.0210",
+        f"View offset (degrees) := {VIEW_OFFSET_DEG:.4f}",
         f"Maximum number of non-arc-corrected bins := {num_tang}",
         f"Default number of arc-corrected bins := {num_tang}",
         "end scanner parameters:=",

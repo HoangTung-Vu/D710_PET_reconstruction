@@ -2,7 +2,7 @@
 """So sánh `recon.npz` với ảnh PET BQML của chính GE, và đo `K`.
 
     python3 -m tools.compare_vendor --case chuong \
-        --vendor ~/UET/Handson_PET_CT_Reconstruction/data/cases/20260806_FDG26080604/dicom/PT_s012_PET_WB_3D_AC
+        --vendor ~/UET/Handson_PET_CT_Reconstruction/data/cases/20260806_FDG26080604_ok/dicom/PT_s012_PET_WB_3D_AC
 
 `K` là (Bq/mL) trên (count/voxel) — đúng đơn vị mà `d710 export --K` cần.
 

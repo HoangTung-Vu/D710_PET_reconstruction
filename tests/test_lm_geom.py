@@ -126,7 +126,7 @@ def test_scanner_lut_is_a_cylinder():
     lut = geom.scanner_lut()
     assert lut.shape == (geom.NXTAL, 3)
     r = np.hypot(lut[:, 0], lut[:, 1])
-    assert np.allclose(r, geom.R_MM, atol=1e-3)
+    assert np.allclose(r, geom.R_EFF_MM, atol=1e-3)   # crystal face + DOI, not R_MM
     z = lut[:, 2].reshape(geom.NRINGS, geom.NDET)
     assert np.allclose(np.diff(z[:, 0]), geom.RING_PITCH_MM)
     assert abs(z.mean()) < 1e-4                     # centred on the bed
@@ -142,7 +142,7 @@ def test_scanner_lut_is_in_stirs_frame():
     """
     lut = geom.scanner_lut(offset_deg=0.0)
     d0 = int(np.argsort(geometry.crystal_to_det(geom.NDET))[0])   # GE id of det 0
-    assert np.allclose(lut[d0, :2], [0.0, -geom.R_MM], atol=1e-3)
+    assert np.allclose(lut[d0, :2], [0.0, -geom.R_EFF_MM], atol=1e-3)
     # and the raw GE frame is the mirror image, not the same thing
     ge = geom.scanner_lut(offset_deg=0.0, stir_frame=False)
     assert not np.allclose(ge[:, :2], lut[:, :2])

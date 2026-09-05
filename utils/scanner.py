@@ -38,8 +38,10 @@ R_EFF_MM = R_MM + DOI_MM        # 413.50
 PLANE_MM = 3.2699997
 
 #: NOT `axial_fov_mm / nrings` (156.70/24 = 6.529): that is 0.17 % short and
-#: leaves the crystal LUT just inside the outermost image plane, so
-#: `PETLMSystemMatrix._get_object_initial` zeroes plane 0.
+#: leaves the crystal LUT just inside the outermost image plane. `lm.recon`
+#: no longer depends on it for that — `axial_mask` rounds instead of flooring,
+#: which is what kept plane 46 alive — but the value is still the one the
+#: header states and the one the projector geometry has to use.
 RING_PITCH_MM = 2 * PLANE_MM
 
 #: Direct planes (segment 0) in the 553-plane sinogram = 2·NRINGS − 1.
@@ -132,7 +134,7 @@ WCC_UNIT_SCALE = 1e4
 #: `K_EXPORT_LM` the 55-bin TOF list-mode path (`d710 lm recon`). Using one for
 #: both was measured wrong by ~2.1x.
 K_EXPORT = 63_002.1      # 5 ca, tản 8.3 %, r >= 0.962
-K_EXPORT_LM = 124_158.6      # 5 ca, tản 10.8 %, r >= 0.976
+K_EXPORT_LM = 124_178.0      # 5 ca, tản 10.8 %, r >= 0.977
 
 
 def fov_radius_mm(n_tang: int, ndet: int = NDET,

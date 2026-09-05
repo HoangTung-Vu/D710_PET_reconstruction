@@ -19,17 +19,54 @@ from . import events as ev
 from . import geom, terms
 
 
-def _initial(sm, n_tang):
-    """PyTomography's initial estimate, further masked to the transaxial FOV.
+def axial_mask(nz: int, dz: float, z_ring):
+    """`(nz,)` bool — which image planes are inside the ring extent.
 
-    `_get_object_initial` masks only the AXIAL extent — see `scanner.fov_mask`
-    for what the unmasked transaxial corners do to the result.
+    A plane is in the axial FOV when its **centre** is within half a plane of
+    the outermost ring, so the cut is a round, not a floor and a ceil. That is
+    the whole difference from `PETLMSystemMatrix._get_object_initial`, and it
+    matters because this grid is laid exactly on the ring extent: 47 planes of
+    `PLANE_MM` against 24 rings of `2*PLANE_MM`, so `zmax` is 46.0 to within a
+    float32 ulp — and `object_initial[:, :, int(floor(46.0)):] = 0` takes plane
+    46 **out of the object**.
+
+    It always does. Tuning `RING_PITCH_MM` (see `utils.scanner`) only moves the
+    trap between the two ends: `ceil(zmin)` spares plane 0 when `zmin` lands on
+    0.0, while `floor(zmax)` kills plane 46 when `zmax` lands on 46.0.
+
+    What that costs, measured on `fdg26081901`: OSEM's update is multiplicative,
+    so a plane that starts at zero stays zero for every subiteration, and image
+    plane 46 of every bed came back **identically zero** (`recon_lm.npz` plane
+    274 deconvolves to exactly 0 through the axial post-filter; the sinogram
+    volume does not). `osem.stitch` then averaged that hard zero into the seam
+    with the weight `norm_BP` really gives it — 4.3 % of a mid-bed plane on the
+    axis, the axial sensitivity being a symmetric triangle — for a −10 % notch
+    at the top plane of every bed, and a **+14 %** ridge on plane 45 beside it
+    from the counts the model could not place. Smeared over three planes by the
+    `[1, 4, 1]` post-filter, that pair is the bright line at every bed junction
+    in the coronal and sagittal views. The sinogram path, which truncates
+    nothing, is flat to ±2 % across the same nine planes.
+    """
+    z = (np.arange(nz) - (nz - 1) / 2.0) * dz
+    return (z >= float(z_ring.min()) - dz / 2) & (z <= float(z_ring.max()) + dz / 2)
+
+
+def _initial(sm, n_tang):
+    """The initial estimate: ones inside the FOV, zero outside, both axes.
+
+    Replaces `sm._get_object_initial()` outright rather than masking it further
+    — see `axial_mask` for why its axial cut cannot be used, and
+    `scanner.fov_mask` for what the unmasked transaxial corners do to the
+    result. Zero at the start is permanent under a multiplicative update, so
+    this array is the object's support for the whole reconstruction.
     """
     import torch
 
-    x = sm._get_object_initial()
-    m = scanner.fov_mask(sm.object_meta.shape[0], n_tang)
-    return x * torch.from_numpy(m).to(x.device)[:, :, None]
+    nz = sm.object_meta.shape[-1]
+    m = (scanner.fov_mask(sm.object_meta.shape[0], n_tang)[:, :, None]
+         & axial_mask(nz, float(sm.object_meta.dr[-1]),
+                      sm.proj_meta.scanner_lut[:, 2]))
+    return torch.from_numpy(np.ascontiguousarray(m, dtype=np.float32))
 
 
 def object_meta(xy: int = XY, n_plane: int = NSEG0):

@@ -11,7 +11,7 @@ import pytest
 
 from lm import events as ev
 from lm import geom, interfile
-from utils import geometry
+from utils import geometry, scanner
 from utils.terms import NSEG0
 
 RINGS, NDET, NTANG = 6, 16, 9
@@ -250,3 +250,34 @@ def test_detector_ids_are_zero_based_and_signed_the_same_way(binmap):
     assert ids[:, 2].min() >= 0 and ids[:, 2].max() <= 54
     assert np.array_equal(ev.detector_ids(e, 55, tof_sign=-1)[:, 2],
                           54 - ids[:, 2])
+
+
+# ---------------------------------------------- the object's axial support
+# `lm.recon.axial_mask` replaces `PETLMSystemMatrix._get_object_initial`'s own
+# axial cut. Nothing here needs PyTomography: the rule is arithmetic on the
+# real grid, and the bug it fixes was arithmetic too.
+def test_every_bed_plane_is_in_the_axial_support():
+    """All 47 planes, or a bed comes back with a dead one -- and OSEM is multiplicative.
+
+    Plane 46 was zero in every list-mode bed until 2026-09-05, because
+    `_get_object_initial` floors `zmax`, which lands on exactly 46.0 for this
+    grid. `osem.stitch` then averaged that hard zero into the seam with the
+    weight `norm_BP` gives plane 46 -- the bright line at each bed junction.
+    """
+    from lm.recon import axial_mask
+
+    m = axial_mask(NSEG0, scanner.PLANE_MM, geom.scanner_lut()[:, 2])
+    assert m.shape == (NSEG0,)
+    assert m.all(), f"dead image planes: {np.flatnonzero(~m).tolist()}"
+
+
+def test_the_axial_support_is_symmetric_and_still_guards_a_taller_grid():
+    """Round, not floor/ceil -- but a grid past the rings is still cut, at both ends."""
+    from lm.recon import axial_mask
+
+    dz, z = 1.0, np.array([-3.0, 3.0])           # rings at +-3, planes 1 mm apart
+    assert list(axial_mask(7, dz, z)) == [True] * 7          # exactly the extent
+    assert list(axial_mask(9, dz, z)) == [False] + [True] * 7 + [False]
+    m = axial_mask(11, dz, z)
+    assert list(m) == [False] * 2 + [True] * 7 + [False] * 2
+    assert list(m) == list(m[::-1])                          # no end favoured

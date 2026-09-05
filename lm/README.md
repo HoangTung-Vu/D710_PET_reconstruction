@@ -198,3 +198,38 @@ at the end: OSEM is multiplicative, so zero stays zero and the counts land
 inside instead of being thrown away afterwards. `osem/` starts from the same
 masked image, for the same reason. GE's own `PT` series are a round FOV in a
 square matrix too.
+
+### …and the axial mask cannot be borrowed either — it costs plane 46
+
+The other half of `_get_object_initial` is the axial cut, and until 2026-09-05
+that half was still PyTomography's. It zeroes
+`[:, :, :ceil(zmin)]` and `[:, :, floor(zmax):]` in units of planes, and this
+grid is laid **exactly** on the ring extent — 47 planes of `PLANE_MM` against
+24 rings of `2·PLANE_MM` — so `zmax` is 46.0 to within a float32 ulp and
+`floor` takes **plane 46 out of the object**. It always does: tuning
+`RING_PITCH_MM` only moves the trap between the two ends, because `ceil` spares
+plane 0 at 0.0 while `floor` kills plane 46 at 46.0.
+
+A plane that starts at zero stays zero, so image plane 46 of every bed came
+back identically zero. Then `osem.stitch` averaged that hard zero into the seam
+carrying the weight `norm_BP` really gives it — the axial sensitivity is a
+symmetric triangle, **0.043** of a mid-bed plane on the axis at both plane 0
+and plane 46, so the seam plane was deflated by `0.380/(0.380+0.043)` — while
+the counts the model could not place piled into plane 45 beside it. Measured on
+`fdg26081901`, all 7 beds, per-plane totals against GE's own VPFXS of the same
+exam and detrended:
+
+| local plane of the lower bed | 44 | 45 | 46 |
+|---|---|---|---|
+| list mode | −4.6 % | **+13.7 %** | −2.6 % |
+| sinogram (STIR truncates nothing) | +0.5 % | −0.4 % | −1.8 % |
+
+Smeared over three planes by the `[1, 4, 1]` post-filter that is the bright
+line at every bed junction in the coronal and sagittal views. The top plane of
+the whole volume, which has no bed above it to dilute the zero, is the clean
+proof: deconvolving `recon_lm.npz` plane 274 back through the axial post-filter
+gives exactly 0 with no negative voxels, where `recon.npz` gives 47 % negative.
+
+`recon.axial_mask` keeps the guard — a grid taller than the ring extent is
+still cut, at both ends — but **rounds**: a plane whose centre is within half a
+plane of the outermost ring is in the FOV.

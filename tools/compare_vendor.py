@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""So sánh `recon.npz` với ảnh PET BQML của chính GE, và đo `K`.
+"""So sánh `recon.npz` / `recon_lm.npz` với ảnh PET BQML của chính GE, và đo `K`.
 
-    python3 -m tools.compare_vendor --case chuong \
+    python3 -m tools.compare_vendor --case chuong [--lm] \
         --vendor ~/UET/Handson_PET_CT_Reconstruction/data/cases/20260806_FDG26080604_ok/dicom/PT_s012_PET_WB_3D_AC
 
 `K` là (Bq/mL) trên (count/voxel) — đúng đơn vị mà `d710 export --K` cần.
@@ -10,10 +10,18 @@ Cách đo: lấy mẫu thể tích của pipeline lên ĐÚNG lưới của vend
 độ LPS máy quét), rồi khớp một hệ số duy nhất qua gốc toạ độ. Không căn ảnh,
 không xoay — nếu hai ảnh lệch nhau về hình học thì tương quan sẽ tụt và đó
 chính là tín hiệu cần thấy, chứ không phải thứ nên "sửa" bằng cách căn lại.
+
+**Mốc thời gian phải quy về một.** `recon*.npz` quy về lúc TIÊM, ảnh của GE quy
+về lúc BẮT ĐẦU quét (`DecayCorrection = START`). Chênh nhau đúng một hệ số
+`exp(-λ·Δt)`, 1,41–1,64 trên các ca ở đây — không khử thì `K` đo ra sẽ mang theo
+thời gian hấp thu của từng ca và không còn là hằng số của máy. Dùng chính
+`utils.quant.scan_start_factor` mà `d710 export` dùng, để hai bên không thể lệch
+nhau.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 
@@ -21,6 +29,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from utils import quant
 from utils.attenuation import to_radiological
 from utils.export import grid_origin
 from utils.paths import case as get_case
@@ -84,19 +93,36 @@ def main(argv=None) -> int:
     ap.add_argument("--case", required=True)
     ap.add_argument("--vendor", required=True, help="thư mục series PET BQML của GE")
     ap.add_argument("--out", help="gốc đầu ra; mặc định $D710_OUT")
+    ap.add_argument("--lm", action="store_true",
+                    help="đo trên recon_lm.npz (list-mode) thay vì recon.npz")
     ap.add_argument("--thresh", type=float, default=1000.0,
                     help="ngưỡng Bq/mL để lấy voxel vào phép khớp (mặc định 1000)")
     ap.add_argument("--save", help="ghi thể tích đã căn lưới ra .npz để xem sau")
+    ap.add_argument("--json", metavar="PATH",
+                    help="ghi kết quả ra JSON cho `tools.calib_k` gộp lại")
     args = ap.parse_args(argv)
 
     C = get_case(args.case, args.out)
-    if not C.recon.exists():
-        raise SystemExit(f"error: chưa có {C.recon} — chạy `d710 osem --case {C.name}` trước")
+    src = C.recon_lm if args.lm else C.recon
+    path = "lm" if args.lm else "sino"
+    if not src.exists():
+        raise SystemExit(
+            f"error: chưa có {src} — chạy "
+            f"`d710 {'lm recon' if args.lm else 'osem'} --case {C.name}` trước")
 
-    z = np.load(C.recon, allow_pickle=False)
+    z = np.load(src, allow_pickle=False)
     vol, z0, vox = z["vol"], float(z["z0"]), [float(v) for v in z["vox"]]
     beds = [int(b) for b in z["beds"]]
-    print(f"pipeline : {vol.shape} (z,y,x)  voxel {vox} mm  z0 {z0:.2f}  beds {beds}")
+    print(f"pipeline : {src.name}  {vol.shape} (z,y,x)  voxel {vox} mm  "
+          f"z0 {z0:.2f}  beds {beds}")
+
+    # Quy về mốc thời gian của GE TRƯỚC khi khớp -- nếu không, `K` đo ra sẽ nhân
+    # thêm thời gian hấp thu của riêng ca này.
+    decay, ref_bed, hdr = quant.scan_start_factor(C, beds)
+    uptake_min = -np.log(decay) * hdr["half_life_s"] / np.log(2) / 60
+    vol = vol * decay
+    print(f"mốc      : bed {ref_bed} bắt đầu quét; hấp thu {uptake_min:.1f} min "
+          f"-> × {decay:.4f}   (T½ {hdr['half_life_s']:.1f} s)")
 
     ven, zt, x0t, y0t, pxt, pyt, meta = read_vendor(args.vendor)
     print(f"vendor   : {meta['shape']} {meta['units']}  {meta['recon']}  "
@@ -144,12 +170,34 @@ def main(argv=None) -> int:
     resid = v / (o * k_ls)
     print(f"\n  vendor/(pipeline·K): trung vị {np.median(resid):.3f}  "
           f"p05 {np.percentile(resid,5):.3f}  p95 {np.percentile(resid,95):.3f}")
-    print(f"\n  dùng:  d710 export --case {C.name} --K {k_ls:.1f}")
+    print(f"\n  dùng:  d710 export --case {C.name}"
+          f"{' --lm' if args.lm else ''} --K {k_ls:.1f}")
 
     if args.save:
         np.savez_compressed(args.save, vendor=ven, pipeline=ours,
                             inside=inside, z=zt, K_ls=k_ls)
         print(f"  đã ghi {args.save}")
+
+    if args.json:
+        got = {
+            "case": C.name, "path": path, "recon": src.name,
+            "k_ls": k_ls, "k_med": k_med, "k_tot": k_tot,
+            "r": r, "n": n, "spread_pct": spread,
+            "resid_p05": float(np.percentile(resid, 5)),
+            "resid_p50": float(np.median(resid)),
+            "resid_p95": float(np.percentile(resid, 95)),
+            "overlap": float(ov), "decay_factor": decay,
+            "uptake_min": float(uptake_min),
+            "half_life_s": float(hdr["half_life_s"]),
+            "ref_bed": ref_bed, "beds": beds,
+            "vendor": os.path.abspath(args.vendor),
+            "vendor_recon": meta["recon"], "thresh": args.thresh,
+        }
+        os.makedirs(os.path.dirname(os.path.abspath(args.json)) or ".",
+                    exist_ok=True)
+        with open(args.json, "w") as f:
+            json.dump(got, f, indent=2)
+        print(f"  đã ghi {args.json}")
     return 0
 
 

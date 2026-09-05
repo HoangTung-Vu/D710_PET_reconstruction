@@ -1,9 +1,14 @@
 """count/voxel -> Bq/mL -> SUV. All the quantification, and the constant `K`.
 
 The image coming out of `osem/` is **count/voxel decay-corrected back to the
-injection time**. Converting to Bq/mL takes exactly one scalar:
+injection time**. Converting to Bq/mL takes exactly two scalars:
 
-    Bq/mL = K · x_(count/voxel)
+    Bq/mL = K · exp(-λ·Δt) · x_(count/voxel)
+
+`K` is the scanner constant. `exp(-λ·Δt)` moves the image from our reference
+time (injection) to **GE's** (the start of the series), so that the exported
+Bq/mL is the same physical quantity the vendor's own `PT_s012` carries and the
+two can be compared voxel for voxel. See `scan_start_factor`.
 
 ⚠ **`K` is only valid for THE EXACT correction chain that measured it and for
 ONE voxel size.** The projector accumulates along the voxel step rather than by
@@ -31,15 +36,21 @@ import os
 
 import numpy as np
 
-from .scanner import K_EXPORT, WCC_UNIT_SCALE  # noqa: F401
+from .scanner import K_EXPORT, K_EXPORT_LM, WCC_UNIT_SCALE  # noqa: F401
 
 
-def k_export():
-    """Export's own `K`: `D710_K` > `K_EXPORT` > `None`."""
-    raw = os.environ.get("D710_K")
+def k_export(lm: bool = False):
+    """Export's own `K`: the env var > the `scanner.py` constant > `None`.
+
+    Two constants, not one: the sinogram and the list-mode path put a different
+    number of counts into the same voxel (different sensitivity model, and TOF
+    against non-TOF), so one `K` cannot serve both. `lm` picks the pair.
+    """
+    var, const = (("D710_K_LM", K_EXPORT_LM) if lm else ("D710_K", K_EXPORT))
+    raw = os.environ.get(var)
     if raw:
         return float(raw)
-    return None if K_EXPORT is None else float(K_EXPORT)
+    return None if const is None else float(const)
 
 
 def lowdose_k_scale(case) -> float:
@@ -66,6 +77,38 @@ def dose_bq(hdr) -> float:
 def voxel_ml(vox) -> float:
     """`(z, y, x)` mm -> mL."""
     return float(vox[0] * vox[1] * vox[2]) / 1000.0
+
+
+def scan_start_factor(case, beds) -> tuple[float, int, dict]:
+    """`(exp(-λ·Δt), reference bed, its header)` — our time reference -> GE's.
+
+    `osem/stitch.py` refers every bed back to the **injection**; GE's own
+    `PT_s012` is `DecayCorrection = START`, referred to the **start of the
+    series** (`FrameReferenceTime` 0 on the first bed, and a per-bed
+    `DecayFactor` bringing the rest back to it). The two differ by one scalar,
+    `exp(-λ·Δt)` with `Δt` the uptake time — 1.41 to 1.64 across the FDG cases
+    here, so it is not a detail.
+
+    The frame-duration term of `stitch.decay_factor` does NOT appear: GE applies
+    the same mean-activity-over-the-frame correction, so it cancels. What is
+    left is exactly the decay across the uptake.
+
+    The reference bed is the **earliest-started** one, not bed 1: that is what
+    "series start" means, and it stays right whatever order the table moved in
+    and whichever subset of beds was reconstructed.
+
+    Applied by `d710 export`, and by `tools/compare_vendor.py` before it fits
+    `K` — one function so the two can never drift apart. Without it `K` would
+    absorb the uptake time and stop being a property of the scanner.
+    """
+    from osem.stitch import injection_epoch
+
+    hdrs = {n: case.header(n) for n in beds}
+    ref = min(beds, key=lambda n: hdrs[n]["bed_start_time"])
+    hdr = hdrs[ref]
+    lam = np.log(2) / hdr["half_life_s"]
+    dt_s = hdr["bed_start_time"] - injection_epoch(hdr)
+    return float(np.exp(-lam * dt_s)), int(ref), hdr
 
 
 def wcc_activity_factor(case, bed: int, verbose: bool = True):
@@ -185,9 +228,15 @@ def suv_table(bqml, mask, hdr, out=print) -> dict:
     return got
 
 
-def report(vol, K: float, hdr, vox, out=print) -> dict:
-    """Apply `K`, print the numbers to check before trusting it, return `{bqml, suv, ...}`."""
-    dose = dose_bq(hdr)
+def report(vol, K: float, hdr, vox, dose: float | None = None, out=print) -> dict:
+    """Apply `K`, print the numbers to check before trusting it, return `{bqml, suv, ...}`.
+
+    `dose` defaults to the whole injected dose, which is right when `vol` is
+    referred to the injection. Hand in the decayed dose when `vol` has been moved
+    to a later reference (`scan_start_factor`) — volume and dose must name the
+    same instant or SUV comes out wrong by the ratio between them.
+    """
+    dose = dose_bq(hdr) if dose is None else float(dose)
     vml = voxel_ml(vox)
     bqml = np.asarray(vol) * K
     suv = suv_bw(bqml, dose, hdr["patient_weight_kg"])
@@ -195,7 +244,8 @@ def report(vol, K: float, hdr, vox, out=print) -> dict:
     in_fov = float(bqml.sum(dtype=np.float64)) * vml
 
     out(f">>> K in use = {K:,.2f} (Bq/mL)/(count/voxel)")
-    out(f"total inside the FOV {in_fov / 1e6:6.1f} MBq = {100 * in_fov / dose:.1f} % of the dose"
+    out(f"total inside the FOV {in_fov / 1e6:6.1f} MBq = {100 * in_fov / dose:.1f} %"
+        f" of the {dose / 1e6:.1f} MBq present at the reference time"
         "     [<100 % is correct: the scan does not cover the whole body]")
     out(f"Bq/mL  max {bqml.max():>12,.0f}   body median {np.median(bqml[mask]):>10,.0f}")
     out(f"SUVbw  max {suv.max():>12.1f}   body median {np.median(suv[mask]):>10.3f}"

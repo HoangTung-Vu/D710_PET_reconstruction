@@ -203,9 +203,10 @@ def main(argv=None) -> int:
     ap.add_argument("--out", help="output root; defaults to $D710_OUT")
     ap.add_argument("--format", choices=("nifti", "dicom", "both"), default="both")
     ap.add_argument("--K", type=float,
-                    help="(Bq/mL)/(count/voxel). Default: export's own K "
-                         "($D710_K or quant.K_EXPORT); failing that, the exam's "
-                         "own WCC; failing that, the dose-based UPPER BOUND.")
+                    help="(Bq/mL)/(count/voxel), at the GE time reference. "
+                         "Default: export's own K ($D710_K[_LM] or "
+                         "quant.K_EXPORT[_LM]); failing that, the exam's own "
+                         "WCC; failing that, the dose-based UPPER BOUND.")
     ap.add_argument("--lm", action="store_true",
                     help="export recon_lm.npz (d710 lm recon) instead of recon.npz")
     args = ap.parse_args(argv)
@@ -219,25 +220,46 @@ def main(argv=None) -> int:
     z = np.load(src, allow_pickle=False)
     vol, z0, vox = z["vol"], float(z["z0"]), [float(v) for v in z["vox"]]
     beds = [int(b) for b in z["beds"]]
-    hdr = C.header(beds[0])
+
+    # --- time reference ----------------------------------------------------
+    # The volume arrives referred to the INJECTION; GE's own series is referred
+    # to the start of the scan.  Move ours onto GE's, so the two are the same
+    # physical quantity and a viewer's SUV formula -- which reads back
+    # DecayCorrection = START and the acquisition time below -- is right.
+    # `hdr` is the reference bed's, so the DICOM's AcquisitionTime and this
+    # scaling name the SAME instant.
+    decay, ref_bed, hdr = quant.scan_start_factor(C, beds)
+    uptake_min = -np.log(decay) * hdr["half_life_s"] / np.log(2) / 60
+    print(f"time reference: bed {ref_bed} start (GE's, DecayCorrection=START); "
+          f"uptake {uptake_min:.1f} min -> x {decay:.4f} off the injection "
+          f"reference")
+    vol = vol * decay
+    # The dose STILL PRESENT at that instant. Scaling the volume and the dose by
+    # the same factor leaves SUV untouched -- which is the point: SUV was already
+    # right, only the Bq/mL scale moves.
+    dose = quant.dose_bq(hdr) * decay
 
     # --- K ---------------------------------------------------------------
     K = args.K
     if K is not None:
         print(f"K from --K = {K:,.2f}")
     if K is None:
-        K = quant.k_export()
+        K = quant.k_export(lm=args.lm)
         if K is not None:
+            var = "D710_K_LM" if args.lm else "D710_K"
+            const = "quant.K_EXPORT_LM" if args.lm else "quant.K_EXPORT"
             print(f"export's own K = {K:,.2f}"
-                  + ("   (D710_K)" if os.environ.get("D710_K") else
-                     "   (quant.K_EXPORT)"))
+                  + (f"   ({var})" if os.environ.get(var) else f"   ({const})"))
     if K is None:
-        f = quant.wcc_activity_factor(C, beds[0])
+        f = quant.wcc_activity_factor(C, ref_bed)
         if f is not None:
             K = quant.k_from_wcc(f)
             print(f"  hrActivityFactor = {f:.6f}   (× {quant.WCC_UNIT_SCALE:g}"
                   f" = {K:,.2f})")
-    k_dose = quant.k_from_dose(vol, vox, quant.dose_bq(hdr))
+    # Volume and dose are both at the reference time, so the bound is the same
+    # number it always was -- the decay cancels, as it must for a bound on a
+    # constant that does not depend on when the patient was scanned.
+    k_dose = quant.k_from_dose(vol, vox, dose)
     print(f"K upper bound (100 % of the dose inside the FOV) = {k_dose:,.1f}")
     if K is None:
         K = k_dose
@@ -252,11 +274,12 @@ def main(argv=None) -> int:
         K *= ks
         print(f"low-dose case: K x {ks:g} = {K:,.2f}")
 
-    r = quant.report(vol, K, hdr, vox)
+    r = quant.report(vol, K, hdr, vox, dose=dose)
 
     # --- write -------------------------------------------------------------
     # The two reconstruction paths write side by side, never on top of each
-    # other: same case, same K, different projector.
+    # other: same case, same time reference, its own K and its own series number
+    # so a viewer showing both can tell them apart.
     tag = "_lm" if args.lm else ""
     C.export.mkdir(parents=True, exist_ok=True)
     if args.format in ("nifti", "both"):
@@ -273,7 +296,8 @@ def main(argv=None) -> int:
         engine = "LM-OSEM PyTomography" if args.lm else "OSEM SIRF"
         paths = write_dicom(r["bqml"], str(C.export / f"dicom{tag}"), hdr,
                             vox[2], vox[1], vox[0], z0,
-                            series_desc=f"{engine} {n_it}x{n_sub} BQML")
+                            series_desc=f"{engine} {n_it}x{n_sub} BQML",
+                            series_number=902 if args.lm else 901)
         print(f"wrote {len(paths)} DICOM files -> {C.export / ('dicom' + tag)}")
         print("   Units=BQML + dose + weight + DecayCorrection=START -> "
               "the viewer computes SUV itself;\n   FrameOfReferenceUID = the "

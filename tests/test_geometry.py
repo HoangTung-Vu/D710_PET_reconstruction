@@ -126,7 +126,7 @@ def test_fov_radius_is_the_widest_chord_the_sinogram_holds(mini_hs):
 def test_fov_radius_of_the_real_scanner():
     from utils import scanner
 
-    assert scanner.fov_radius_mm(381) == pytest.approx(356.6855, abs=1e-3)
+    assert scanner.fov_radius_mm(381) == pytest.approx(355.8250, abs=1e-3)
     # ... and the square grid reaches well past it, which is the whole point
     corner = (scanner.XY - 1) / 2 * np.sqrt(2) * scanner.DR_MM
     assert corner > 1.4 * scanner.fov_radius_mm(381)

@@ -18,13 +18,13 @@ import numpy as np
 
 from utils.geometry import crystal_to_det, det_pair_map
 from utils.scanner import (C_MM_PS, NDET, NRINGS, NXTAL,  # noqa: F401
-                           N_TOF_RAW, RING_PITCH_MM, R_MM, TIMING_PS,
+                           N_TOF_RAW, RING_PITCH_MM, R_EFF_MM, R_MM, TIMING_PS,
                            TOF_LSB_PS, TOF_RANGE_MM, VIEW_OFFSET_DEG)
 
 from . import interfile
 
 
-def scanner_lut(nrings=NRINGS, ndet=NDET, r_mm=R_MM, pitch_mm=RING_PITCH_MM,
+def scanner_lut(nrings=NRINGS, ndet=NDET, r_mm=R_EFF_MM, pitch_mm=RING_PITCH_MM,
                 offset_deg=VIEW_OFFSET_DEG, stir_frame=True):
     """`(nrings*ndet, 3)` crystal centres in mm -- PyTomography's `scanner_LUT`.
 
@@ -42,6 +42,11 @@ def scanner_lut(nrings=NRINGS, ndet=NDET, r_mm=R_MM, pitch_mm=RING_PITCH_MM,
       at `(R, 0)`. Left as `(cos, sin)` the image comes out rotated by exactly
       270 deg; with this, the angular profiles of the two reconstructions agree
       at **+0.994 with zero rotation** (`tools/lm_frame.py`).
+
+    `r_mm` is the EFFECTIVE ring radius (crystal face + depth of interaction),
+    which is where STIR puts the LOR and where GE's `effectiveRingDiameter` says
+    the LOR is. It was `R_MM` (the bare 405.10) until 2026-09-04, making every
+    list-mode image 2.3 % small. See GEOMETRY_AUDIT.md.
 
     `stir_frame=False` gives the raw GE frame, for comparison only.
     """

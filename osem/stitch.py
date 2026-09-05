@@ -4,8 +4,14 @@
 
 The six beds are acquired 91 s apart, with bed 6 up to 458 s later than bed 1.
 Stitching directly glues six different time points into one volume → a spurious
-axial gradient. Everything is referred back to the **injection time**, matching
-DICOM's `DecayCorrection = START`:
+axial gradient. Everything is referred back to the **injection time**.
+
+⚠ That is NOT what DICOM's `DecayCorrection = START` means, and it is not what
+GE's own `PT_s012` carries: GE refers its series to the **start of the scan**
+instead. The two differ by `exp(-λ·Δt_uptake)`, 1.41–1.64 on the cases here.
+`utils/quant.scan_start_factor` is the one place that conversion lives, and
+`d710 export` applies it on the way out — so what leaves this module stays on
+the injection reference, and nothing downstream may assume otherwise.
 
     f = exp(−λ·Δt) · (1 − exp(−λ·T)) / (λ·T)
         exp(−λ·Δt)          decay from injection to the start of the bed

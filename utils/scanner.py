@@ -113,11 +113,26 @@ CARNEY_B = {80: 0.681, 100: 0.755, 120: 0.837, 140: 1.0}
 #: Not yet derived; only a NEMA measurement will settle it.
 WCC_UNIT_SCALE = 1e4
 
-#: Export's own `K`, in (Bq/mL)/(count/voxel), or `$D710_K`. INDEPENDENT of the
-#: scanner's WCC. `None` = fall back to the WCC, then to the dose-based bound.
-#: ⚠ Valid only for the exact correction chain it was measured with, and for one
-#: voxel size — that is why `DR_MM` is pinned above rather than left to `--xy`.
-K_EXPORT = None
+#: Export's own `K`, in (Bq/mL)/(count/voxel). INDEPENDENT of the scanner's WCC:
+#: measured against GE's own BQML reconstruction of the same exams
+#: (`tools/compare_vendor.py` -> `tools/calib_k.py`). `None` = fall back to the
+#: WCC, then to the dose-based bound.
+#:
+#: ⚠ Valid ONLY for the exact chain it was measured with:
+#:   * F-18, and the GE series-start time reference (`quant.scan_start_factor`);
+#:   * `XY` 337 at `DR_MM` 2.1306 mm, `PLANE_MM` axially — the projector
+#:     accumulates along the voxel STEP, so another voxel size is another `K`
+#:     (that is why `DR_MM` is pinned above rather than left to `--xy`);
+#:   * `N_SUBSETS` x `N_ITERATIONS`, unregularised OSEM;
+#:   * the post-filter below, on;
+#:   * GE's own randoms / scatter / normdt / norm_only (`d710 estimate`).
+#:
+#: TWO constants, because the two reconstructors do not put the same number of
+#: counts in a voxel: `K_EXPORT` is the non-TOF sinogram path (`d710 osem`),
+#: `K_EXPORT_LM` the 55-bin TOF list-mode path (`d710 lm recon`). Using one for
+#: both was measured wrong by ~2.1x.
+K_EXPORT = 63_002.1      # 5 ca, tản 8.3 %, r >= 0.962
+K_EXPORT_LM = 124_158.6      # 5 ca, tản 10.8 %, r >= 0.976
 
 
 def fov_radius_mm(n_tang: int, ndet: int = NDET,

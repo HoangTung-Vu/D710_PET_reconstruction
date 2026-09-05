@@ -194,6 +194,7 @@ TTY=(); [[ -t 1 ]] && TTY=(-t)
 ARGV=(docker run --rm -i "${TTY[@]}" --no-healthcheck
       --user "$(id -u):$(id -g)" ${GROUPS_ADD[@]+"${GROUPS_ADD[@]}"} -e HOME=/tmp
       -e D710_OUT="$O" -e D710_IMAGE="$IMAGE" -e PYTHONPATH="$HERE" -w "$O"
+      ${D710_K:+-e D710_K="$D710_K"} ${D710_K_LM:+-e D710_K_LM="$D710_K_LM"}
       "${MOUNTS[@]}" --entrypoint bash "$SIRF_IMAGE"
       -c '. "$0"; exec python3 -u -m "$@"' "$SIRF_ENV_SH" "${MOD[@]}")
 

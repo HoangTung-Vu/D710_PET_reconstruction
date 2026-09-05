@@ -17,6 +17,8 @@ import pytest
 
 from utils import attenuation
 from utils import export
+from utils import quant
+from utils.paths import case as get_case
 import synth_ct
 
 VX = VY = 2.1306
@@ -281,3 +283,134 @@ def test_a_ct_feature_comes_back_at_the_same_patient_coordinate(ct_dir, bed24,
     # synth_ct puts the insert at x = 0, y = +0.15 * 64 * 1.3672 mm.
     assert x == pytest.approx(0.0, abs=vx)
     assert y == pytest.approx(0.15 * 64 * synth_ct.DEFAULT_PIXEL_MM, abs=vy)
+
+
+# ------------------------------------------------ our time reference vs GE's
+
+def _case_with_beds(tmp_path, starts):
+    """A `Case` whose only content is one header sidecar per bed.
+
+    `starts` maps bed number -> seconds after the injection.  Everything else
+    comes from `HDR`, so the only thing varying between the beds is the one
+    field `scan_start_factor` selects on.
+    """
+    import json
+
+    inj = dt.datetime.strptime(HDR["radiopharm_start_datetime"][:14],
+                               "%Y%m%d%H%M%S").replace(
+                                   tzinfo=dt.timezone.utc).timestamp()
+    C = get_case("tref", tmp_path).mkdirs()
+    for n, dt_s in starts.items():
+        hdr = dict(HDR, bed_start_time=inj + dt_s)
+        with open(C.decoded / f"bed{n}.json", "w") as f:
+            json.dump(hdr, f)
+    return C, inj
+
+
+def test_scan_start_factor_is_the_uptake_decay(tmp_path):
+    """One scalar, and it is exp(-lambda*uptake) -- nothing about frame length.
+
+    GE applies the same mean-activity-over-the-frame correction that
+    `stitch.decay_factor` does, so that term cancels and must NOT appear here.
+    """
+    uptake = 58.6 * 60
+    C, _ = _case_with_beds(tmp_path, {1: uptake})
+    decay, ref, hdr = quant.scan_start_factor(C, [1])
+
+    lam = np.log(2) / HDR["half_life_s"]
+    assert ref == 1
+    assert decay == pytest.approx(np.exp(-lam * uptake))
+    assert hdr["bed_start_time"] == pytest.approx(
+        dt.datetime.strptime(HDR["radiopharm_start_datetime"][:14],
+                             "%Y%m%d%H%M%S").replace(
+                                 tzinfo=dt.timezone.utc).timestamp() + uptake)
+    # 1.41-1.64 on the real cases; the factor is large, not a rounding detail.
+    assert 1.3 < 1 / decay < 1.8
+
+
+def test_scan_start_factor_takes_the_earliest_bed_not_the_lowest_numbered(tmp_path):
+    """"Series start" is a time, so it is chosen by time.
+
+    Bed order is not guaranteed to follow acquisition order, and a partial
+    `--beds` run need not include bed 1 at all.  Picking `beds[0]` would then
+    put our reference on a different instant from the `AcquisitionTime` the
+    DICOM carries -- a silent scale error of a few per cent.
+    """
+    C, _ = _case_with_beds(tmp_path, {1: 3600.0, 2: 3000.0, 3: 3300.0})
+    decay, ref, hdr = quant.scan_start_factor(C, [1, 2, 3])
+    assert ref == 2
+    assert decay == pytest.approx(np.exp(-np.log(2) / HDR["half_life_s"] * 3000.0))
+
+    # And a subset that excludes it moves the reference, as it must.
+    _, ref2, _ = quant.scan_start_factor(C, [1, 3])
+    assert ref2 == 3
+
+
+def test_moving_to_the_ge_reference_changes_bq_but_never_suv(tmp_path):
+    """The invariant that makes the switch safe.
+
+    Bq/mL is quoted at a different instant, so it moves by exactly the decay.
+    SUV does not move at all: the volume and the dose are scaled by the same
+    factor, which is the whole reason SUV was already right on the injection
+    reference.  If this test ever fails, one of the two was scaled and the other
+    was not, and every SUV in the export is wrong by that ratio.
+    """
+    uptake = 70 * 60
+    C, _ = _case_with_beds(tmp_path, {1: uptake})
+    decay, _, hdr = quant.scan_start_factor(C, [1])
+    vol = marked_volume()
+    vox = (VZ, VY, VX)
+    K = 62_000.0
+
+    inj = quant.report(vol, K, hdr, vox, out=lambda *_: None)
+    ge = quant.report(vol * decay, K, hdr, vox,
+                      dose=quant.dose_bq(hdr) * decay, out=lambda *_: None)
+
+    assert ge["bqml"].max() == pytest.approx(inj["bqml"].max() * decay, rel=1e-6)
+    np.testing.assert_allclose(ge["suv"], inj["suv"], rtol=1e-6)
+    # And the fraction of the dose seen in the FOV is unchanged too -- both
+    # numerator and denominator moved together.
+    assert ge["mbq_in_fov"] / (ge["dose_bq"] / 1e6) == pytest.approx(
+        inj["mbq_in_fov"] / (inj["dose_bq"] / 1e6), rel=1e-6)
+
+
+def test_the_dose_bound_on_k_does_not_depend_on_when_the_scan_happened(tmp_path):
+    """K is a property of the scanner, so its bound cannot carry an uptake time."""
+    C, _ = _case_with_beds(tmp_path, {1: 70 * 60})
+    decay, _, hdr = quant.scan_start_factor(C, [1])
+    vol = marked_volume()
+    vox = (VZ, VY, VX)
+
+    assert quant.k_from_dose(vol * decay, vox, quant.dose_bq(hdr) * decay) == \
+        pytest.approx(quant.k_from_dose(vol, vox, quant.dose_bq(hdr)))
+
+
+# ------------------------------------------------------- one K for each path
+
+def test_k_export_reads_the_constant_of_the_path_it_is_asked_for(monkeypatch):
+    monkeypatch.delenv("D710_K", raising=False)
+    monkeypatch.delenv("D710_K_LM", raising=False)
+    monkeypatch.setattr(quant, "K_EXPORT", 111.0)
+    monkeypatch.setattr(quant, "K_EXPORT_LM", 222.0)
+    assert quant.k_export() == 111.0
+    assert quant.k_export(lm=True) == 222.0
+
+
+def test_the_env_var_of_each_path_wins_over_its_constant(monkeypatch):
+    monkeypatch.setattr(quant, "K_EXPORT", 111.0)
+    monkeypatch.setattr(quant, "K_EXPORT_LM", 222.0)
+    monkeypatch.setenv("D710_K", "333")
+    monkeypatch.delenv("D710_K_LM", raising=False)
+    assert quant.k_export() == 333.0
+    # ...and it does NOT leak into the other path.
+    assert quant.k_export(lm=True) == 222.0
+
+
+def test_an_unmeasured_path_returns_none_rather_than_borrowing_the_other(monkeypatch):
+    """The two are ~2x apart, so falling back to the other K is worse than the
+    WCC guess the caller would otherwise use."""
+    monkeypatch.delenv("D710_K", raising=False)
+    monkeypatch.delenv("D710_K_LM", raising=False)
+    monkeypatch.setattr(quant, "K_EXPORT", 111.0)
+    monkeypatch.setattr(quant, "K_EXPORT_LM", None)
+    assert quant.k_export(lm=True) is None

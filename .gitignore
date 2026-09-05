@@ -29,3 +29,6 @@ __pycache__/
 # The console tree is 18 GB of GE software and lives outside this repo
 # (custom_tool/petsw).  Nothing here should ever pull it in.
 petsw/
+
+# The rerun script writes this before patching K_EXPORT_LM (../rerun_lm_ok.sh).
+*.bak

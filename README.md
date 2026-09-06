@@ -84,6 +84,37 @@ mới là của conda. Nên `d710` thử lần lượt: `$D710_PYTHON` (nếu đ
 **toàn bộ danh sách đã thử**. Chạy được với venv, `uv`, hay không có conda.
 `tests/test_python_resolution.py` chốt điều đó.
 
+## Cài phụ thuộc Python — không cần conda
+
+Dự án `uv`, tên `petct_reconstruction`. `pyproject.toml` giữ **phụ thuộc trực
+tiếp** (tìm bằng cách duyệt AST toàn cây, không phải `pip freeze` — env conda
+có 108 gói, cây này import 10), `uv.lock` là bản khoá và **được commit**:
+
+```bash
+uv sync                      # dựng .venv và cài đúng bản khoá
+uv run pytest -q             # chạy test trong đó
+uv run python -m utils.export --case ped --format nifti
+```
+
+`d710` tự tìm ra env này (`$VIRTUAL_ENV/bin/python` nằm trong danh sách nó
+thử), hoặc chỉ đích danh:
+
+```bash
+export D710_PYTHON=$PWD/.venv/bin/python
+```
+
+Đã kiểm trên máy **không có conda** (`PATH=/usr/bin:/bin`): `d710 export` chạy
+trọn vẹn, và `pytest` cho **315 passed, 58 skipped, 0 lỗi** — phần cần SIRF tự
+skip.
+
+**`sirf` và `stir` KHÔNG có trong `pyproject.toml`, và cố ý như vậy.** Chúng
+được build từ nguồn vào `$CONDA_PREFIX/dlevel/`, là bản dựng C++ gắn với đúng
+thư viện của env đó và cần `LD_LIBRARY_PATH` của env khi nạp — không file phụ
+thuộc nào tái tạo được ở máy khác. Thiếu chúng thì `attn` / `osem` / `export`
+báo rõ đã thử những trình thông dịch nào rồi dừng; `decode`, `estimate`,
+`tostir`, `exam`, `lm`, `lowdose` không ảnh hưởng. Vì thế đây **không** phải
+bản sao của env `petct_reconstruction`.
+
 ## Đầu ra: `$D710_OUT`, không bao giờ nằm trong cây mã
 
 `--out` > `$D710_OUT` > **lỗi**. Cố ý không có mặc định.

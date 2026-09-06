@@ -13,6 +13,7 @@ run every time, and it catches the whole class of failure that actually happened
 
 from __future__ import annotations
 
+import functools
 import re
 
 import pytest
@@ -29,16 +30,35 @@ NAMED = re.compile(r"`([^`\s]+\.md)`|(?<![\w`/])((?:[A-Za-z0-9_][\w./-]*/)?"
 EXCLUDE = {"tests/audit_petsw.md", "tests/audit_decode.md",
            "tests/audit_frameworks.md", "tests/test_docs_are_not_stale.py"}
 
+#: Not our code. `.venv/` lives inside the tree (uv puts it beside
+#: `pyproject.toml`), so without this the scan walks every installed package --
+#: ~11,000 files, and their docs are not ours to keep current.
+NOT_OURS = {".venv", "venv", "site-packages", "__pycache__", ".git",
+            "node_modules", ".pytest_cache", "build", "dist"}
+
 
 def sources():
     for pattern in ("*.py", "*.sh", "*.md"):
         for p in ROOT.rglob(pattern):
-            if "__pycache__" in p.parts or ".git" in p.parts:
+            if NOT_OURS & set(p.parts):
                 continue
             if str(p.relative_to(ROOT)) in EXCLUDE:
                 continue
             yield p
     yield ROOT / "d710"
+
+
+@functools.lru_cache(maxsize=1)
+def our_documents() -> frozenset[str]:
+    """Basenames of every `.md` in this tree and one level below the repo root.
+
+    Cached and pruned of `.venv/`: the naive `rglob` costs ~11,000 stats per
+    lookup once uv's environment lives inside the tree.
+    """
+    names = {p.name for p in ROOT.rglob("*.md") if not NOT_OURS & set(p.parts)}
+    names |= {p.name for p in REPO.glob("*.md")}
+    names |= {p.name for p in REPO.glob("*/*.md")}
+    return frozenset(names)
 
 
 def resolves(name: str, origin) -> bool:
@@ -48,12 +68,9 @@ def resolves(name: str, origin) -> bool:
     then by bare filename anywhere in the tree -- a citation is a pointer for a
     human, so finding the document at all is enough.
     """
-    tail = name.split("/")[-1]
-    if any((base / name).exists()
-           for base in (origin.parent, ROOT, REPO)):
+    if any((base / name).exists() for base in (origin.parent, ROOT, REPO)):
         return True
-    return any(True for _ in REPO.glob(f"*/{tail}")) or (REPO / tail).exists() \
-        or any(True for _ in ROOT.rglob(tail))
+    return name.split("/")[-1] in our_documents()
 
 
 @pytest.mark.parametrize("path", sorted(sources(), key=str),

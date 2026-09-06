@@ -32,3 +32,7 @@ petsw/
 
 # The rerun script writes this before patching K_EXPORT_LM (../rerun_lm_ok.sh).
 *.bak
+
+# uv puts the environment beside pyproject.toml.  `uv.lock` IS tracked -- it is
+# what makes the install reproducible -- but the environment itself is not.
+.venv/

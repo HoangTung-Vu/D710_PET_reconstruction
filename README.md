@@ -69,9 +69,20 @@ kiểm lại lúc chạy và tự chỉnh `xy` nếu bản SIRF hiện tại s�
 
 Chi tiết: `lm/README.md`, `lowdose/README.md`.
 
-Bước 1–3 chỉ cần **bash + docker + python3 trần** trên host. Không conda, không
-numpy, không pydicom, không i386 multiarch, không checkout `custom_tool/`. Chỉ
-`osem` và `export` cần môi trường project, vì SIRF không có trong image.
+Bước 1–3 chỉ cần **bash + docker + một python3 bất kỳ** trên host. Không conda,
+không numpy, không pydicom, không i386 multiarch, không checkout `custom_tool/`.
+Chỉ `osem`, `attn`, `export`, `lm`, `lowdose` cần môi trường project, vì SIRF và
+PyTomography không có trong image.
+
+**`d710` không giả định `python3` là trình thông dịch đúng.** Trên máy có
+`/usr/bin` đứng trước conda trong `PATH` — trường hợp phổ biến — thì `python3`
+là python hệ thống *ngay cả khi đã activate* `petct_reconstruction`, còn `python`
+mới là của conda. Nên `d710` thử lần lượt: `$D710_PYTHON` (nếu đặt thì dùng
+đúng cái đó, sai thì báo lỗi chứ không lặng lẽ đổi), rồi `python3`, `python`,
+`$VIRTUAL_ENV/bin/python`, `$CONDA_PREFIX/bin/python`, `/usr/bin/python3`,
+`/usr/local/bin/python3`. Lệnh nào cần thêm gói mà không tìm được thì in ra
+**toàn bộ danh sách đã thử**. Chạy được với venv, `uv`, hay không có conda.
+`tests/test_python_resolution.py` chốt điều đó.
 
 ## Đầu ra: `$D710_OUT`, không bao giờ nằm trong cây mã
 

@@ -200,25 +200,59 @@ need_image() {
 #             needs the env's LD_LIBRARY_PATH; the interpreter path is not enough)
 #   export -> numpy + nibabel + pydicom, pure Python, interpreter path is enough
 # Forcing `export` to activate like `osem` would be asking for too much.
+# Interpreters to try, in preference order.  `python3` is NOT assumed to be the
+# right one, or even to exist: on a machine whose PATH puts /usr/bin first,
+# `python3` is the system interpreter even inside an activated conda env, while
+# `python` is conda's -- so trying only one of the two picks the wrong
+# interpreter on about half the machines this runs on.  Nothing here requires
+# conda: a plain `python3`, a venv, or a `uv` environment all resolve.
+py_candidates() {
+    local seen=""
+    # An explicit choice wins outright and is never second-guessed.
+    if [[ -n "${D710_PYTHON:-}" ]]; then echo "$D710_PYTHON"; return; fi
+    local c
+    for c in python3 python \
+             "${VIRTUAL_ENV:+$VIRTUAL_ENV/bin/python}" \
+             "${CONDA_PREFIX:+$CONDA_PREFIX/bin/python}" \
+             /usr/bin/python3 /usr/local/bin/python3; do
+        [[ -n "$c" ]] || continue                       # unset VIRTUAL_ENV etc.
+        case " $seen " in *" $c "*) continue ;; esac    # no duplicates
+        seen="$seen $c"
+        echo "$c"
+    done
+}
+
+#: First candidate that is a working Python 3, or empty.  Used for the steps
+#: that need only the standard library (decode / estimate / tostir).
+resolve_py() {
+    local c
+    for c in $(py_candidates); do
+        command -v "$c" >/dev/null 2>&1 || continue
+        "$c" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] >= (3, 8) else 1)' \
+            2>/dev/null && { echo "$c"; return 0; }
+    done
+    return 1
+}
+
 need_py() {
-    local mods="$1" what="$2"
-    "$PY" -c "import ${mods}" 2>/dev/null && return
-    # The project's conda env only has `python`, NOT `python3`, so a bare
-    # `python3` is the system one -- and someone who just activated the right
-    # env gets told to go activate it. Try `python` before concluding, but only
-    # while PY is still the default: someone who set D710_PYTHON has chosen,
-    # and must not be silently overridden.
-    if [[ -z "${D710_PYTHON:-}" ]] && command -v python >/dev/null 2>&1 \
-       && python -c "import ${mods}" 2>/dev/null; then
-        PY=python
-        return
+    local mods="$1" what="$2" c
+    # An explicit D710_PYTHON is honoured or refused -- never silently replaced.
+    if [[ -n "${D710_PYTHON:-}" ]]; then
+        "$D710_PYTHON" -c "import ${mods}" 2>/dev/null && { PY="$D710_PYTHON"; return; }
+    else
+        for c in $(py_candidates); do
+            command -v "$c" >/dev/null 2>&1 || continue
+            if "$c" -c "import ${mods}" 2>/dev/null; then PY="$c"; return; fi
+        done
     fi
-    die "\`$PY\` cannot import: ${mods}
+    die "no interpreter here can import: ${mods}
+  tried: $(py_candidates | tr '\n' ' ')
   ${what}
       conda activate petct_reconstruction
-  or point straight at it:
-      export D710_PYTHON=\$HOME/miniconda3/envs/petct_reconstruction/bin/python
-  (only \`osem\` and \`export\` need it; decode/estimate/tostir run on a bare python3.)"
+  or point straight at one that can:
+      export D710_PYTHON=/path/to/python
+  (only \`osem\`, \`attn\`, \`export\`, \`lm\` and \`lowdose\` need more than the
+  standard library; decode/estimate/tostir/exam run on any python3.)"
 }
 
 need_sirf() {
@@ -230,6 +264,15 @@ need_sirf() {
 need_export_py() {
     need_py "numpy, nibabel, pydicom" "The project environment is required:"
 }
+
+# The stdlib-only steps still need SOME working Python 3, and `python3` is not
+# guaranteed to be one (or to exist).  Resolve it now so decode/estimate/tostir
+# fail here, with the list of what was tried, rather than three frames deep.
+if [[ -z "${D710_PYTHON:-}" ]]; then
+    PY="$(resolve_py)" || die "no working Python 3 found on this machine.
+  tried: $(py_candidates | tr '\n' ' ')
+  install one, or point at it:  export D710_PYTHON=/path/to/python"
+fi
 
 # docker run with --user, so every file created belongs to the caller.  Without
 # it everything under the output directory ends up owned by root.

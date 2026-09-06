@@ -9,41 +9,86 @@ duy nhất dựng ở đây, từ CT.
 
 ## Chạy
 
+Chuẩn bị một lần:
+
 ```bash
-docker load -i d710_full.tar               # image bàn giao nguyên con, một lần
-export D710_OUT=~/UET/d710_out             # ĐẦU RA ĐI ĐÂU — không có mặc định
-
-D710/d710 exam --raw ~/Documents/11082026/petRDFS/NQLHQWPU/SYQGRVWD/QONDOBON \
-               --ct  ~/Documents/11082026/PESI/p1/e1/s2 \
-               --case ped
-
-conda activate petct_reconstruction        # từ đây trở đi mới cần SIRF
-D710/d710 osem   --case ped
-D710/d710 export --case ped --format both
+docker load -i d710_full.tar     # image của hãng, nếu chưa có
+cd D710 && uv sync               # decode/estimate/tostir/export + test
 ```
 
-`d710 exam` = `decode` + `estimate` + `tostir` cho **mọi bed**, bỏ qua bed đã
-xong, nên chạy lại sau khi hỏng giữa chừng là an toàn (`--force` để làm lại).
+**Bước list-mode (3b) cần thêm `parallelproj`.** Gói này **không có trên PyPI**
+(404) và `pytomography` **cũng không khai nó** trong `requires_dist`, nên
+`uv sync` cho ra một PyTomography import được nhưng tái tạo thì không — nó
+import lười bên trong `pytomography.projectors.PET`, chỉ `d710 lm recon` mới
+chạm tới.
+
+Nó **không cần conda để chạy**, chỉ cần chỗ để lấy về: phần Python là thuần
+Python, phần biên dịch chỉ là một `libparallelproj_c.so` 68 KB, và
+`parallelproj.backend` nhận biến `$PARALLELPROJ_C_LIB` chỉ thẳng đường dẫn — cả
+hai bỏ vào `.venv` là chạy. Trong lúc chưa có script lấy về, dùng python của
+conda cho riêng bước 3b như lệnh dưới.
+
+Dựng trọn một ca, **cả hai đường tái tạo**. Chạy từ trong `D710/`:
+
+```bash
+export D710_OUT=~/UET/d710_out         # ĐẦU RA ĐI ĐÂU — không có mặc định
+export D710_PYTHON=$PWD/.venv/bin/python
+CASE=fdg26081901
+SRC=~/UET/Handson_PET_CT_Reconstruction/data/cases/20260819_FDG26081901_ok
+
+# 1. RDF -> sinogram + bảng sự kiện + bốn số hạng của GE  (decode+estimate+tostir)
+./d710 exam --case $CASE \
+    --raw  $SRC/raw/petRDFS/NQLHXWDK/PZAMCDES/USIRBPEU \
+    --ct   $SRC/dicom/CT_s002_CT_WB_AC_5mm \
+    --listmode --lists $SRC/raw/petLists/NQLHXWDK/PZAMCDES/USIRBPEU
+
+# 2. suy giảm từ CT  (SIRF; --ct tự đọc từ sidecar của bed)
+./d710_isolate_stir.sh attn --case $CASE
+
+# 3a. đường sinogram, non-TOF        -> recon.npz
+./d710_isolate_stir.sh osem --case $CASE --resume
+
+# 3b. đường list-mode, TOF đủ 55 bin -> recon_lm.npz  (TOF là mặc định ở đây)
+#     cần conda: parallelproj không có trên PyPI
+env D710_PYTHON=$HOME/miniconda3/envs/petct_reconstruction/bin/python \
+    ./d710 lm recon --case $CASE --resume
+
+# 4. Bq/mL + SUV -> NIfTI + DICOM
+./d710_isolate_stir.sh export --case $CASE --format both
+./d710_isolate_stir.sh export --case $CASE --format both --lm
+```
+
+Chỉ bước 3b cần conda; SIRF ở bước 2/3a/4 đến từ image `sirf-local:0.1`, còn
+bước 1 chạy bằng python3 nào cũng được. Bỏ `--listmode --lists` ở bước 1 nếu chỉ
+cần đường sinogram, khi đó bỏ luôn 3b và lần `export --lm` — và **cả pipeline
+sinogram không cần conda ở đâu cả**.
+
+`exam` bỏ qua bed đã xong nên chạy lại sau khi hỏng giữa chừng là an toàn;
+`--force` để làm lại từ đầu. `osem`/`lm recon` cũng vậy với `--resume`, và chúng
+tự nhận ra thiết lập đã đổi thì dựng lại bed đó chứ không dùng lại nhầm.
 
 | lệnh | làm gì | chạy ở đâu |
 |---|---|---|
-| `d710 decode` | RDF → Interfile + singles (+ bảng sự kiện `bed<n>.lm.npy`) | container |
-| `d710 estimate` | kernel GE → `randoms/scatter/normdt/norm_only.f32` | host điều phối, mọi bước con trong container |
-| `d710 tostir` | `.f32` → Interfile STIR, tự kiểm bit-exact | container |
+| `d710 decode` | RDF → Interfile + singles (+ bảng sự kiện `bed<n>.lm.npy`) | `d710:full` |
+| `d710 estimate` | kernel GE → `randoms/scatter/normdt/norm_only.f32` | `d710:full` |
+| `d710 tostir` | `.f32` → Interfile STIR, tự kiểm bit-exact | `d710:full` |
 | `d710 exam` | cả ba, mọi bed | ↑ |
-| `d710 attn` | CT → `work/bed<n>/attn.hs` | **SIRF** |
-| `d710 osem` | OSEM từng bed + ghép trục → `recon.npz` | **SIRF** |
-| `d710 export` | Bq/mL + SUV → NIfTI/DICOM (`--lm` cho `recon_lm.npz`) | **SIRF** env |
-| `d710 lm` | LM-OSEM list-mode → `recon_lm.npz` | **PyTomography**, KHÔNG cần SIRF |
-| `d710 lowdose` | bản liều thấp của một ca | numpy thuần |
-| `d710 read` | đọc một `.f32` của vendor | container |
-| `d710 shell` | shell tương tác trong image | container |
+| `d710 attn` | CT → `work/bed<n>/attn.hs` | `sirf-local:0.1` |
+| `d710 osem` | OSEM từng bed + ghép trục → `recon.npz` | `sirf-local:0.1` |
+| `d710 export` | Bq/mL + SUV → NIfTI/DICOM (`--lm` cho `recon_lm.npz`) | `sirf-local:0.1` |
+| `d710 lm` | LM-OSEM list-mode → `recon_lm.npz` | python của host |
+| `d710 lowdose` | bản liều thấp của một ca | python của host |
+| `d710 read` | đọc một `.f32` của vendor | `d710:full` |
+| `d710 shell` | shell tương tác trong image | `d710:full` |
+
+`d710_isolate_stir.sh` chỉ nhận **`attn` / `osem` / `export`**; mọi lệnh khác nó
+chuyển thẳng cho `./d710`, nên gõ nhầm wrapper không sai kết quả.
 
 ## Hai runtime, tách hẳn nhau
 
 | | SIRF/STIR | PyTomography |
 |---|---|---|
-| ở đâu | image `sirf-local:0.1`, gọi qua `./d710_isolate_stir.sh` | conda env `petct_reconstruction` |
+| ở đâu | image `sirf-local:0.1`, gọi qua `./d710_isolate_stir.sh` | python của host (`.venv` của `uv`, hoặc env conda cũ) |
 | lệnh | `attn`, `osem`, `export` | `lm`, `lowdose` |
 
 `lm/` và `lowdose/` **không import `sirf` hay `stir`** ở bất kỳ đâu: layout

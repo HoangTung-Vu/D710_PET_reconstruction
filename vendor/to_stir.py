@@ -229,11 +229,11 @@ def write_term(arr_ge: np.ndarray, stem: str, out: str, template: str) -> dict:
     hdr = re.sub(r"(?im)^(\s*!?\s*number of bytes per pixel\s*:=).*$", r"\1 4", hdr)
     # Every term written here is non-TOF, whatever the prompts are.
     hdr = strip_tof(hdr)
-    with open(os.path.join(out, stem + ".hs"), "w") as f:
-        f.write(hdr)
-
+    # Data first, header second
     a = ge_to_stir(arr_ge).astype("<f4", copy=False)
     a.tofile(os.path.join(out, data_name))
+    with open(os.path.join(out, stem + ".hs"), "w") as f:
+        f.write(hdr)
     return {"min": float(a.min()), "max": float(a.max()),
             "mean": float(a.mean()), "sum": float(a.sum(dtype=np.float64)),
             "nonzero": int(np.count_nonzero(a))}

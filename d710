@@ -6,6 +6,8 @@
 #   d710 estimate --raw D --ct D --case N [--bed n] [--tof]  GE kernel -> .f32
 #   d710 tostir   --case N [--bed n]               .f32 -> STIR Interfile
 #   d710 exam     --raw D --ct D --case N          = decode + estimate + tostir
+#                 [--listmode --lists D]           forwarded to decode, so one
+#                                                  `exam` feeds BOTH paths
 #   d710 attn     --case N                         CT -> work/bed<n>/attn.hs
 #   d710 osem     --case N [--beds ...] [--iters]  OSEM + bed stitching
 #   d710 lm       check|tofcheck|recon --case N    list-mode OSEM (PyTomography)
@@ -18,10 +20,10 @@
 #   d710 read     <file.f32>                       read one vendor dump
 #   d710 shell    [--case N]                       shell inside the container
 #
-# TWO RUNTIMES, DELIBERATELY SEPARATE:
-#   SIRF/STIR      decode estimate tostir attn osem export
-#                  -- image `sirf-local:0.1`, via ./d710_isolate_stir.sh
-#   PyTomography   lm lowdose   -- conda env petct_reconstruction
+# THREE PLACES THINGS RUN, DELIBERATELY SEPARATE:
+#   d710:full        decode estimate tostir exam read shell -- GE's own software
+#   sirf-local:0.1   attn osem export   -- run them through ./d710_isolate_stir.sh
+#   host python      lm lowdose         -- PyTomography (+ parallelproj); no SIRF
 # Nothing in lm/ or lowdose/ imports sirf or stir.  See lm/README.md and
 # lowdose/README.md.
 #
@@ -390,8 +392,19 @@ estimate)
     rc=0
     for n in "${beds[@]}"; do
         VOUT="$O/$CASE/vendor/bed$n"
-        if (( ! FORCE )) && [[ -f "$VOUT/normdt.f32" ]]; then
-            echo "=== bed $n: $VOUT already exists -- skipping"; continue
+        # Every file the step produces, not one standing for all of them: a run
+        # killed part-way leaves some of them behind, and a single sentinel then
+        # calls the bed finished for ever.  This is `vendor/estimate.py`'s own
+        # OUTPUTS list, plus scatter_tof.f32 when TOF is on -- the same
+        # completeness check it makes before returning 0.
+        done_=1
+        for f in randoms.f32 scatter.f32 normdt.f32 norm_only.f32 \
+                 prompts.u16 singles.i32 dt_int.f32 dt_mux.f32 \
+                 $( ((TOF_ON)) && echo scatter_tof.f32 ); do
+            [[ -f "$VOUT/$f" ]] || { done_=0; break; }
+        done
+        if (( ! FORCE )) && (( done_ )); then
+            echo "=== bed $n: $VOUT already complete -- skipping"; continue
         fi
         sino="$(sino_for_bed "$DEC" "$n")"
         echo "=============== bed $n  <- $sino ==============="
@@ -436,8 +449,18 @@ exam)
     # The TOF choice must reach BOTH decode AND estimate: if prompts and scatter
     # disagree, OSEM has to improvise, and no command reports an error.
     if (( TOF_ON )); then args+=(--tof-mash "$MASH"); else args+=(--no-tof); fi
+    # `--listmode` belongs to decode alone, so it goes in its own array rather
+    # than in the one estimate and tostir also receive.  Without this, `exam`
+    # quietly builds the sinogram path only and `d710 lm recon` later stops on a
+    # missing bed<n>.lm.npy -- with nothing to say `exam` was the reason.
+    dec=(--raw "$RAW")
+    if (( LISTMODE )); then
+        [[ -n "$LISTS" ]] || die "--listmode needs --lists <petLists directory>"
+        dec+=(--listmode --lists "$LISTS")
+        [[ -n "$FORMAT" ]] && dec+=(--format "$FORMAT")
+    fi
     echo "=============== step 1: decode every bed ==============="
-    "$HERE/d710" decode "${args[@]}" --raw "$RAW"
+    "$HERE/d710" decode "${args[@]}" "${dec[@]}"
     echo
     echo "=============== step 2: GE's kernel ==============="
     "$HERE/d710" estimate "${args[@]}" --raw "$RAW" --ct "$CT"

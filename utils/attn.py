@@ -94,12 +94,15 @@ class Attenuation:
         check_same_exam(self.ct, hdr)
 
         path = self.case.work_bed(n) / "attn.hs"
-        if path.exists():
+        if _complete(path):
             self._cache[n] = pet.AcquisitionData(str(path)).as_array()
             if self.verbose:
                 print(f"  bed {n}: attn.hs already present "
                       f"af mean {self._cache[n].mean():.4f}")
             return self._cache[n]
+        if path.exists() and self.verbose:
+            print(f"  bed {n}: attn.hs is there but attn.s is missing or the "
+                  f"wrong size -- rebuilding")
 
         path.parent.mkdir(parents=True, exist_ok=True)
         mu = attenuation.mu_image(self.ct, hdr["table_position_mm"], self.image)
@@ -115,6 +118,29 @@ class Attenuation:
 
     def all(self, beds) -> dict:
         return {n: self.af(n) for n in beds}
+
+
+def _complete(hs) -> bool:
+    """Is the cached `attn` a whole file pair, not just a header?
+
+    The header alone is worthless and STIR reports it as "Unsupported file
+    format", which says nothing about the real cause. Worse, a check on the
+    header alone can never recover: every later run takes the cached branch and
+    dies the same way until someone passes `--force`. So the cache is only a
+    cache when the data is there too, and the right size -- a term truncated by
+    a full disk has to rebuild as surely as a missing one.
+
+    The size is taken from a sibling term rather than by parsing the header:
+    every file in `work/bed<n>/` is the same `(1, plane, view, tang)` float32
+    block, so `normdt.s` is an exact expected size when it exists.
+    """
+    s = hs.with_suffix(".s")
+    if not (hs.exists() and s.exists()):
+        return False
+    want = hs.parent / "normdt.s"
+    if want.exists():
+        return s.stat().st_size == want.stat().st_size
+    return s.stat().st_size > 0
 
 
 def _write_like_the_others(a, case, n: int, path) -> None:
@@ -137,5 +163,6 @@ def _write_like_the_others(a, case, n: int, path) -> None:
     hdr = re.sub(r"(?im)^(\s*name of data file\s*:=).*$", r"\1 attn.s", hdr)
     hdr = re.sub(r"(?im)^(\s*!?\s*number format\s*:=).*$", r"\1 float", hdr)
     hdr = re.sub(r"(?im)^(\s*!?\s*number of bytes per pixel\s*:=).*$", r"\1 4", hdr)
-    path.write_text(hdr)
+    # Data FIRST, header second. 
     np.ascontiguousarray(a, "<f4").tofile(path.with_suffix(".s"))
+    path.write_text(hdr)

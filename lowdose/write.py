@@ -60,9 +60,10 @@ def clone_header(src_hs, dst_hs, data_name: str) -> None:
 
 def scale_term(src_dir, dst_dir, stem: str, factor: float) -> float:
     """`stem.{hs,s}` x `factor`. Element-wise, so the segment layout is irrelevant."""
-    clone_header(src_dir / f"{stem}.hs", dst_dir / f"{stem}.hs", f"{stem}.s")
+    # Data first, header second -- see `utils.attn._write_like_the_others`.
     a = np.fromfile(src_dir / f"{stem}.s", "<f4") * np.float32(factor)
     a.tofile(dst_dir / f"{stem}.s")
+    clone_header(src_dir / f"{stem}.hs", dst_dir / f"{stem}.hs", f"{stem}.s")
     return float(a.sum(dtype=np.float64))
 
 

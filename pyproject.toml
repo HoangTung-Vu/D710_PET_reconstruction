@@ -15,6 +15,19 @@
 # interpreters they tried and stop; decode, estimate, tostir, exam, lm and
 # lowdose are unaffected, and the tests that need SIRF skip rather than fail.
 #
+# `parallelproj` is absent for a different reason and it matters: it is NOT ON
+# PyPI (404), and `pytomography` does not name it in `requires_dist` either --
+# not even as an extra.  So `uv sync` gives a PyTomography that imports fine and
+# cannot reconstruct: the import is lazy, inside
+# `pytomography.projectors.PET`, and only `d710 lm recon` reaches it.
+#
+# It does NOT need conda to RUN, only to be fetched from somewhere.  The package
+# is pure Python (7 modules) plus one 68 KB `libparallelproj_c.so`, and
+# `parallelproj.backend` takes `$PARALLELPROJ_C_LIB` as an explicit override --
+# measured: both drop into `.venv` and `joseph3d_fwd` returns the right answer.
+# `tools/fetch_parallelproj.sh` does that; until it is run, `d710 lm` is the one
+# command `uv sync` alone does not cover.
+#
 # `petsird` is likewise absent: it is pinned to 0.9.1 inside the `d710:full`
 # image by the Dockerfile, so a .prd written in the container matches one
 # written on the host.  It is not a host dependency.

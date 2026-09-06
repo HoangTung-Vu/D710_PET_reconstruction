@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pathlib
+
 import numpy as np
 import pytest
 
@@ -249,3 +251,82 @@ def test_factors_are_survival_probabilities(ct_dir, bed24):
     assert (c >= 1.0 - 1e-6).all()
     nz = a > 0
     assert np.allclose(a[nz] * c[nz], 1.0, rtol=1e-4)
+
+
+# --------------------------------------------------- the attn.hs/.s file pair
+
+def test_a_header_without_its_data_is_not_a_cache(tmp_path):
+    """`attn.hs` alone must not count as cached, or the case can never recover.
+
+    This is the state a deleted `.s` leaves behind -- and the state the old
+    check accepted, so every later run reopened the orphan header, got STIR's
+    "Unsupported file format", and died the same way until someone passed
+    `--force`. Cheap to get wrong, expensive to diagnose: the message names
+    neither the missing file nor the reason.
+    """
+    from utils import attn
+
+    hs = tmp_path / "attn.hs"
+    hs.write_text("!INTERFILE :=\nname of data file := attn.s\n")
+    assert not attn._complete(hs), "a lone header was accepted as a cache"
+
+    hs.with_suffix(".s").write_bytes(b"\x00" * 16)
+    assert attn._complete(hs), "a complete pair was rejected"
+
+
+def test_a_truncated_term_is_not_a_cache_either(tmp_path):
+    """Sized against a sibling term, so a half-written `.s` rebuilds too."""
+    from utils import attn
+
+    hs = tmp_path / "attn.hs"
+    hs.write_text("!INTERFILE :=\n")
+    (tmp_path / "normdt.s").write_bytes(b"\x00" * 64)
+
+    hs.with_suffix(".s").write_bytes(b"\x00" * 32)      # half of normdt.s
+    assert not attn._complete(hs), "a truncated .s was accepted"
+
+    hs.with_suffix(".s").write_bytes(b"\x00" * 64)
+    assert attn._complete(hs)
+
+
+def test_the_data_is_written_before_the_header(tmp_path, monkeypatch):
+    """Interrupted between the two writes, leave the harmless file behind.
+
+    A `.s` with no header is an orphan blob nothing opens; a header with no
+    `.s` is the trap above -- and it is the one that cannot recover. So the
+    order is not cosmetic. Proved by killing the header write and looking at
+    what survived.
+    """
+    import numpy as np
+
+    from utils import attn
+
+    class Case:
+        name = "t"
+
+        def work_bed(self, n):
+            return tmp_path
+
+        def prompt(self, n):
+            q = tmp_path / "prompts.hs"
+            q.write_text("name of data file := prompts.s\n"
+                         "!number format := signed integer\n"
+                         "!number of bytes per pixel := 2\n")
+            return q
+
+    real = pathlib.Path.write_text
+
+    def boom(self, *a, **kw):
+        if self.suffix == ".hs" and self.name == "attn.hs":
+            raise KeyboardInterrupt("interrupted while writing the header")
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(pathlib.Path, "write_text", boom)
+
+    path = tmp_path / "attn.hs"
+    with pytest.raises(KeyboardInterrupt):
+        attn._write_like_the_others(np.zeros(4, "<f4"), Case(), 1, path)
+
+    assert path.with_suffix(".s").exists(), "the data was not written first"
+    assert not path.exists(), "a header survived without its data"
+    assert not attn._complete(path)

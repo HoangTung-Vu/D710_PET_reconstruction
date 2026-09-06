@@ -12,27 +12,32 @@ duy nhất dựng ở đây, từ CT.
 Chuẩn bị một lần:
 
 ```bash
-docker load -i d710_full.tar     # image của hãng, nếu chưa có
-cd D710 && uv sync               # decode/estimate/tostir/export + test
+docker load -i d710_full.tar                      # image của hãng, nếu chưa có
+cd D710 && conda env create -f environment.yml    # env host, tên `petct_recon`
 ```
 
-**Bước list-mode (3b) cần thêm `parallelproj`.** Gói này **không có trên PyPI**
-(404) và `pytomography` **cũng không khai nó** trong `requires_dist`, nên
-`uv sync` cho ra một PyTomography import được nhưng tái tạo thì không — nó
-import lười bên trong `pytomography.projectors.PET`, chỉ `d710 lm recon` mới
-chạm tới.
+**Môi trường host phải là conda, và thủ phạm là `parallelproj`** — gói mà
+`d710 lm` chạm tới qua PyTomography. Nó **không có trên PyPI** (404), và
+`pytomography` **cũng không khai nó** trong `Requires-Dist`, kể cả extra. Nên
+không resolver nào biết nó tồn tại: `pip`/`uv` cho ra một PyTomography import
+được nhưng tái tạo thì không — import là lười, nằm trong
+`pytomography.projectors.PET`, chỉ `d710 lm recon` mới chạm tới.
 
-Nó **không cần conda để chạy**, chỉ cần chỗ để lấy về: phần Python là thuần
-Python, phần biên dịch chỉ là một `libparallelproj_c.so` 68 KB, và
-`parallelproj.backend` nhận biến `$PARALLELPROJ_C_LIB` chỉ thẳng đường dẫn — cả
-hai bỏ vào `.venv` là chạy. Trong lúc chưa có script lấy về, dùng python của
-conda cho riêng bước 3b như lệnh dưới.
+Vì không ai khai nên **không ai giữ trần version hộ mình**, và đó là chỗ chết
+người: `parallelproj` 2.x là một gói khác đội cùng cái tên. Phần biên dịch dời
+vào `parallelproj_core` — extension CPython riêng theo nền tảng, không còn nạp
+bằng ctypes qua `$PARALLELPROJ_C_LIB` — và sáu hàm PyTomography gọi ở top level
+(`joseph3d_fwd`, `joseph3d_back`, bốn `joseph3d_{fwd,back}_tof_{sino,lm}`) biến
+mất khỏi namespace `parallelproj`: 2.0.2 đổi tên bốn cái TOF và không export cái
+nào, `__all__` còn đúng sáu tên metadata. Không ghim thì lần dựng env kế tiếp ra
+2.0.2 và **cả sáu ném `AttributeError`**. `environment.yml` ghim **1.10.2**, bản
+1.x cuối cùng. Thượng nguồn không có bản vá: 3.4.0 là PyTomography mới nhất.
 
 Dựng trọn một ca, **cả hai đường tái tạo**. Chạy từ trong `D710/`:
 
 ```bash
 export D710_OUT=~/UET/d710_out         # ĐẦU RA ĐI ĐÂU — không có mặc định
-export D710_PYTHON=$PWD/.venv/bin/python
+conda activate petct_recon             # hoặc: export D710_PYTHON=<python của env>
 CASE=fdg26081901
 SRC=~/UET/Handson_PET_CT_Reconstruction/data/cases/20260819_FDG26081901_ok
 
@@ -50,7 +55,7 @@ SRC=~/UET/Handson_PET_CT_Reconstruction/data/cases/20260819_FDG26081901_ok
 
 # 3b. đường list-mode, TOF đủ 55 bin -> recon_lm.npz  (TOF là mặc định ở đây)
 #     cần conda: parallelproj không có trên PyPI
-env D710_PYTHON=$HOME/miniconda3/envs/petct_reconstruction/bin/python \
+env D710_PYTHON=$HOME/miniconda3/envs/petct_recon/bin/python \
     ./d710 lm recon --case $CASE --resume
 
 # 4. Bq/mL + SUV -> NIfTI + DICOM
@@ -88,8 +93,19 @@ chuyển thẳng cho `./d710`, nên gõ nhầm wrapper không sai kết quả.
 
 | | SIRF/STIR | PyTomography |
 |---|---|---|
-| ở đâu | image `sirf-local:0.1`, gọi qua `./d710_isolate_stir.sh` | python của host (`.venv` của `uv`, hoặc env conda cũ) |
+| ở đâu | image `sirf-local:0.1`, gọi qua `./d710_isolate_stir.sh` | python của host, env conda `petct_recon` |
 | lệnh | `attn`, `osem`, `export` | `lm`, `lowdose` |
+
+Và một chỗ dễ nhầm chết người: chữ **"parallelproj" trong repo này chỉ hai thứ
+khác nhau**. Chúng khác soname nên nằm chung một env vẫn không đụng nhau:
+
+| file | ai nạp | đến từ đâu |
+|---|---|---|
+| `lib/libparallelproj_c.so.1.10.2` | gói Python `parallelproj` → PyTomography (`d710 lm`) | conda-forge, nạp bằng ctypes |
+| `dlevel/INSTALL/lib/libparallelproj.so.2.0.7` | STIR → `osem --projector parallelproj` | SIRF-SuperBuild tự dựng, dùng API C++ |
+
+Nên "parallelproj 2.x hỏng" ở mục trên **chỉ nói về cột thứ nhất**. Bản 2.0.7 mà
+STIR link vào là thư viện C++, không đi qua namespace Python, không liên quan.
 
 `lm/` và `lowdose/` **không import `sirf` hay `stir`** ở bất kỳ đâu: layout
 segment đọc thẳng từ header (`lm/interfile.py`), mọi số hạng đọc bằng
@@ -121,44 +137,61 @@ PyTomography không có trong image.
 
 **`d710` không giả định `python3` là trình thông dịch đúng.** Trên máy có
 `/usr/bin` đứng trước conda trong `PATH` — trường hợp phổ biến — thì `python3`
-là python hệ thống *ngay cả khi đã activate* `petct_reconstruction`, còn `python`
+là python hệ thống *ngay cả khi đã activate* `petct_recon`, còn `python`
 mới là của conda. Nên `d710` thử lần lượt: `$D710_PYTHON` (nếu đặt thì dùng
 đúng cái đó, sai thì báo lỗi chứ không lặng lẽ đổi), rồi `python3`, `python`,
 `$VIRTUAL_ENV/bin/python`, `$CONDA_PREFIX/bin/python`, `/usr/bin/python3`,
 `/usr/local/bin/python3`. Lệnh nào cần thêm gói mà không tìm được thì in ra
-**toàn bộ danh sách đã thử**. Chạy được với venv, `uv`, hay không có conda.
-`tests/test_python_resolution.py` chốt điều đó.
+**toàn bộ danh sách đã thử**. Chạy được với env conda, với venv trần, hay không
+có conda. `tests/test_python_resolution.py` chốt điều đó.
 
-## Cài phụ thuộc Python — không cần conda
+## Cài phụ thuộc Python — bằng conda, và bắt buộc phải thế
 
-Dự án `uv`, tên `petct_reconstruction`. `pyproject.toml` giữ **phụ thuộc trực
-tiếp** (tìm bằng cách duyệt AST toàn cây, không phải `pip freeze` — env conda
-có 108 gói, cây này import 10), `uv.lock` là bản khoá và **được commit**:
+`environment.yml` là **bản export nguyên si** của env host (`conda env export`),
+không phải danh sách viết tay. Nó ghim cả version lẫn build string, nên tái lập
+đúng bản đã đo — và cũng vì thế chỉ dựng lại được trên **linux-64**.
 
 ```bash
-uv sync                      # dựng .venv và cài đúng bản khoá
-uv run pytest -q             # chạy test trong đó
-uv run python -m utils.export --case ped --format nifti
+conda env create -f environment.yml     # dựng env, tên `petct_recon`
+conda activate petct_recon
+pytest -q                               # chạy test trong đó
+python -m utils.export --case ped --format nifti
 ```
 
-`d710` tự tìm ra env này (`$VIRTUAL_ENV/bin/python` nằm trong danh sách nó
+`d710` tự tìm ra env này (`$CONDA_PREFIX/bin/python` nằm trong danh sách nó
 thử), hoặc chỉ đích danh:
 
 ```bash
-export D710_PYTHON=$PWD/.venv/bin/python
+export D710_PYTHON=$HOME/miniconda3/envs/petct_recon/bin/python
 ```
 
-Đã kiểm trên máy **không có conda** (`PATH=/usr/bin:/bin`): `d710 export` chạy
-trọn vẹn, và `pytest` cho **315 passed, 58 skipped, 0 lỗi** — phần cần SIRF tự
-skip.
+**Vì sao không phải `uv`/`pip`.** Xem mục "Chạy": `parallelproj` không có trên
+PyPI và không gói nào khai nó, nên đây là ràng buộc chứ không phải sở thích. Dự
+án từng dùng `uv` với `pyproject.toml` + `uv.lock`; `uv sync` dựng được mọi thứ
+*trừ* đúng cái gói làm nên `d710 lm`, nên cả hai file đã bị bỏ.
 
-**`sirf` và `stir` KHÔNG có trong `pyproject.toml`, và cố ý như vậy.** Chúng
-được build từ nguồn vào `$CONDA_PREFIX/dlevel/`, là bản dựng C++ gắn với đúng
-thư viện của env đó và cần `LD_LIBRARY_PATH` của env khi nạp — không file phụ
-thuộc nào tái tạo được ở máy khác. Thiếu chúng thì `attn` / `osem` / `export`
-báo rõ đã thử những trình thông dịch nào rồi dừng; `decode`, `estimate`,
-`tostir`, `exam`, `lm`, `lowdose` không ảnh hưởng. Vì thế đây **không** phải
-bản sao của env `petct_reconstruction`.
+**`libparallelproj` bị ghim bản `cpu_*`.** Máy đo không có GPU, mà `parallelproj`
+chỉ chọn CUDA khi thấy `nvidia-smi` trong `PATH`, nên bản CUDA (~1,2 GB so với
+39 KB) không mua được gì. Chạy trên máy có GPU thì đổi sang `cuda129_*` hoặc
+`cuda130_*`. Ngược lại `torch` trong file là bản PyPI mặc định, tức **có** kèm
+wheel CUDA — bất đối xứng có chủ ý, vì máy tái lập có thể có GPU.
+
+**`sirf` và `stir` KHÔNG có trong `environment.yml`, và cố ý như vậy.** Chúng
+được build từ nguồn vào `$CONDA_PREFIX/dlevel/` của một env **khác**
+(`petct_reconstruction`), là bản dựng C++ gắn với đúng thư viện của env đó và
+cần `LD_LIBRARY_PATH` của env khi nạp — không file phụ thuộc nào tái tạo được ở
+máy khác. Trong dùng thường ngày thì không cần: `attn` / `osem` / `export` chạy
+bằng image `sirf-local:0.1` qua `./d710_isolate_stir.sh`. Thiếu chúng trên host
+thì ba lệnh đó báo rõ đã thử những trình thông dịch nào rồi dừng; `decode`,
+`estimate`, `tostir`, `exam`, `lm`, `lowdose` không ảnh hưởng.
+
+> ⚠️ **`petct_recon` không phải `petct_reconstruction`.** Tên gần giống nhau
+> nhưng là hai env tách hẳn: `petct_recon` là runtime host của `environment.yml`
+> (PyTomography + parallelproj), còn `petct_reconstruction` là env dựng SIRF từ
+> nguồn — `conda env export --from-history` cho thấy nó sinh ra để làm đúng việc
+> đó (cmake, swig 4.2.1, gcc, boost, eigen, fftw, hdf5). **Đừng bao giờ**
+> `conda env update --prune` lên `petct_reconstruction`: prune gỡ toolchain và
+> phá bản SIRF trong `dlevel/`, dựng lại mất 30–60 phút.
 
 ## Đầu ra: `$D710_OUT`, không bao giờ nằm trong cây mã
 
@@ -191,6 +224,7 @@ Layout cũ (`raw_prompt/`, `work/<ca>_bed<n>/`, `vendor/out/`) chuyển sang b�
 ```
 d710              CLI, điểm vào DUY NHẤT
 Dockerfile        ghi lại image chứa gì (image được bàn giao, không dựng lại)
+environment.yml   env host `petct_recon`, bản `conda env export` nguyên si
 decode/           vòng lặp per-bed chạy trong container
 vendor/           trình điều khiển kernel của GE + tài liệu tham chiếu chính
 osem/             THUẬT TOÁN OSEM trên sinogram, không gì khác
@@ -225,7 +259,7 @@ tạo**, không phải của acquisition model — đo trên SIRF 3.10.1, gắn 
 ## Kiểm
 
 ```bash
-conda activate petct_reconstruction
+conda activate petct_recon
 export D710_OUT=~/UET/d710_out
 python -m pytest -q            # hoặc tests/run_tests.sh
 ```

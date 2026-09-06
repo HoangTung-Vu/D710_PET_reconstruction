@@ -5,7 +5,7 @@ output is an **ordinary case**, not a special format, so `d710 osem`, `d710 lm`
 and `d710 export` all run on it unchanged.
 
 ```bash
-conda activate petct_reconstruction              # numpy only; no SIRF, no torch
+conda activate petct_recon                       # numpy only; no SIRF, no torch
 d710 lowdose --case ped --drf 10                 # -> ped_drf10
 d710 lowdose --case ped --drf 10 --mode randoms  # randoms go as f^2
 d710 lowdose --case ped --split 2                # -> ped_r0, ped_r1  (Noise2Noise)

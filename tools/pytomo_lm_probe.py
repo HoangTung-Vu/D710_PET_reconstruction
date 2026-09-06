@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Does PyTomography's list-mode TOF path accept D710 data? And how fast is it?
 
-    conda activate petct_reconstruction
+    conda activate petct_recon
     python3 tools/pytomo_lm_probe.py                 # synthetic events, D710 geometry
     python3 tools/pytomo_lm_probe.py --events ev.npy # a real decoded event table
 

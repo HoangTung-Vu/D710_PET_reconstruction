@@ -33,6 +33,8 @@ petsw/
 # The rerun script writes this before patching K_EXPORT_LM (../rerun_lm_ok.sh).
 *.bak
 
-# uv puts the environment beside pyproject.toml.  `uv.lock` IS tracked -- it is
-# what makes the install reproducible -- but the environment itself is not.
+# The environment is a conda env outside this tree (environment.yml, name
+# `petct_recon`), so nothing here should exist.  Kept as a backstop: the project
+# used uv until 2026-09-06 and a stale `.venv/` is 11,000 files of other
+# people's code.
 .venv/

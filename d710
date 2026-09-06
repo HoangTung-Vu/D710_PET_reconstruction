@@ -48,10 +48,13 @@
 #   TOF 5 bins,  grid 337 (default)  ~48 min/bed
 #   TOF 11 bins, grid 337            ~1.6 h/bed   -> 6 beds x 3 iter ~ 29 HOURS
 #
-# The machine has no NVIDIA GPU and parallelproj ships CPU-only here
-# (`libparallelproj_c.so`, no CUDA build) -- both in the conda env and in
-# `sirf-local:0.1`.  With a GPU the table above changes completely and TOF
-# should become the default again.
+# The machine has no NVIDIA GPU and every parallelproj here is a CPU build --
+# both in the conda env and in `sirf-local:0.1`.  Note there are TWO of them and
+# they are not the same library: STIR links the C++ `libparallelproj.so` (2.0.7,
+# built by SIRF-SuperBuild), which is what this table times; the Python package
+# loads `libparallelproj_c.so` (1.10.2, conda-forge) by ctypes, and that one
+# serves PyTomography in `lm/`.  With a GPU the table above changes completely
+# and TOF should become the default again.
 #
 #   --tof            enable TOF (decode mashing 5 bins + estimate reconMethod 3)
 #   --tof-mash N     implies --tof, changes the mash factor (N must divide 55)
@@ -118,7 +121,7 @@
 #                             runs them in `sirf-local:0.1`, or a host install:
 #                             conda activate petct_reconstruction
 #   lm, lowdose            -> PyTomography, NO SIRF:
-#                             conda activate petct_reconstruction
+#                             conda activate petct_recon
 #
 # Environment variables, all of which can also be set in `D710/.env`
 # (copy `.env.example` -- they are identical -- and edit):
@@ -206,8 +209,8 @@ need_image() {
 # right one, or even to exist: on a machine whose PATH puts /usr/bin first,
 # `python3` is the system interpreter even inside an activated conda env, while
 # `python` is conda's -- so trying only one of the two picks the wrong
-# interpreter on about half the machines this runs on.  Nothing here requires
-# conda: a plain `python3`, a venv, or a `uv` environment all resolve.
+# interpreter on about half the machines this runs on.  The resolution itself
+# assumes nothing: a conda env, a plain venv, or a bare `python3` all resolve.
 py_candidates() {
     local seen=""
     # An explicit choice wins outright and is never second-guessed.
@@ -236,8 +239,12 @@ resolve_py() {
     return 1
 }
 
+# $3 is the conda env to suggest.  Two exist and they are NOT interchangeable:
+# `petct_recon` is the host runtime built from environment.yml (PyTomography +
+# parallelproj, no SIRF), `petct_reconstruction` is the one SIRF was built into
+# from source.  Suggesting the wrong one sends people down a 30-60 min rebuild.
 need_py() {
-    local mods="$1" what="$2" c
+    local mods="$1" what="$2" env="${3:-petct_recon}" c
     # An explicit D710_PYTHON is honoured or refused -- never silently replaced.
     if [[ -n "${D710_PYTHON:-}" ]]; then
         "$D710_PYTHON" -c "import ${mods}" 2>/dev/null && { PY="$D710_PYTHON"; return; }
@@ -250,7 +257,7 @@ need_py() {
     die "no interpreter here can import: ${mods}
   tried: $(py_candidates | tr '\n' ' ')
   ${what}
-      conda activate petct_reconstruction
+      conda activate ${env}
   or point straight at one that can:
       export D710_PYTHON=/path/to/python
   (only \`osem\`, \`attn\`, \`export\`, \`lm\` and \`lowdose\` need more than the
@@ -260,7 +267,10 @@ need_py() {
 need_sirf() {
     need_py "numpy, sirf.STIR" \
         "SIRF/STIR only loads once the env is ACTIVATED -- the interpreter path
-  alone is not enough, the loader needs the env's LD_LIBRARY_PATH too:"
+  alone is not enough, the loader needs the env's LD_LIBRARY_PATH too.
+  Normally you do not need this at all: ./d710_isolate_stir.sh runs osem/attn/
+  export in the sirf-local image instead." \
+        petct_reconstruction
 }
 
 need_export_py() {

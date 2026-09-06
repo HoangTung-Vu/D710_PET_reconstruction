@@ -30,9 +30,10 @@ NAMED = re.compile(r"`([^`\s]+\.md)`|(?<![\w`/])((?:[A-Za-z0-9_][\w./-]*/)?"
 EXCLUDE = {"tests/audit_petsw.md", "tests/audit_decode.md",
            "tests/audit_frameworks.md", "tests/test_docs_are_not_stale.py"}
 
-#: Not our code. `.venv/` lives inside the tree (uv puts it beside
-#: `pyproject.toml`), so without this the scan walks every installed package --
-#: ~11,000 files, and their docs are not ours to keep current.
+#: Not our code. The environment is a conda env outside the tree now, but a
+#: `.venv/` left over from the uv days -- or one someone makes here -- still
+#: lands inside it, and then the scan walks every installed package: ~11,000
+#: files whose docs are not ours to keep current.
 NOT_OURS = {".venv", "venv", "site-packages", "__pycache__", ".git",
             "node_modules", ".pytest_cache", "build", "dist"}
 

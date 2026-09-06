@@ -5,13 +5,16 @@
 #   tests/run_tests.sh --no-data    synthetic only, skip the decoded exams
 #   tests/run_tests.sh --case ped   only that exam's beds
 #
-# SIRF and STIR resolve only inside the project environment, and a bare
-# interpreter path is not enough -- the loader needs the environment's
-# LD_LIBRARY_PATH:
+# The normal environment is `petct_recon`, built from `environment.yml`:
+#
+#   conda activate petct_recon && tests/run_tests.sh
+#
+# It deliberately has no SIRF, so the STIR-backed tests skip and say so;
+# nothing fails.  To actually RUN those, use the environment SIRF was built
+# into from source -- and note a bare interpreter path is not enough there,
+# the loader needs that environment's LD_LIBRARY_PATH:
 #
 #   conda activate petct_reconstruction && tests/run_tests.sh
-#
-# Without them the STIR-backed tests skip and say so; nothing fails.
 #
 # The data-backed tests read `$D710_OUT/<exam>/decoded/` and
 # `$D710_OUT/<exam>/work/bed<n>/`, which are patient-derived and live outside

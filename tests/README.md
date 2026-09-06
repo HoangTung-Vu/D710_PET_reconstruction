@@ -1,7 +1,7 @@
 # tests
 
 ```bash
-conda activate petct_reconstruction        # SIRF/STIR chỉ nạp khi env đã activate
+conda activate petct_recon                 # runtime host (environment.yml)
 export D710_OUT=~/UET/d710_out             # để phần test dữ liệu thật tìm ra bed
 cd D710
 
@@ -13,6 +13,15 @@ tests/run_tests.sh --case nema             # chỉ bed của một ca
 
 Không activate env thì `stir` / `sirf.STIR` không nạp được và các test cần
 chúng **skip** kèm lý do — không có test nào hỏng vì thiếu môi trường.
+
+Có **hai** env và chúng cho hai số skip khác nhau; cả hai đều 0 lỗi:
+
+| env | là gì | phần SIRF/STIR |
+|---|---|---|
+| `petct_recon` | runtime host, dựng từ `environment.yml` | **skip** — env này cố ý không có SIRF |
+| `petct_reconstruction` | env dựng SIRF từ nguồn, có `dlevel/` | chạy thật |
+
+Tên gần giống nhau nên dễ gõ nhầm; xem cảnh báo trong `README.md` gốc.
 
 ## Ba bản rà soát
 

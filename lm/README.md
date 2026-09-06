@@ -6,7 +6,7 @@ Events straight into PyTomography. No file format in between, no SIRF, no STIR.
 # once per case, in the SIRF runtime (attenuation is the only term SIRF builds)
 ./d710_isolate_stir.sh attn --case ped
 
-conda activate petct_reconstruction              # PyTomography runtime
+conda activate petct_recon                       # PyTomography runtime
 d710 lm check    --case ped --bed 1              # the bin map, bit-exact
 d710 lm tofcheck --case ped --bed 1              # which way the TOF axis runs
 d710 lm recon    --case ped --tof-bins 55        # -> recon_lm.npz
@@ -33,7 +33,7 @@ by default because of the time cost" applies here.
 
 ## Two runtimes, and the boundary between them
 
-| | SIRF / STIR (`sirf-local:0.1`) | PyTomography (`petct_reconstruction`) |
+| | SIRF / STIR (`sirf-local:0.1`) | PyTomography (`petct_recon`) |
 |---|---|---|
 | commands | `decode estimate tostir attn osem export` | `lm`, `lowdose` |
 | driver | `./d710_isolate_stir.sh` | `./d710` |

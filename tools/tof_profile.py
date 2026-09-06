@@ -144,7 +144,7 @@ def report(A: np.ndarray, out=print) -> dict:
     out(f"   off by {scat.max() / scat.mean():.1f}x at the peak, and it puts scatter into bins that have none")
     out(f"   {neg}/{nt} bins ({100 * neg / nt:.0f}%) have prompts < background "
         f"-> NEGATIVE true rate")
-    out(f"   -> {'ACCEPTABLE' if neg == 0 else 'NOT acceptable; see TOF_PLAN.md §3'}")
+    out(f"   -> {'ACCEPTABLE' if neg == 0 else 'NOT acceptable'}")
     return res
 
 

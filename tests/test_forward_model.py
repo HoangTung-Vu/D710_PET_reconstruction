@@ -1,14 +1,16 @@
-"""The contract `osem_pipeline.ipynb` runs under -- both halves of it.
+"""What `osem/` assumes about SIRF, checked against SIRF.
 
-1. **What the notebook assumes about SIRF**, checked against SIRF, on the
-   miniature scanner where a whole acquisition model fits in a second.  Each
-   one is a place where being wrong produces a plausible-looking image rather
-   than an error.
-2. **That the notebook holds no code of its own.**  This project has already
-   been bitten once by a copy of `utils/` living inside a notebook and the two
-   drifting apart.  The rule is enforced by machine here rather than promised
-   in a README: a code cell may import, set parameters, make a call and draw a
-   figure -- it may not define a `def` or a `class`, and it may not run long.
+Every assumption here is a place where being wrong produces a plausible-looking
+image rather than an error: the direction of the sensitivity, whether the
+background is inside or outside it, the plane order `as_array()` returns, and
+when `S` has to be attached to count.  They run on the miniature scanner, where
+a whole acquisition model fits in a second.
+
+The last two tests are a different contract: **a notebook in this tree may hold
+no code of its own.**  This project has already been bitten once by a copy of
+`utils/` living inside a notebook and the two drifting apart.  There is no
+notebook today, so they skip; they stay because the rule is about any notebook
+anyone adds, not about the one that was removed.
 """
 
 from __future__ import annotations
@@ -36,8 +38,7 @@ def code_cells():
     make this test skip that cell rather than error.
     """
     # The contract is "if a notebook exists it holds no code", not "a notebook
-    # must exist" -- `osem_pipeline.ipynb` was removed in 2ffd732 and these two
-    # tests have been erroring ever since.
+    # must exist".
     if not NOTEBOOK.exists():
         pytest.skip(f"no {NOTEBOOK.name}; nothing to hold to the contract")
     with open(NOTEBOOK) as f:
@@ -94,9 +95,6 @@ def model(sirf, bed24):
         am = sirf.AcquisitionModelUsingRayTracingMatrix()
         am.set_num_tangential_LORs(5)
         if sensitivity is not None:
-            # Before `set_up`, so STIR folds it into the sensitivity image --
-            # that is what makes the correction quantitative instead of a
-            # re-weighting.
             am.set_acquisition_sensitivity(
                 sirf.AcquisitionSensitivityModel(sensitivity))
         if background is not None:
@@ -144,6 +142,48 @@ def test_the_sensitivity_multiplies_rather_than_divides(model):
     dim = make(sensitivity=uniform(ad, 0.5)).forward(x).as_array()
     assert dim.sum() < plain.sum()
     assert dim == pytest.approx(0.5 * plain, rel=1e-4, abs=1e-5)
+
+
+def test_the_sensitivity_deadline_is_the_reconstructors_set_up(sirf, bed24):
+    """`S` counts if it is attached before `rec.set_up`, not before `am.set_up`.
+
+    `osem/recon.py` attaches it before `am.set_up` and says so, which invites the
+    reading that `am.set_up` is the deadline.  It is not: `am.set_up` only stores
+    parameters, and STIR computes the sensitivity image later, inside the
+    reconstructor.  Measured here rather than assumed, because someone reordering
+    these two calls on the strength of a comment would see no error either way.
+
+    Measured 2026-09-06 on the 24-ring miniature, SIRF 3.10.1: attaching before
+    and after `am.set_up` give sensitivity sums equal to 1 part in 1e-7 (float32
+    rounding), both exactly half the unweighted sum for `S = 0.5`.
+    """
+    ad, img = bed24
+    half = uniform(ad, 0.5)
+
+    def subset_sensitivity(when):
+        am = sirf.AcquisitionModelUsingRayTracingMatrix()
+        am.set_num_tangential_LORs(1)
+        if when == "before":
+            am.set_acquisition_sensitivity(sirf.AcquisitionSensitivityModel(half))
+        am.set_up(ad, img)
+        if when == "after":
+            am.set_acquisition_sensitivity(sirf.AcquisitionSensitivityModel(half))
+        obj = sirf.make_Poisson_loglikelihood(ad, acq_model=am)
+        obj.set_num_subsets(1)
+        rec = sirf.OSMAPOSLReconstructor()
+        rec.set_objective_function(obj)
+        rec.set_num_subiterations(1)
+        rec.set_input(ad)
+        rec.set_up(img)
+        return float(obj.get_subset_sensitivity(0).as_array().sum())
+
+    none, before, after = (subset_sensitivity(w)
+                           for w in ("none", "before", "after"))
+    assert before == pytest.approx(after, rel=1e-6), (
+        "am.set_up is not the deadline; if this ever fails, SIRF has started "
+        "reading the sensitivity at set_up and osem/recon.py's order is load-"
+        "bearing after all")
+    assert before == pytest.approx(0.5 * none, rel=1e-4)
 
 
 def test_stir_canonicalises_the_plane_order_on_read(sirf, bed24, tmp_path):

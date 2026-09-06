@@ -159,7 +159,7 @@ def test_verify_refuses_when_prompts_are_missing(tmp_path):
 # ------------------------------------------------------------- write_term
 
 def test_write_term_clones_the_template_header(tmp_path):
-    """Same ExamInfo by construction -- that is what killed `same_bins()`."""
+    """Same ExamInfo by construction: the header is cloned, not generated."""
     _vendor, template = make_case(tmp_path)
     out = tmp_path / "work"
     out.mkdir()

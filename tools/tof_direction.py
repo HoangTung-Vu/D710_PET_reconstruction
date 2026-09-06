@@ -163,7 +163,7 @@ def report(P, M, n_tof, out=print) -> bool:
         out("        host file (docker build -t d710:full -f D710/Dockerfile .)")
         out("     2. vendor/to_stir.py:convert_scatter_tof -- the scatter")
         out("        weights, which must stay aligned with the prompts")
-        out("   See TOF_SCATTER_REVERSE.md section 7.")
+        out("   See D710/tests/audit_decode.md, the TOF axis section.")
     else:
         out("=> AS WRITTEN wins: the TOF axis is correct.")
     out("   margin in centroid: %.3f bins (a small margin means inconclusive)"

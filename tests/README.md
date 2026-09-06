@@ -14,6 +14,17 @@ tests/run_tests.sh --case nema             # chỉ bed của một ca
 Không activate env thì `stir` / `sirf.STIR` không nạp được và các test cần
 chúng **skip** kèm lý do — không có test nào hỏng vì thiếu môi trường.
 
+## Ba bản rà soát
+
+Ba tài liệu ghi lại đợt kiểm 2026-09-06: **kiểm cái gì, đối chiếu với cái gì,
+và test nào chốt kết quả đó**. Đọc khi cần biết *vì sao* một test tồn tại.
+
+| file | nội dung |
+|---|---|
+| `audit_petsw.md` | mọi hằng số khai nguồn từ cây console GE, đối chiếu với chính file đó |
+| `audit_decode.md` | chín quy ước giải mã: cài ở đâu, test ở đâu, chỗ nào chưa có |
+| `audit_frameworks.md` | mọi lời gọi SIRF/STIR và PyTomography, đối chiếu với API đã cài |
+
 ## Máy quét thu nhỏ
 
 Một bed thật là `553 × 288 × 381`: prompt 121 MB, mỗi số hạng hiệu chỉnh
@@ -67,8 +78,10 @@ trong `conftest.py`:
 
 ## Notebook không được chứa mã
 
-`test_notebook_contract.py` **fail** nếu một code cell của
-`osem_pipeline.ipynb` định nghĩa `def`/`class`, hoặc dài quá 15 câu lệnh. Đây
+`test_forward_model.py` **fail** nếu một code cell của một notebook trong cây
+định nghĩa `def`/`class`, hoặc dài quá 15 câu lệnh. Hiện không có notebook nào
+nên hai test đó **skip** kèm lý do; chúng ở lại vì luật áp cho notebook sẽ thêm
+vào sau, chứ không phải cho cái đã xoá. Đây
 là ràng buộc bằng máy cho một chuyện đã xảy ra thật: `utils/` từng bị chép vào
 notebook rồi hai bản lệch nhau, và cả hai vẫn chạy — chỉ là không còn tính cùng
 một thứ.

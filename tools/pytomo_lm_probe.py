@@ -5,10 +5,15 @@
     python3 tools/pytomo_lm_probe.py                 # synthetic events, D710 geometry
     python3 tools/pytomo_lm_probe.py --events ev.npy # a real decoded event table
 
-No SIRF: it talks to PyTomography only. The geometry comes from
-`utils/scanner.py`, the one place every machine constant lives -- this file used
-to carry its own copy, with the wrong ring pitch (`axial_fov/nrings`) and a
-rounded TOF LSB.
+No SIRF: it talks to PyTomography only. The scalar CONSTANTS come from
+`utils/scanner.py`, the one place every machine constant lives.
+
+⚠ The GEOMETRY does not, and has drifted from `lm/geom.py`: the LUT here is
+`(cos, sin)` where `lm.geom.scanner_lut` is `(sin, -cos)`, it places crystals at
+the bare `R_MM` rather than `R_EFF_MM`, and it does not reverse the TOF axis.
+That was fine for a timing probe and is wrong for anything else -- `lm/` is the
+implementation, this is only the measurement that chose it. Do not read it as a
+reference for how a D710 LOR is built.
 
 WHAT IT PROVES (measured 2026-08-30, this CPU, 16 threads, 14,809,731 events):
 
@@ -29,8 +34,8 @@ WHY IT WORKS -- three facts, each checked in the installed source:
   `PETLMSystemMatrix.__init__` -- so constructor time IS the sensitivity cost.
 
 WHAT IT DOES NOT PROVE: nothing here is checked for correctness, only for API
-and speed, and `weights` / `additive_term` are not wired up. See
-`LISTMODE_TOF_PLAN.md` §5 for what remains.
+and speed, and `weights` / `additive_term` are not wired up. `lm/` is the
+working implementation; this stays only as the measurement behind choosing it.
 """
 
 from __future__ import annotations

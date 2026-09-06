@@ -89,7 +89,7 @@
 # When ENABLED, `estimate` runs TOF too: `IgJobReq.reconMethod = 3` turns on
 # `CScatterFully3dModel::m_bTOFDim`, and GE's own scatter model keeps the time
 # axis -> `scatter_tof.f32`.  That is the vendor's REAL TOF scatter, not an
-# improvised measured profile.  See `TOF_SCATTER_REVERSE.md`.
+# improvised measured profile.  See `tests/audit_frameworks.md`.
 #
 # One switch drives both decode and estimate, deliberately: TOF prompts with
 # non-TOF scatter make OSEM silently fall back to an improvised profile.

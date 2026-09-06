@@ -725,7 +725,7 @@ tính nó bằng đúng `(reconMethod == 3)` (`0x42a6fc`: `cmpl $0x3 … ; sete 
 `scatter.f32` lệch **0.04 %** tổng. Nên bật là bao trùm, không phải đánh đổi.
 `extract.gdb` mặc định bật; `D710_TOF=0` (hay `estimate.py --no-tof`) tắt.
 
-Chi tiết và cách kiểm: `../TOF_SCATTER_REVERSE.md`.
+Chi tiết và cách kiểm: `../tests/audit_decode.md`.
 
 ## 3d. Mu-map tự tính đưa vào pipeline của hãng — ĐƯỢC, và chỉ sửa 1 dòng
 

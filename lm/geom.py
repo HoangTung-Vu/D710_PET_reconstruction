@@ -45,8 +45,9 @@ def scanner_lut(nrings=NRINGS, ndet=NDET, r_mm=R_EFF_MM, pitch_mm=RING_PITCH_MM,
 
     `r_mm` is the EFFECTIVE ring radius (crystal face + depth of interaction),
     which is where STIR puts the LOR and where GE's `effectiveRingDiameter` says
-    the LOR is. It was `R_MM` (the bare 405.10) until 2026-09-04, making every
-    list-mode image 2.3 % small. See GEOMETRY_AUDIT.md.
+    the LOR is. NOT the bare `R_MM` (405.10): that puts the crystals 2.3 % too
+    close together and every list-mode image comes out 2.3 % small, with nothing
+    to show for it but a scale error. See GEOMETRY_AUDIT.md.
 
     `stir_frame=False` gives the raw GE frame, for comparison only.
     """

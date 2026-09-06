@@ -12,12 +12,32 @@ Luật một dòng: **nếu một hàm chỉ có nghĩa với OSEM thì chỗ c�
 | `container.py` | **chỗ duy nhất** biết cách gọi `docker` từ Python |
 | `attenuation.py` | CT DICOM → mu-map (`load`, `hu_to_mu`, `mu_image`, `factors`) |
 | `geometry.py` | quy ước chỉ số bin D710→STIR (`PLANE_MM`, `crystal_to_det`, `plane_ring_pairs`) |
-| `terms.py` | nạp số hạng của một bed, bảng tóm tắt, bảng bất biến |
+| `terms.py` | nạp số hạng của một bed (+ bảng tóm tắt / bất biến, xem dưới) |
 | `attn.py` | `af` theo bed, cache vào `work/bed<n>/attn.hs` |
 | `sirf_env.py` | chdir vào scratch + giữ `MessageRedirector` sống |
 | `quant.py` | count/voxel → Bq/mL → SUV; hằng số `K` |
 | `export.py` | ghi NIfTI / DICOM (`python3 -m utils.export` là `d710 export`) |
-| `plots.py` | hình cho notebook |
+| `plots.py` | hình để xem sinogram/ảnh — **không có chỗ nào gọi**, xem dưới |
+| `scanner.py` | MỌI hằng số máy + lưới ảnh, một chỗ duy nhất |
+
+## Mã còn đó nhưng hiện không ai gọi
+
+Cây từng có `osem_pipeline.ipynb`; nó đã bị xoá, còn phần `utils/` phục vụ nó
+thì **giữ lại nguyên**. Liệt kê ở đây để không ai phải tra lại bằng grep, và để
+không nhầm là sót:
+
+| ký hiệu | vốn để làm gì |
+|---|---|
+| `plots.py` (cả module) | hình cho notebook; `slices` + `busiest_plane` chỉ `terms.collect` gọi |
+| `terms.collect`, `bed_table`, `invariant_table`, `invariants`, `summarise` | các ô bảng/bất biến của notebook — nay `tests/test_pipeline_data.py` làm việc đó |
+| `quant.suv_table`, `suv_bsa`, `bsa_m2`, `body_mask`, `voxel_ml` | nhánh SUV theo diện tích da, treo dưới `suv_table` |
+| `geometry.open_projdata` | chỉ `tests/test_geometry.py` dùng |
+| `geometry.ring_pair_multiplicity` | **không phải mã chết**: là oracle của `tests/test_lm_geom.py`, và đúng đắn của nó thể hiện bằng việc *không ai gọi* |
+| `osem.stitch.plane_index` | tra chỉ số plane, không còn nơi dùng |
+
+Kiểm lại danh sách này bằng cách đếm tham chiếu qua AST trên toàn cây, không
+phải bằng grep tên hàm — nhiều tên ở đây (`collect`, `slices`) là từ thông
+dụng.
 
 Bốn số hạng hiệu chỉnh **không** dựng ở đây — lấy thẳng từ kernel của GE:
 

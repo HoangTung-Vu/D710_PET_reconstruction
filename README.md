@@ -130,8 +130,10 @@ mang tính OSEM: nếu một hàm chỉ có nghĩa với OSEM thì chỗ của n
 `S` phải gắn **trước** `set_up` để STIR gộp vào sensitivity image — đó là cái
 làm phép hiệu chỉnh mang tính định lượng chứ không chỉ đánh trọng số lại. `b` đi
 **vòng qua** `S` vì randoms và scatter đã nằm sẵn trong miền count đo được.
-`tests/test_notebook_contract.py` dựng lại đúng `y = S·(Gx) + b` trên máy quét
-thu nhỏ và so với `S`, `b` đã biết.
+`tests/test_forward_model.py` dựng lại đúng `y = S·(Gx) + b` trên máy quét
+thu nhỏ và so với `S`, `b` đã biết. Hạn chót của `S` là `set_up` của **bộ tái
+tạo**, không phải của acquisition model — đo trên SIRF 3.10.1, gắn trước hay sau
+`am.set_up` cho ra sensitivity image giống hệt nhau.
 
 ## Kiểm
 
@@ -145,10 +147,6 @@ Phần tổng hợp chạy trên một máy quét thu nhỏ nên không cần d�
 liệu thật đọc `$D710_OUT/<ca>/` và tự skip khi chưa dựng — kể cả khi
 `$D710_OUT` chưa đặt. Chi tiết: `tests/README.md`.
 
-**Notebook không được chứa mã.** `test_notebook_contract.py` fail nếu một code
-cell định nghĩa `def`/`class` hay dài quá 15 câu lệnh. Ràng buộc bằng máy cho
-một chuyện đã xảy ra thật: `utils/` từng bị chép vào notebook rồi hai bản lệch
-nhau, và cả hai vẫn chạy.
 
 ## Bốn cái bẫy đã xử sẵn
 
@@ -227,14 +225,19 @@ CTAC) trên sinogram thật; `osem/` là chỗ ghép.
 | **FOV ngang** | **xong** — đĩa bán kính 356,7 mm áp vào ước lượng khởi tạo; trước đó 34% số đếm rơi ra góc lưới vuông |
 | **mô phỏng liều thấp** | **xong** — `lowdose/`, kiểm nhị thức + bất biến theo plane |
 | **lưới ảnh** | **xong** — `utils/scanner.py`, 337 × 2,1306 mm, giống hệt nhau ở cả hai runtime |
-| **hằng số `K`** | **CHƯA** — nhưng **một `K` cho cả hai đường**: thang lệch 0,60 trước đây là do voxel lệch, không phải vật lý |
+| **hằng số `K`** | **đã đo** — `K_EXPORT` (sinogram) và `K_EXPORT_LM` (list-mode), **HAI hằng số** chứ không phải một; **phải đo lại** sau khi sửa `MU_*_511` (2026-09-06) |
 
-**`K` là việc còn lại duy nhất.** Ảnh ra là count/voxel, chưa phải Bq/mL. Không
-có WCC nào được áp trong `vendor/`, nên thang tuyệt đối phải tự đo trên NEMA:
-chạy `d710 exam --case nema`, đo trên vùng nền có nồng độ biết trước. `K` đo
-xong **chỉ đúng cho đúng chuỗi hiệu chỉnh này và đúng bước voxel 2,1306 mm** —
-projector tích luỹ theo bước voxel chứ không theo thể tích, nên đo ở 2,1306 mm
-rồi dùng ở 1,3672 mm sẽ đọc cao 1,56×.
+**`K` đã đo, nhưng đang phải đo lại.** Đo bằng cách so với chính bản tái tạo
+BQML của GE trên 5 ca FDG (`tools/compare_vendor.py` → `tools/calib_k.py`), chứ
+không phải trên NEMA. **Hai hằng số**, vì hai đường tái tạo không đặt cùng số
+đếm vào một voxel: dùng chung một `K` lệch khoảng 2,1× (`utils/scanner.py`).
+
+`K` **chỉ đúng cho đúng chuỗi hiệu chỉnh đã đo nó và đúng bước voxel 2,1306 mm**
+— projector tích luỹ theo bước voxel chứ không theo thể tích, nên đo ở
+2,1306 mm rồi dùng ở 1,3672 mm sẽ đọc cao 1,56×. Ngày 2026-09-06 `MU_WATER_511`
+và `MU_BONE_511` được sửa về đúng giá trị máy khai báo (`cmcfg.XR.xml:264/267`),
+tức suy giảm đã đổi, nên cả hai hằng số hiện tại **không còn hiệu lực**:
+chạy lại `run_all_ok.sh` → `export_all_ok.sh` → `tools/calib_k.py`.
 
 Chi tiết: **`vendor/README.md`** (tài liệu chính), `vendor/PARAMS.md` (tham số
 sống đọc từ tiến trình), `vendor/cal/README.md` (hiệu chuẩn),

@@ -12,7 +12,14 @@ import synth_ct
 # ----------------------------------------------------------------- hu_to_mu
 
 def test_water_and_air_anchors():
-    assert attenuation.hu_to_mu(np.array([0.0])) == pytest.approx(0.0096, rel=1e-6)
+    """0 HU is water and -1000 HU is air, whatever the endpoints are set to.
+
+    Against the constant rather than a literal: the value itself belongs to the
+    scanner (`cmcfg.XR.xml:264`) and is pinned in `test_petsw_config.py`, while
+    what matters here is that the bilinear passes through it.
+    """
+    assert (attenuation.hu_to_mu(np.array([0.0]))
+            == pytest.approx(attenuation.MU_WATER_511, rel=1e-6))
     assert attenuation.hu_to_mu(np.array([-1000.0])) == pytest.approx(0.0, abs=1e-9)
 
 
@@ -50,7 +57,8 @@ def test_an_unlisted_kvp_falls_back_to_120():
 
 def test_soft_tissue_arm_is_water_scaled():
     hu = np.array([-500.0])
-    assert attenuation.hu_to_mu(hu)[0] == pytest.approx(0.0096 * 0.5, rel=1e-6)
+    assert (attenuation.hu_to_mu(hu)[0]
+            == pytest.approx(attenuation.MU_WATER_511 * 0.5, rel=1e-6))
 
 
 # ------------------------------------------------------------ to_radiological

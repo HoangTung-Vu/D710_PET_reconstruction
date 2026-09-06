@@ -81,11 +81,12 @@ def scatter_tof_weights(case, bed: int, binmap, n_tof: int, e=None):
             f"--case {case.name} --bed {bed} --tof")
 
     from . import events as ev
-    from . import geom
 
-    b = ev.bins(e, binmap)
+    b, swap = ev.bins(e, binmap, with_swap=True)
     ok = b >= 0
-    t = geom.tof_to_stir(np.asarray(e["tof_bin"]), n_tof)[ok].astype(np.int64)
+    # The profile is applied to the SCATTER SINOGRAM, so it has to be measured on
+    # the sinogram bin's TOF axis -- `tof_index`, not the event's own frame.
+    t = ev.tof_index(e, binmap, n_tof, swap)[ok].astype(np.int64)
     u = (b[ok] % binmap.n_tang).astype(np.int64)
     P = np.bincount(t * binmap.n_tang + u,
                     minlength=n_tof * binmap.n_tang).reshape(n_tof, binmap.n_tang)
@@ -102,9 +103,8 @@ def scatter_tof_weights(case, bed: int, binmap, n_tof: int, e=None):
 def event_terms(case, bed: int, e, binmap, n_tof: int, tof_scatter=None):
     """`(keep, weights, additive)`; the last two only for the events kept."""
     from . import events as ev
-    from . import geom
 
-    b = ev.bins(e, binmap)
+    b, swap = ev.bins(e, binmap, with_swap=True)
     keep = b >= 0
     b = b[keep].astype(np.int64)
 
@@ -118,7 +118,12 @@ def event_terms(case, bed: int, e, binmap, n_tof: int, tof_scatter=None):
             tof_scatter, note = scatter_tof_weights(case, bed, binmap, n_tof, e)
         print(f"  TOF scatter: {note}")
         wt = np.asarray(tof_scatter, np.float32)
-        t = geom.tof_to_stir(np.asarray(e["tof_bin"])[keep], n_tof).astype(np.int64)
+        # `wt` indexes the SCATTER SINOGRAM's TOF axis, so the event needs its
+        # index in the sinogram bin's frame -- `tof_index`, which mirrors the
+        # events recorded against the bin's direction. Using the event's own
+        # frame here reads ~9 % of events off the mirrored TOF bin, and nothing
+        # downstream can tell: counts and every invariant are identical.
+        t = ev.tof_index(e, binmap, n_tof, swap)[keep].astype(np.int64)
         if wt.ndim == 1:
             sct = sct * wt[t]
         else:

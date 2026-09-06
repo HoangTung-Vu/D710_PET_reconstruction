@@ -22,13 +22,17 @@ XTAL0_OFFSET_DEG = -5.0210
 XTAL_PITCH_DEG = 360.0 / NDET          # 0.625
 
 #: STIR's `psi_offset`, NOT the same quantity as XTAL0_OFFSET_DEG, and PROVISIONAL.
-#: Was -5.0210, which cost 10.04 deg of image rotation on both paths.
+#: NOT -5.0210: that is GE's crystal-0 azimuth in the gantry frame, a different
+#: quantity in a different frame, and copying it here costs 10.04 deg of image
+#: rotation on BOTH paths (they share the header).
+#: TODO(GEOMETRY_AUDIT.md §8.2): only a NEMA scan separates +4.396 from +5.021.
 #: Derivation, measurements and the open +4.4 / +5.7 conflict: GEOMETRY_AUDIT.md.
 VIEW_OFFSET_DEG = -(XTAL0_OFFSET_DEG + XTAL_PITCH_DEG)      # +4.3960
 
 #: STIR places a LOR at `R_MM + DOI_MM`. GE: SYS_EFF_RING_DIAMETER 827.0
-#: (cmcfg.XR.xml:677, RDF effectiveRingDiameter) -> 413.50 - 405.10. Was 9.4,
-#: STIR's Discovery 690 default. See GEOMETRY_AUDIT.md.
+#: (cmcfg.XR.xml:677, RDF effectiveRingDiameter) -> 413.50 - 405.10.
+#: NOT 9.4 -- that is STIR's Discovery 690 default, a different scanner.
+#: Pinned against the console by `tests/test_petsw_config.py`.
 DOI_MM = 8.4
 
 #: Where STIR/GE put the LOR. Both paths must use this, not R_MM.
@@ -38,10 +42,8 @@ R_EFF_MM = R_MM + DOI_MM        # 413.50
 PLANE_MM = 3.2699997
 
 #: NOT `axial_fov_mm / nrings` (156.70/24 = 6.529): that is 0.17 % short and
-#: leaves the crystal LUT just inside the outermost image plane. `lm.recon`
-#: no longer depends on it for that — `axial_mask` rounds instead of flooring,
-#: which is what kept plane 46 alive — but the value is still the one the
-#: header states and the one the projector geometry has to use.
+#: leaves the crystal LUT just inside the outermost image plane. GE states both
+#: numbers; this is the one the header carries and the projector geometry uses.
 RING_PITCH_MM = 2 * PLANE_MM
 
 #: Direct planes (segment 0) in the 553-plane sinogram = 2·NRINGS − 1.
@@ -55,8 +57,8 @@ CRYSTAL_OFFSET = 288
 
 # ----------------------------------------------------------------------- TOF
 #: 55 bins of one coincidence-timing LSB; timing resolution 675 ps FWHM.
-#: Was 550.0 (STIR's Discovery 690 placeholder, 23 % too narrow). The machine's
-#: own value: sharcAp.cfg:46 TIMING_RESOLUTION 675.  See GEOMETRY_AUDIT.md.
+#: The machine's own value: sharcAp.cfg:46 TIMING_RESOLUTION 675.
+#: NOT 550.0 -- STIR's Discovery 690 placeholder, 23 % too narrow here.
 N_TOF_RAW, TOF_LSB_PS, TIMING_PS = 55, 89.2459, 675.0
 C_MM_PS = 0.299792458
 
@@ -88,7 +90,9 @@ N_SUBSETS, N_ITERATIONS = 24, 2
 #: speedup for a coarser transaxial model. Use `--lors 1` for a smoke test only.
 TANGENTIAL_LORS = 5
 
-#: GE's own transaxial PSF FWHM (mm), from the PT private tags.
+#: Transaxial PSF FWHM (mm). GE's own is a 381 x 32 LUT that widens with radius
+#: (`sharcAp.cfg.XR:62 psfLUT.XR`, 5.0 mm at the centre to 11.9 at the edge);
+#: this one scalar stands in for it. TODO(GEOMETRY_AUDIT.md §8.4).
 PSF_MM = 6.4
 
 #: Post-filter, GE's own setting for this protocol, read off the private tags of
@@ -105,9 +109,20 @@ POST_FILTER_FWHM_MM = 6.4
 POST_FILTER_Z_RATIO = 4.0
 
 # -------------------------------------------------------------- CT -> mu-map
-#: Carney bilinear HU -> mu(511 keV), 1/mm.
-MU_WATER_511 = 0.0096
-MU_BONE_511 = 0.0172
+#: Carney bilinear HU -> mu(511 keV), 1/mm. The two endpoints are the scanner's
+#: own, not the literature's: cmcfg.XR.xml:264 CTAC_DEFAULT_MU_WATER_511 0.093
+#: and :267 CTAC_DEFAULT_MU_BONE_511 0.166, both /cm, so /10 here.
+#:
+#: NOT 0.0096 / 0.0172. 0.0096 is cmcfg.XR.xml:307
+#: CMP_CFG_MODEL_SCATTER_MU_DEFAULT -- GE's mu for the SCATTER model, a
+#: different quantity in a different part of the chain, and 3.2 % high as an
+#: attenuation coefficient (bone 3.6 %). Using it here overstated every ACF.
+MU_WATER_511 = 0.0093
+MU_BONE_511 = 0.0166
+
+#: GE's own CT conversion is not a Carney bilinear at all but a 5-segment
+#: piecewise table per kVp (systemConfig/local/ctacConvScale.cfg). This keeps
+#: the bilinear form and only its endpoints are the scanner's.
 CARNEY_B = {80: 0.681, 100: 0.755, 120: 0.837, 140: 1.0}
 
 # -------------------------------------------------------------- calibration
@@ -133,6 +148,9 @@ WCC_UNIT_SCALE = 1e4
 #: counts in a voxel: `K_EXPORT` is the non-TOF sinogram path (`d710 osem`),
 #: `K_EXPORT_LM` the 55-bin TOF list-mode path (`d710 lm recon`). Using one for
 #: both was measured wrong by ~2.1x.
+#: ⚠ Both were fitted with MU_WATER_511 = 0.0096 / MU_BONE_511 = 0.0172, which
+#: the values above corrected (2026-09-06). Attenuation moved, so the count/voxel
+#: they were fitted against moved with it: re-measure before trusting Bq/mL.
 K_EXPORT = 63_002.1      # 5 ca, tản 8.3 %, r >= 0.962
 K_EXPORT_LM = 124_178.0      # 5 ca, tản 10.8 %, r >= 0.977
 
@@ -189,4 +207,18 @@ def sirf_grid(acq, xy: int = XY, dr_mm: float = DR_MM, out=print):
     n = max(1, round(xy * got / dr_mm))
     out(f"grid: xy {xy} -> {n}, this SIRF pins the FOV ({xy * got:.2f} mm) "
         f"and would have given {got:.4f} mm voxels")
-    return acq.create_uniform_image(1.0, n)
+    x = acq.create_uniform_image(1.0, n)
+
+    # Check the rescale actually landed. Both builds we know of are covered by
+    # the two branches above, but `K` is measured at one voxel size and the
+    # projector accumulates along the voxel step, so a third build that
+    # quantises zoom differently would mis-scale every Bq/mL with nothing to
+    # show for it. Refuse instead.
+    got = float(x.voxel_sizes()[1])
+    if abs(got - dr_mm) > 1e-3:
+        raise SystemExit(
+            f"error: cannot reach {dr_mm} mm voxels on this SIRF build -- "
+            f"xy {n} gives {got:.6f} mm.\n"
+            f"  K is calibrated for {dr_mm} mm and scales with the voxel step, "
+            f"so a reconstruction on this grid would be quantitatively wrong.")
+    return x

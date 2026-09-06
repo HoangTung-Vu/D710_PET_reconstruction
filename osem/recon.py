@@ -5,14 +5,20 @@ Three inputs, **not interchangeable**:
 | | file | how it is attached |
 |---|---|---|
 | `y` raw prompts | `decoded/bed<n>.hs` | `recon.set_input` |
-| `S` | `work/bed<n>/normdt.hs` × af | `set_acquisition_sensitivity` **before** `set_up` |
+| `S` | `work/bed<n>/normdt.hs` × af | `set_acquisition_sensitivity` |
 | `b` | `work/bed<n>/background.hs` | `set_background_term` |
 
-`S` must be attached **before** `set_up` so that STIR folds it into the
-sensitivity image — that is what makes the correction quantitative rather than a
-mere reweighting. `b` **bypasses** `S` because randoms and scatter already live
-in the measured count domain; `tests/test_notebook_contract.py` rebuilds exactly
-that identity on a miniature scanner.
+`S` must be attached before the **reconstructor's** `set_up` — that is when STIR
+computes the sensitivity image and folds `S` into it, which is what makes the
+correction quantitative rather than a mere reweighting. It is attached before
+`am.set_up` below only because that leaves no room for doubt: `am.set_up` merely
+stores parameters, so attaching it either side of that call gives a bit-identical
+sensitivity image (measured on the miniature scanner, SIRF 3.10.1). Attaching it
+after `rec.set_up` is the mistake, and it is silent.
+
+`b` **bypasses** `S` because randoms and scatter already live in the measured
+count domain; `tests/test_forward_model.py` rebuilds exactly that identity on a
+miniature scanner.
 
 ⚠ **Do not multiply `geometry.ring_pair_multiplicity()` in here.** GE's `normdt`
 already carries the span-2 multiplicity; multiplying again squares it (4× at odd
@@ -97,7 +103,8 @@ def acquisition_model(objs, sensitivity, image, tangential_lors=TANGENTIAL_LORS,
         raise SystemExit("error: --projector must be auto, ray or parallelproj "
                          "(got %r)" % projector)
 
-    # BEFORE set_up: that is what makes S go into the sensitivity image.
+    # Attached here, well before the reconstructor's set_up computes the
+    # sensitivity image -- that is the deadline S has to meet.
     am.set_acquisition_sensitivity(pet.AcquisitionSensitivityModel(sensitivity))
     am.set_background_term(objs["background"])
     am.set_up(objs["prompts"], image)

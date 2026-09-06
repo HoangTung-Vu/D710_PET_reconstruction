@@ -74,13 +74,45 @@ if [[ $LISTMODE -eq 1 ]]; then
     # GLEPL decompression writes a full-size copy beside the output, NOT beside
     # the input -- /raw is read-only and must stay that way.  cli.py puts it in
     # <out>/.gerdf_lm; it is the size of the .BLF, so it is cleaned up after.
-    # --drop-preroll: the preroll coincidences are acquired before the frame
-    # starts and GE's own sinogram leaves them out, so keeping them makes the
-    # event table disagree with bed<n>.s -- measured, 158 events on ped bed 1
-    # and 0 on every other bed.  Every correction term describes the frame, so
-    # the events must too.
-    "$PYTHON" "$TOOL" listmode-decode "$blf" -o "$stem.$ext" --drop-preroll
+    # No --drop-preroll: whether GE's `prompts` scalar counts the pre-roll
+    # coincidences VARIES FROM BED TO BED, so no fixed choice is right for a
+    # whole exam -- forcing the drop leaves every bed whose scalar does count
+    # them short by exactly its pre-roll, and the event table then no longer
+    # reproduces bed<n>.s.  Measured on the ped exam: bed 1's scalar excludes
+    # its 158, beds 2-6's scalars include theirs (107, 282, 375, 96, 106).
+    # The decoder reads the policy off each file's own header instead
+    # (gerdf.listmode.resolve_preroll) and records it in the .lm.json sidecar.
+    "$PYTHON" "$TOOL" listmode-decode "$blf" -o "$stem.$ext"
     rm -rf /out/.gerdf_lm
+
+    # The count has to reconcile with the header, and an image built before
+    # `resolve_preroll` existed decides this per EXAM rather than per bed, so
+    # check the result instead of trusting it.  Silently-short event tables are
+    # the failure this guards: every invariant still holds, only the image
+    # changes.  The .prd path writes no sidecar, so it is skipped.
+    if [[ "$ext" == "lm.npy" && -f "$stem.lm.json" && -f "$stem.json" ]]; then
+      "$PYTHON" - "$stem" <<'PY' || exit 1
+import json, sys
+stem = sys.argv[1]
+side = json.load(open(f"{stem}.lm.json"))
+hdr = json.load(open(f"{stem}.json"))
+want = hdr.get("prompts")
+got, st = side["events"], side["stats"]
+if want is None or got == want:
+    sys.exit(0)
+how = ("--keep-preroll" if got == want - st["preroll"] else "--drop-preroll")
+print(f"error: {stem}.lm.npy holds {got:,} events but the header counts "
+      f"{want:,} prompts ({got - want:+,}).", file=sys.stderr)
+if abs(got - want) == st["preroll"]:
+    print(f"  That is exactly the {st['preroll']:,} pre-roll events. This "
+          f"decoder chose keep_preroll={side['keep_preroll']} for the whole "
+          f"exam; the policy is per bed.\n"
+          f"  Rebuild the image so gerdf.listmode.resolve_preroll is present:\n"
+          f"    docker build -t d710:full -f D710/Dockerfile .\n"
+          f"  or decode this bed with {how}.", file=sys.stderr)
+sys.exit(1)
+PY
+    fi
   done
 fi
 

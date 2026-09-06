@@ -88,9 +88,12 @@ def ring_pair_multiplicity(info) -> np.ndarray:
     Nyquist frequency of the axial profile is down to 0.00-0.49 % (in the
     sinogram it is 68.9 %).
 
-    This function remains here for the **old hand-written** pipeline (since
-    deleted), where randoms/scatter/norm were built by hand and did NOT carry the
-    multiplicity, so it had to be pushed into `asm` manually.
+    **Nothing in the pipeline calls this, and that is the point**: the
+    sensitivity/normalisation term already carries the multiplicity -- `normdt`,
+    and with it `randoms` and `scatter` -- so applying it again squares it.
+    `tests/test_pipeline_data.py::test_span_2_doubles_the_odd_planes_of_every_term`
+    measures that on real data. It stays as the STIR-backed oracle
+    `tests/test_lm_geom.py` checks `lm.geom.BinMap.mult` against.
 
     **This is geometry, not detector normalisation.** Segment 0 of span-2 merges
     ring differences +1 and -1 into its odd axial positions, so those bins collect

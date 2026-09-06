@@ -9,6 +9,9 @@ an independent proof of the bin map, not a self-check -- the same standard
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import numpy as np
 import pytest
 from cases import decoded_beds
@@ -65,10 +68,58 @@ def test_histogram_reproduces_the_decoded_sinogram(bed, _binmaps):
         f"{int((h.reshape(-1) != ref).sum()):,} bins differ")
 
 
+def _lm_sidecar(bed) -> dict | None:
+    """The `.lm.json` written beside the event table, or None if it predates it."""
+    p = Path(bed["npy"]).with_suffix(".json")
+    return json.loads(p.read_text()) if p.exists() else None
+
+
 @pytest.mark.parametrize("bed", LM_BEDS)
 def test_event_count_matches_the_header(bed):
+    """The table must count exactly what the header counts, pre-roll included.
+
+    Every correction term is a per-bin quantity of `bed<n>.s`, so an event table
+    holding a different set of coincidences is not a description of the same
+    acquisition. The only way to be short is the pre-roll, so name it when that
+    is what happened -- the failure is then a decode to redo, not a mystery.
+    """
     e = ev.load(bed["npy"])
-    assert len(e) == bed["hdr"]["prompts"]
+    want = bed["hdr"]["prompts"]
+    if len(e) == want:
+        return
+
+    side = _lm_sidecar(bed)
+    hint = ""
+    if side and len(e) == side["stats"]["coincidences"] - side["stats"]["preroll"]:
+        hint = (f"\n  short by exactly the {side['stats']['preroll']:,} pre-roll "
+                f"events, and the sidecar says keep_preroll="
+                f"{side['keep_preroll']}."
+                f"\n  This bed's header DOES count them, so it must be decoded "
+                f"again: the policy is per bed, not per exam."
+                f"\n  re-run: d710 decode --raw <SINO dir> --case "
+                f"{bed['case']} --bed {bed['bed']} --force")
+    assert len(e) == want, (
+        f"{bed['case']} bed {bed['bed']}: {len(e):,} events against "
+        f"{want:,} header prompts ({len(e) - want:+,}){hint}")
+
+
+@pytest.mark.parametrize("bed", LM_BEDS)
+def test_the_preroll_policy_the_sidecar_records_is_the_one_it_applied(bed):
+    """`keep_preroll` in the sidecar has to explain the table's own length.
+
+    Cheap, and it is the one check that still works when the header scalar is
+    unavailable -- it compares the decoder's decision against its own output.
+    """
+    side = _lm_sidecar(bed)
+    if side is None:
+        pytest.skip("event table predates the .lm.json sidecar")
+    st = side["stats"]
+    want = st["coincidences"] - (0 if side["keep_preroll"] else st["preroll"])
+    assert side["events"] == want, (
+        f"sidecar says keep_preroll={side['keep_preroll']} and "
+        f"{st['coincidences']:,} coincidences with {st['preroll']:,} pre-roll, "
+        f"which is {want:,} events, but it recorded {side['events']:,}")
+    assert len(ev.load(bed["npy"])) == side["events"]
 
 
 @pytest.mark.parametrize("bed", LM_BEDS[:LOOKUP_BEDS])

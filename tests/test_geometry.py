@@ -108,7 +108,7 @@ def test_the_two_names_for_plane_mm_agree():
 
 
 # ------------------------------------------------- the FOV a LOR can reach
-def test_fov_radius_is_the_widest_chord_the_sinogram_holds(mini_hs):
+def test_fov_radius_is_the_widest_chord_the_sinogram_holds(stir, mini_hs):
     """The outermost tangential bin's own |s|, straight out of STIR.
 
     The miniature scanner shares the real one's radius and DOI, so this pins the
@@ -145,7 +145,7 @@ def test_fov_mask_is_a_centred_disc():
     assert m.sum() == pytest.approx(np.pi * r * r, rel=0.01)
 
 
-def test_tangential_s_mm_is_not_arc_corrected(mini_hs):
+def test_tangential_s_mm_is_not_arc_corrected(stir, mini_hs):
     """Bins crowd towards the edge, so nobody may multiply by a nominal width."""
     s = geometry.tangential_s_mm(mini_hs)
     assert s.size == 9
@@ -156,7 +156,7 @@ def test_tangential_s_mm_is_not_arc_corrected(mini_hs):
     assert step.min() < step.max()                    # narrower at the edges
 
 
-def test_open_projdata_keeps_the_data_alive(mini_hs):
+def test_open_projdata_keeps_the_data_alive(stir, mini_hs):
     """`get_proj_data_info()` is a borrowed pointer; the pair must be returned."""
     pd, info = geometry.open_projdata(mini_hs)
     assert pd is not None

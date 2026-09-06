@@ -122,7 +122,7 @@ def test_every_term_shares_the_prompts_geometry(bed):
 
 
 def test_term_headers_are_clones_of_the_prompt_header(bed):
-    """Same ExamInfo by construction -- the fix that retired `same_bins()`.
+    """Same ExamInfo by construction: the header is cloned, not generated.
 
     A term whose header was generated rather than cloned drifts on the energy
     window, and STIR throws `BinNormalisation set-up with different ExamInfo`

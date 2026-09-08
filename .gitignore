@@ -20,6 +20,13 @@ work/
 raw_prompt/
 vendor/out/
 
+# This machine's settings, above all the image names, which are whatever
+# `docker load` / `apptainer build` happened to name them.  It was tracked
+# until 2026-09-08 and has been removed from the whole history: `d710` and
+# `d710_isolate_stir.sh` both document it as "copy `.env.example` and edit",
+# and a per-machine file cannot be both that and a committed one.
+.env
+
 # Python
 __pycache__/
 *.pyc

@@ -161,22 +161,48 @@ _apt_doctor() {
     if [[ -n "${bin:-}" && -f "${D710_SIRF_SIF:-}" ]]; then
         echo "== sirf-local: gói Python attn/osem/export cần"
         local miss
-        miss="$("$bin" exec --cleanenv --writable-tmpfs "$D710_SIRF_SIF" bash -c '
-            . "${D710_SIRF_ENV_SH_REAL:-/opt/SIRF-SuperBuild/INSTALL/bin/env_sirf.sh}" >/dev/null 2>&1
+        # Sourced through apptainer_shim/sirf_env.sh and with $D710_OUT bound,
+        # i.e. EXACTLY the way d710_isolate_stir.sh starts python -- otherwise
+        # this reports pydicom missing for ever, even after $D710_OUT/.pylibs
+        # has fixed it, and the check would be worse than none.
+        local -a probe=(exec --cleanenv --writable-tmpfs --bind "$HERE:$HERE:ro")
+        [[ -n "${D710_OUT:-}" && -d "${D710_OUT}" ]] && \
+            probe+=(--bind "$D710_OUT:$D710_OUT" --env "D710_OUT=$D710_OUT")
+        miss="$("$bin" "${probe[@]}" "$D710_SIRF_SIF" bash -c '
+            . "$0" >/dev/null 2>&1
             for m in numpy sirf.STIR pydicom nibabel; do
                 python3 -c "import $m" 2>/dev/null || printf "%s " "$m"
-            done' 2>/dev/null)"
-        miss="${miss% }"
-        if [[ -z "$miss" ]]; then
+            done' "$HERE/apptainer_shim/sirf_env.sh" 2>/dev/null)"
+        # Split into two very different diagnoses, and keep ONLY names we asked
+        # about -- anything else on that stream is noise (an apptainer warning,
+        # a shell diagnostic) and must never be echoed back as "pip install this".
+        #   numpy / sirf.STIR   the image itself is wrong; pip cannot fix that
+        #   pydicom / nibabel   pure Python, fixable from outside the image
+        local m broken="" fixable=""
+        for m in numpy sirf.STIR; do
+            [[ " $miss " == *" $m "* ]] && broken="$broken $m"
+        done
+        for m in pydicom nibabel; do
+            [[ " $miss " == *" $m "* ]] && fixable="$fixable $m"
+        done
+        broken="${broken# }"; fixable="${fixable# }"
+        if [[ -z "$broken$fixable" ]]; then
             echo "   numpy, sirf.STIR, pydicom, nibabel: ok"
-        else
-            echo "   THIẾU: $miss"
-            echo "   Không phải lỗi apptainer -- image vốn không có, docker cũng hỏng"
-            echo "   như vậy.  Vá bằng bản pure-Python đặt cạnh đầu ra (đã bind sẵn):"
+        fi
+        if [[ -n "$broken" ]]; then
+            echo "   HỎNG: $broken không import được -- image sai, không phải"
+            echo "   thiếu gói phụ. Kiểm lại chính file .sif."
+            rc=1
+        fi
+        if [[ -n "$fixable" ]]; then
+            echo "   THIẾU: $fixable"
+            echo "   Không phải lỗi apptainer -- image vốn không có, docker cũng"
+            echo "   hỏng như vậy. Vá bằng bản pure-Python đặt cạnh đầu ra (đã"
+            echo "   bind sẵn, nằm ngoài cây mã):"
             echo "       python3 -m pip install --no-deps \\"
-            echo "           --target \"\$D710_OUT/.pylibs\" $miss"
-            echo "   apptainer_shim/sirf_env.sh nối thư mục đó vào PYTHONPATH."
-            [[ "$miss" == *sirf.STIR* || "$miss" == *numpy* ]] && rc=1
+            echo "           --target \"\$D710_OUT/.pylibs\" $fixable"
+            echo "   apptainer_shim/sirf_env.sh nối thư mục đó vào cuối PYTHONPATH."
+            rc=1
         fi
     fi
     echo "== gpu"

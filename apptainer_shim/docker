@@ -26,6 +26,8 @@
 # HOW EACH DOCKER FLAG IS TRANSLATED
 #   -v h:c[:ro]              --bind h:c[:ro]
 #   -e K=V                   --env K=V
+#   -e HOME=X                `env HOME=X` in front of the command -- apptainer
+#                            REFUSES --env HOME (it warns and ignores it)
 #   -w D                     --pwd D
 #   --entrypoint X           X becomes argv[0] of the command
 #   --add-host N:IP          a synthesised /etc/hosts, bound over the image's
@@ -133,7 +135,7 @@ case "$sub" in
 esac
 
 # ------------------------------------------------------------- parse `run`
-BINDS=(); ENVS=(); HOSTS=(); WORKDIR=""; ENTRY=""; IMAGE=""; CMD=()
+BINDS=(); ENVS=(); HOSTS=(); WORKDIR=""; ENTRY=""; IMAGE=""; CMD=(); HOME_DIR=""
 HAVE_USER=0; HAVE_HOME=0; WANT_OUT_PWD=0
 
 add_bind() {
@@ -166,8 +168,10 @@ while [[ $# -gt 0 ]]; do
         # ---- carry a value, and we translate it
         -v|--volume)   (( inline )) || { v="${2:-}"; shift; }; add_bind "$v" ;;
         -e|--env)      (( inline )) || { v="${2:-}"; shift; }
-                       ENVS+=(--env "$v")
-                       case "$v" in HOME=*) HAVE_HOME=1 ;; esac ;;
+                       case "$v" in
+                           HOME=*) HOME_DIR="${v#HOME=}"; HAVE_HOME=1 ;;
+                           *)      ENVS+=(--env "$v") ;;
+                       esac ;;
         -w|--workdir)  (( inline )) || { v="${2:-}"; shift; }; WORKDIR="$v" ;;
         --entrypoint)  (( inline )) || { v="${2:-}"; shift; }; ENTRY="$v" ;;
         --add-host)    (( inline )) || { v="${2:-}"; shift; }
@@ -243,10 +247,12 @@ EOF
     fi
 fi
 
-# No -e HOME means docker would have given root /root.  Keep the host home out,
-# the way docker does -- which also keeps a stray ~/.gdbinit out of the batch
-# gdb run that drives pet_recon.
-if (( ! HAVE_HOME )); then OPTS+=(--no-home); ENVS+=(--env HOME=/root); fi
+# No -e HOME means docker would have given root /root.  Keep the host home out
+# too, the way docker does -- which also keeps a stray ~/.gdbinit out of the
+# batch gdb run that drives pet_recon.
+if (( ! HAVE_HOME )); then OPTS+=(--no-home); HOME_DIR=/root; fi
+# Prepended to the command rather than passed as --env; see the -e case above.
+CMD=(env "HOME=$HOME_DIR" "${CMD[@]}")
 
 # --------------------------------------------------------------- /etc/hosts
 # The console's own names (CT85_OC0, loghost, ...) -- without them the vendor

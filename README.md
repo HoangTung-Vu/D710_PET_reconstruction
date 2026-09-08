@@ -14,7 +14,11 @@ Chuẩn bị một lần:
 ```bash
 docker load -i d710_full.tar                      # image của hãng, nếu chưa có
 cd D710 && conda env create -f environment.yml    # env host, tên `petct_recon`
+cp .env.example .env                              # thiết lập của MÁY NÀY, không commit
 ```
+
+Máy chỉ có apptainer, không có docker: xem **"Chạy bằng apptainer thay cho
+docker"** bên dưới — hai script tương đương, cùng tham số, cùng kết quả.
 
 **Môi trường host phải là conda, và thủ phạm là `parallelproj`** — gói mà
 `d710 lm` chạm tới qua PyTomography. Nó **không có trên PyPI** (404), và
@@ -89,6 +93,134 @@ tự nhận ra thiết lập đã đổi thì dựng lại bed đó chứ không
 `d710_isolate_stir.sh` chỉ nhận **`attn` / `osem` / `export`**; mọi lệnh khác nó
 chuyển thẳng cho `./d710`, nên gõ nhầm wrapper không sai kết quả.
 
+## Chạy bằng apptainer thay cho docker
+
+Máy có apptainer mà không có docker — workstation, cluster HPC — dùng hai bản
+tương đương. **Cùng tham số, cùng kết quả**, chỉ khác chỗ khởi động container:
+
+| docker | apptainer |
+|---|---|
+| `./d710 <lệnh>` | `./d710_apptainer <lệnh>` |
+| `./d710_isolate_stir.sh <lệnh>` | `./d710_isolate_stir_apptainer.sh <lệnh>` |
+
+Chuẩn bị một lần, **trên máy đang có image docker**:
+
+```bash
+apptainer build d710_full.sif  docker-daemon://d710:full
+apptainer build sirf_local.sif docker-daemon://sirf-local:0.1
+```
+
+Chép hai file `.sif` sang máy đích rồi khai một lần trong `D710/.env`:
+
+```bash
+D710_SIF=/đường/dẫn/d710_full.sif
+D710_SIRF_SIF=/đường/dẫn/sirf_local.sif
+```
+
+Không khai thì chúng được tìm trong `$D710_SIF_DIR`, `D710/sif/`, `D710/`,
+`$D710_OUT/sif`, `~/sif`. **Kiểm máy trước khi chạy ca đầu tiên** — mỗi thứ nó
+kiểm nếu hỏng đều hỏng muộn hơn và khó đọc hơn nhiều:
+
+```bash
+./d710_apptainer doctor    # apptainer, hai .sif, selftest bộ giải mã, fakeroot, GPU
+```
+
+Nguyên một ca, đúng thứ tự của mục "Chạy" ở trên:
+
+```bash
+export D710_OUT=~/UET/d710_out
+CASE=fdg26081901
+SRC=~/UET/Handson_PET_CT_Reconstruction/data/cases/20260819_FDG26081901_ok
+
+# 1. RDF -> sinogram + bảng sự kiện + bốn số hạng của GE
+./d710_apptainer exam --case $CASE \
+    --raw  $SRC/raw/petRDFS/NQLHXWDK/PZAMCDES/USIRBPEU \
+    --ct   $SRC/dicom/CT_s002_CT_WB_AC_5mm \
+    --listmode --lists $SRC/raw/petLists/NQLHXWDK/PZAMCDES/USIRBPEU
+
+# 2-3a. suy giảm + OSEM sinogram  (SIRF, trong sirf_local.sif)
+./d710_isolate_stir_apptainer.sh attn --case $CASE
+./d710_isolate_stir_apptainer.sh osem --case $CASE --resume
+
+# 3b. list-mode: chạy trên HOST, không container — apptainer không liên quan
+env D710_PYTHON=$HOME/miniconda3/envs/petct_recon/bin/python \
+    ./d710_apptainer lm recon --case $CASE --resume
+
+# 4. Bq/mL + SUV
+./d710_isolate_stir_apptainer.sh export --case $CASE --format both
+```
+
+### Là wrapper, không phải bản sao
+
+`d710` là 570 dòng logic pipeline — công tắc TOF phải tới **cả** decode lẫn
+estimate, sắp bed theo số chứ không theo chữ, tra SINO theo bed, dò trình thông
+dịch — nên một bản sao thứ hai sẽ lệch ngay từ lần sửa đầu tiên. Hai script
+trên chỉ đổi đúng hai thứ mà apptainer đổi, rồi gọi chính `./d710`:
+
+1. **Tên image CHÍNH LÀ đường dẫn `.sif`.** `D710_IMAGE` / `D710_SIRF_IMAGE`
+   vốn đã là chỗ mọi nơi trong cây đọc image ra, nên trỏ chúng vào file `.sif`
+   là xong phần lớn việc port.
+2. **`apptainer_shim/` đứng đầu `$PATH`**, và trong đó có một file tên `docker`
+   — một `docker` giả dịch thẳng sang `apptainer exec`.
+
+Cái shim là **bắt buộc**, không phải cho tiện: **ba chỗ khác trong cây cũng tự
+gọi `docker`**, và không chỗ nào chạm tới được bằng cách sửa script điểm vào —
+`vendor/run.sh` (gdb → `pet_recon`, tức bước `estimate`), `utils/container.py`
+(`rdf_info`, `cal_tags`, `ct_to_pifa`), và chính `d710_isolate_stir.sh` khi nó
+mount docker socket **vào trong** container SIRF. Có shim thì cả ba đi qua cùng
+một bản dịch, một chỗ duy nhất, và `d710` không phải sửa một dòng nào.
+
+### Ba chỗ không dịch máy móc được
+
+**`--writable-tmpfs` luôn bật**, vì hai lý do rời nhau. Một, đó đúng là ý nghĩa
+thật của `docker run --rm` — một lớp ghi bị vứt đi khi thoát. Hai, không có lớp
+overlay thì apptainer **không tạo được điểm mount**: `.sif` là squashfs, mà
+`/d710`, `/vendor`, `/case`, `/raw`, `/lists`, `/ct`, `/cal` đều không tồn tại
+trong `d710:full` (Dockerfile chỉ tạo `/out`, `/vendorlib`, `/petRDFS`). Nếu
+gặp lỗi hết chỗ — tmpfs phiên mặc định 64 MiB — trỏ `D710_APPTAINER_OVERLAY`
+vào một thư mục trên đĩa.
+
+**`estimate` cần `--fakeroot`.** `vendor/run.sh` là chỗ duy nhất cố ý **không**
+truyền `--user`, vì `pet_recon` mở `/usr/PET/systemConfig/cmcfg.xml` ở chế độ
+đọc-ghi mà file đó thuộc root và chỉ `u+w` trong image. Shim theo đúng luật của
+docker: không `--user` nghĩa là uid 0, và uid 0 dưới apptainer là `--fakeroot`.
+Nó **thử trước** rồi mới chạy, không có thì in ra cách gỡ (trích `systemConfig`
+ra ngoài rồi bind đè lại qua `D710_APPTAINER_BIND`) — bằng không lỗi quyền hiện
+ra ở dòng thứ 200 của một log gdb. Riêng đường này apptainer **hơn** docker:
+`.f32` sinh ra thuộc người chạy chứ không thuộc root.
+
+**`export` mất đường tra WCC trong container.** Bản docker mount docker socket
+vào container SIRF để `utils/quant.py` mở **container thứ hai** đọc file hiệu
+chuẩn của hãng; apptainer lồng apptainer thì không chạy. Thực tế vô hại:
+`d710 estimate` đã ghi `wcc_activity_factor` vào `estimate.json` và `quant.py`
+đọc sidecar **trước**, còn thang thực sự áp vào là `K_EXPORT` / `$D710_K`. Bind
+`docker.sock` bị bỏ, bind `/usr/bin/docker` thì **giữ có chủ ý**: nhờ thế lời
+gọi hỏng bằng mã thoát mà `container.cal_tags` đã xử sẵn, thay vì một
+`FileNotFoundError` kéo sập cả `export`.
+
+### GPU
+
+Shim tự thêm `--nv` khi thấy `/dev/nvidiactl`, nhưng **hiện chưa có gì trong
+hai image dùng tới**: STIR trong `sirf-local:0.1` link bản `libparallelproj`
+CPU, còn đường GPU của `pet_recon` bị ép tắt trong `vendor/boot.gdb` (GE chưa
+bao giờ giao file `.cl`, xem `lm/README.md`). Chỗ GPU thực sự đáng tiền là
+**`d710 lm`**, mà lệnh đó chạy trên host chứ không trong container — nên đổi
+`libparallelproj` trong `environment.yml` sang `cuda129_*`/`cuda130_*` và cài
+`torch` bản CUDA, đúng như mục "Cài phụ thuộc Python" đã nói.
+
+Biến môi trường thêm, ngoài mọi biến `./d710 --help` liệt kê:
+
+| biến | làm gì |
+|---|---|
+| `D710_SIF`, `D710_SIRF_SIF` | hai image |
+| `D710_SIF_DIR` | nơi tìm chúng |
+| `D710_APPTAINER_BIN` | binary apptainer, nếu không nằm trong `PATH` |
+| `D710_APPTAINER_FAKEROOT` | `1` ép dùng / `0` cấm / `auto` (mặc định, thử một lần) |
+| `D710_APPTAINER_OVERLAY` | `tmpfs` (mặc định) / `none` / `<thư mục>` trên đĩa |
+| `D710_APPTAINER_NV` | `1` / `0` / `auto` |
+| `D710_APPTAINER_BIND` | bind thêm, cách nhau bằng dấu cách |
+| `D710_APPTAINER_QUIET` | `1` để tắt echo mỗi lệnh apptainer |
+
 ## Hai runtime, tách hẳn nhau
 
 | | SIRF/STIR | PyTomography |
@@ -130,7 +262,8 @@ kiểm lại lúc chạy và tự chỉnh `xy` nếu bản SIRF hiện tại s�
 
 Chi tiết: `lm/README.md`, `lowdose/README.md`.
 
-Bước 1–3 chỉ cần **bash + docker + một python3 bất kỳ** trên host. Không conda,
+Bước 1–3 chỉ cần **bash + docker (hoặc apptainer) + một python3 bất kỳ** trên
+host. Không conda,
 không numpy, không pydicom, không i386 multiarch, không checkout `custom_tool/`.
 Chỉ `osem`, `attn`, `export`, `lm`, `lowdose` cần môi trường project, vì SIRF và
 PyTomography không có trong image.
@@ -223,6 +356,9 @@ Layout cũ (`raw_prompt/`, `work/<ca>_bed<n>/`, `vendor/out/`) chuyển sang b�
 
 ```
 d710              CLI, điểm vào DUY NHẤT
+d710_apptainer    bản apptainer của `d710` — wrapper, gọi lại chính `d710`
+d710_isolate_stir_apptainer.sh   như trên, cho `d710_isolate_stir.sh`
+apptainer_shim/   một `docker` giả dịch sang `apptainer exec`; đứng đầu $PATH
 Dockerfile        ghi lại image chứa gì (image được bàn giao, không dựng lại)
 environment.yml   env host `petct_recon`, bản `conda env export` nguyên si
 decode/           vòng lặp per-bed chạy trong container

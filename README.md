@@ -340,6 +340,61 @@ chỉ chọn CUDA khi thấy `nvidia-smi` trong `PATH`, nên bản CUDA (~1,2 GB
 `cuda130_*`. Ngược lại `torch` trong file là bản PyPI mặc định, tức **có** kèm
 wheel CUDA — bất đối xứng có chủ ý, vì máy tái lập có thể có GPU.
 
+> ⚠️ **Trên máy CÓ GPU thì ghim `cpu_*` không chỉ là phí — nó hỏng.**
+> `parallelproj/backend.py:26` là `cuda_present = shutil.which("nvidia-smi") is
+> not None`, và nếu `cuda_present` thì nó **bắt buộc** tìm ra
+> `libparallelproj_cuda.so`, không có đường lui về CPU:
+> `ImportError: Cannot find parallelproj cuda lib`. Bản `cpu_*` không chứa file
+> đó. Hai cách:
+> ```bash
+> conda install -c conda-forge "libparallelproj=1.10.2=cuda129_h897a41e_203"
+> ```
+> hoặc, nếu GPU quá cũ cho CUDA 12+ (Kepler `sm_35`/`sm_37`), ép chế độ CPU bằng
+> cách giấu `nvidia-smi` khỏi `PATH` của **riêng tiến trình python** — chạy thẳng
+> module, vì `d710` là bash và cần `PATH` thật:
+> ```bash
+> env PATH=/nonexistent D710_OUT="$D710_OUT" PYTHONPATH="$PWD" \
+>     python -u -m lm recon --case <ca> --resume
+> ```
+> `conda search -c conda-forge 'libparallelproj=1.10.2'` cho đúng ba loại build:
+> `cpu_*`, `cuda129_*`, `cuda130_*`.
+
+### CPU không có AVX2 (Sandy/Ivy Bridge — HP Z820 và tương đương)
+
+Triệu chứng: `d710 lm recon` in ra `=== bed 1` rồi **`Illegal instruction (core
+dumped)`**, không traceback. `sudo dmesg | grep 'invalid opcode'` chỉ đích danh
+`kornia_rs.cpython-*.so` — extension Rust của `kornia-rs`, wheel build sẵn dùng
+AVX2/FMA.
+
+Không cây mã nào ở đây import `kornia` (`grep -ri kornia`: 0 kết quả). Nó vào
+theo đường `pytomography.utils.spatial` → `from kornia.geometry.transform import
+rotate`, mà `kornia/__init__.py` lại import `kornia.io` ở top level, và
+`kornia/io/io.py:24` import `kornia_rs`. Nên **`pip install --no-deps kornia`
+không cứu được** — `kornia_rs` phải import được.
+
+`kornia_rs` chỉ làm **đọc/ghi file ảnh** (JPEG/PNG/TIFF). Pipeline PET không bao
+giờ chạm tới. Nên bật stub, **opt-in theo máy** — nó cố ý *không* nằm trên
+`PYTHONPATH` mặc định, vì trên máy bình thường nó sẽ che mất extension thật:
+
+```bash
+echo "PYTHONPATH=$PWD/tools/stubs" >> .env      # d710 nối vào sau $HERE
+```
+
+[tools/stubs/kornia_rs.py](tools/stubs/kornia_rs.py) dùng `__getattr__` mức
+module, nên nếu có thứ gì **thật sự** gọi vào nó thì nổ ngay kèm cách dựng lại
+bản thật (`RUSTFLAGS='-C target-cpu=sandybridge' pip install --no-binary
+kornia-rs kornia-rs==0.1.14`) — không có chuyện trả về giá trị sai trong im lặng.
+
+Kiểm đã thông:
+
+```bash
+PYTHONPATH=tools/stubs python -c "
+from pytomography.projectors.PET import PETLMSystemMatrix
+from pytomography.algorithms import OSEM, BSREM
+from pytomography.transforms.shared import GaussianFilter
+print('OK')"
+```
+
 **`sirf` và `stir` KHÔNG có trong `environment.yml`, và cố ý như vậy.** Chúng
 được build từ nguồn vào `$CONDA_PREFIX/dlevel/` của một env **khác**
 (`petct_reconstruction`), là bản dựng C++ gắn với đúng thư viện của env đó và

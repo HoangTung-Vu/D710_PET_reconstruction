@@ -198,6 +198,37 @@ chuẩn của hãng; apptainer lồng apptainer thì không chạy. Thực tế 
 gọi hỏng bằng mã thoát mà `container.cal_tags` đã xử sẵn, thay vì một
 `FileNotFoundError` kéo sập cả `export`.
 
+### `sirf-local:0.1` thiếu `pydicom` và `nibabel`
+
+**Không phải lỗi apptainer** — image vốn không có, docker cũng hỏng y hệt. Nó
+chỉ lộ ra bây giờ vì đường apptainer là đường đầu tiên chạy `attn` *trong*
+image thay vì bằng SIRF của host. Ba lệnh chạm tới:
+
+| lệnh | ở đâu | cần gì |
+|---|---|---|
+| `attn`, `osem` | `utils/attenuation.py:53` | `pydicom` — đọc CT |
+| `export` | `utils/export.py:89` | `pydicom` + `nibabel` — ghi ra |
+
+Triệu chứng là `ModuleNotFoundError: No module named 'pydicom'` **sau khi
+`import sirf.STIR` đã thành công** ([utils/attn_main.py:34](utils/attn_main.py#L34)
+chạy trước dòng 49) — tức trình thông dịch **đúng rồi**, chỉ thiếu gói. Đừng đi
+đổi `python3` sang một python khác: đó là python mà SIRF được build vào.
+
+Vá bằng bản pure-Python đặt cạnh đầu ra — `$D710_OUT` vốn đã được bind
+đọc-ghi nên **không cần mount thêm**, và nó nằm ngoài cây mã:
+
+```bash
+python3 -m pip install --no-deps --target "$D710_OUT/.pylibs" pydicom nibabel
+```
+
+`--no-deps` là cố ý: numpy đã có sẵn trong image, thêm một bản nữa trên
+`PYTHONPATH` sẽ che mất bản mà SIRF được build cùng.
+[apptainer_shim/sirf_env.sh](apptainer_shim/sirf_env.sh) nối thư mục đó vào
+cuối `PYTHONPATH` (nối vào **cuối**: gói của image luôn thắng), và
+`d710_isolate_stir_apptainer.sh` tự trỏ `D710_SIRF_ENV_SH` vào nó. Không có
+thư mục thì không có gì xảy ra, nên vá hay không vá đều chạy được.
+`./d710_apptainer doctor` kiểm cả bốn gói và in sẵn dòng lệnh trên.
+
 ### GPU
 
 Shim tự thêm `--nv` khi thấy `/dev/nvidiactl`, nhưng **hiện chưa có gì trong

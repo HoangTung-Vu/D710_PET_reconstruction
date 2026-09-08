@@ -39,6 +39,23 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/apptainer_shim/setup.sh"
 
+# `sirf-local:0.1` ships neither pydicom nor nibabel, and attn/osem/export all
+# need them (the CT reader and the DICOM writer).  apptainer_shim/sirf_env.sh
+# sources the image's own env_sirf.sh and then adds $D710_OUT/.pylibs to
+# PYTHONPATH if it exists, so the gap is filled without rebuilding the image.
+# $HERE is bind-mounted at its own path, so this file is readable inside.
+# Only the STOCK value is replaced -- unset, or the image path that .env.example
+# ships.  A D710_SIRF_ENV_SH pointing anywhere else is somebody's own script and
+# is left alone.  (setup.sh has already read .env by this point, so the stock
+# value usually arrives set rather than empty, which is why both cases are
+# tested.)  The wrapper falls back to the same image path internally, so nothing
+# has to be forwarded into the container.
+_stock=/opt/SIRF-SuperBuild/INSTALL/bin/env_sirf.sh
+if [[ -z "${D710_SIRF_ENV_SH:-}" || "${D710_SIRF_ENV_SH}" == "$_stock" ]]; then
+    export D710_SIRF_ENV_SH="$HERE/apptainer_shim/sirf_env.sh"
+fi
+unset _stock
+
 CMD="${1:-}"
 case "$CMD" in
     doctor) _apt_doctor; exit $? ;;

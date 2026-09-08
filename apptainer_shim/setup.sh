@@ -158,6 +158,27 @@ _apt_doctor() {
             rc=1
         fi
     fi
+    if [[ -n "${bin:-}" && -f "${D710_SIRF_SIF:-}" ]]; then
+        echo "== sirf-local: gói Python attn/osem/export cần"
+        local miss
+        miss="$("$bin" exec --cleanenv --writable-tmpfs "$D710_SIRF_SIF" bash -c '
+            . "${D710_SIRF_ENV_SH_REAL:-/opt/SIRF-SuperBuild/INSTALL/bin/env_sirf.sh}" >/dev/null 2>&1
+            for m in numpy sirf.STIR pydicom nibabel; do
+                python3 -c "import $m" 2>/dev/null || printf "%s " "$m"
+            done' 2>/dev/null)"
+        miss="${miss% }"
+        if [[ -z "$miss" ]]; then
+            echo "   numpy, sirf.STIR, pydicom, nibabel: ok"
+        else
+            echo "   THIẾU: $miss"
+            echo "   Không phải lỗi apptainer -- image vốn không có, docker cũng hỏng"
+            echo "   như vậy.  Vá bằng bản pure-Python đặt cạnh đầu ra (đã bind sẵn):"
+            echo "       python3 -m pip install --no-deps \\"
+            echo "           --target \"\$D710_OUT/.pylibs\" $miss"
+            echo "   apptainer_shim/sirf_env.sh nối thư mục đó vào PYTHONPATH."
+            [[ "$miss" == *sirf.STIR* || "$miss" == *numpy* ]] && rc=1
+        fi
+    fi
     echo "== gpu"
     if [[ -e /dev/nvidiactl ]]; then
         echo "   /dev/nvidiactl present -- the shim adds --nv automatically"

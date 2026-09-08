@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# d710_apptainer -- exactly `./d710`, with apptainer instead of docker.
+#
+#   ./d710_apptainer doctor                        check this machine first
+#   ./d710_apptainer exam --raw D --ct D --case N  everything else: see ./d710 --help
+#
+# IT IS A WRAPPER, NOT A COPY.  `d710` is 570 lines of pipeline logic -- the TOF
+# switch that has to reach decode AND estimate, the numeric bed sort, the
+# per-bed SINO lookup, the interpreter probing -- and a second copy of it would
+# start drifting on the first edit.  So this script changes only the two things
+# apptainer changes, and then runs the real `d710`:
+#
+#   1. the image name becomes the .sif path (D710_IMAGE / D710_SIRF_IMAGE);
+#   2. apptainer_shim/ goes first on $PATH, so every `docker` in the tree --
+#      `d710`'s own, and just as importantly vendor/run.sh's and
+#      utils/container.py's, which this script never gets to touch -- is the
+#      shim, and comes out as `apptainer exec`.
+#
+# WHAT WORKS, AND WHAT IT NEEDS
+#   decode tostir read shell   apptainer + the d710 .sif.  Nothing else.
+#   estimate                   the same, PLUS --fakeroot, because GE's pet_recon
+#                              opens /usr/PET/systemConfig/cmcfg.xml read-write
+#                              and docker ran that one step as root.  `doctor`
+#                              checks it; apptainer_shim/docker prints the
+#                              fallback if it is missing.
+#   attn osem export           NOT here -- ./d710_isolate_stir_apptainer.sh
+#   lm lowdose                 no container at all, either way: conda activate
+#                              petct_recon.  This is where your GPU pays off.
+#
+# THE GPU.  The shim adds --nv whenever /dev/nvidiactl exists, so CUDA is
+# visible inside both images -- but nothing inside them uses it today:
+# sirf-local's STIR links a CPU-built libparallelproj, and pet_recon's GPU path
+# is forced off in vendor/boot.gdb (GE never shipped the .cl kernels).  The one
+# place a GPU changes the numbers in `./d710 --help` is `d710 lm`, which runs on
+# the HOST through PyTomography -- put a CUDA torch in petct_recon and the TOF
+# timings in that table stop mattering.
+#
+# BUILDING THE .sif FILES, on the machine that has the docker images:
+#   apptainer build d710_full.sif  docker-daemon://d710:full
+#   apptainer build sirf_local.sif docker-daemon://sirf-local:0.1
+# Then say where they are, once, in D710/.env:
+#   D710_SIF=/path/to/d710_full.sif
+#   D710_SIRF_SIF=/path/to/sirf_local.sif
+# Without those lines they are looked for in $D710_SIF_DIR, D710/sif/, D710/,
+# $D710_OUT/sif and ~/sif.
+#
+# Extra environment, on top of everything ./d710 --help lists:
+#   D710_SIF D710_SIRF_SIF   the two images
+#   D710_SIF_DIR             where to look for them
+#   D710_APPTAINER_BIN       apptainer binary, if it is not on $PATH
+#   D710_APPTAINER_FAKEROOT  1 / 0 / auto           (see apptainer_shim/docker)
+#   D710_APPTAINER_OVERLAY   tmpfs / none / <dir>   the writable layer
+#   D710_APPTAINER_NV        1 / 0 / auto
+#   D710_APPTAINER_BIND      extra binds, space separated
+#   D710_APPTAINER_QUIET     1 to stop echoing every apptainer command
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$HERE/apptainer_shim/setup.sh"
+
+CMD="${1:-}"
+case "$CMD" in
+    doctor) _apt_doctor; exit $? ;;
+    ""|-h|--help|help)
+        awk 'NR==1 {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "${BASH_SOURCE[0]}"
+        echo
+        echo "================ ./d710 --help ================"
+        exec "$HERE/d710" --help
+        ;;
+    # Everything that opens the vendor image.  Checked here so a missing .sif
+    # says so, instead of surfacing as `docker image inspect` failing on a name
+    # that under apptainer was never going to be a name.
+    decode|estimate|tostir|exam|read|shell)
+        _apt_need "d710:full" "${D710_SIF:-}" D710_SIF ;;
+    # attn/osem/export in `d710` mean a SIRF installed on the host; that is a
+    # supported route (conda activate petct_reconstruction) and does not involve
+    # a container at all, so nothing to check.  The containerised route is the
+    # other script.
+    attn|osem|export)
+        if [[ -n "${D710_SIRF_SIF:-}" ]]; then
+            echo ">> note: '$CMD' here needs SIRF installed on the HOST." >&2
+            echo ">>       to run it in $D710_SIRF_SIF instead:" >&2
+            echo ">>       ./d710_isolate_stir_apptainer.sh $*" >&2
+        fi
+        ;;
+esac
+
+exec "$HERE/d710" "$@"

@@ -1,0 +1,292 @@
+#!/usr/bin/env bash
+# apptainer_shim/docker -- a `docker` that is really apptainer.
+#
+# WHY THIS EXISTS AND IS NOT OPTIONAL.  `d710` is not the only thing in this
+# tree that starts a container; three other places do, and none of them can be
+# reached by rewriting the two entry scripts:
+#
+#   vendor/run.sh          docker run ... gdb ... pet_recon   (the estimate step)
+#   utils/container.py     docker run ... python3 ...         (rdf_info, cal_tags,
+#                                                              ct_to_pifa)
+#   d710_isolate_stir.sh   mounts /var/run/docker.sock INTO the SIRF container
+#                          so utils/quant.py can read the WCC cal file
+#
+# So instead of forking those files, this shim is put FIRST on $PATH by
+# `d710_apptainer` / `d710_isolate_stir_apptainer.sh`, and every `docker` call
+# in the tree -- the two entry scripts', run.sh's and container.py's alike --
+# lands here and comes out as `apptainer exec`.  One translation, one place,
+# and `d710` itself stays untouched so the two paths cannot drift.
+#
+# THE IMAGE NAME IS THE .sif PATH.  Nothing here maps `d710:full` to a file:
+# the wrappers export D710_IMAGE / D710_SIRF_IMAGE as absolute .sif paths, and
+# every caller in the tree already reads the image out of those variables
+# (`d710`, `vendor/run.sh`, `utils/container.py`, `d710_isolate_stir.sh`).
+# So `docker run ... $IMAGE` arrives here with the .sif path already in place.
+#
+# HOW EACH DOCKER FLAG IS TRANSLATED
+#   -v h:c[:ro]              --bind h:c[:ro]
+#   -e K=V                   --env K=V
+#   -w D                     --pwd D
+#   --entrypoint X           X becomes argv[0] of the command
+#   --add-host N:IP          a synthesised /etc/hosts, bound over the image's
+#                            (apptainer has no --add-host)
+#   --user u:g               DROPPED -- apptainer already runs as the caller,
+#                            which is the whole point of docker's --user here
+#   --rm -i -t --no-healthcheck --group-add --cap-add --security-opt
+#                            DROPPED (see below)
+#
+# --writable-tmpfs IS ALWAYS ON, for two separate reasons:
+#   1. it is what `docker run --rm` actually means -- a writable layer thrown
+#      away at exit;
+#   2. a .sif is squashfs, so without an overlay apptainer cannot CREATE the
+#      bind targets, and NONE of /d710 /vendor /case /raw /lists /ct /cal exist
+#      in d710:full (the Dockerfile makes only /out /vendorlib /petRDFS).
+# It is a session tmpfs, capped by `sessiondir max size` in apptainer.conf
+# (64 MiB by default).  If a run dies with ENOSPC, point D710_APPTAINER_OVERLAY
+# at a directory on disk instead.
+#
+# --fakeroot, ONLY where docker ran as root.  `vendor/run.sh` is the one caller
+# that deliberately omits --user, because pet_recon opens
+# /usr/PET/systemConfig/cmcfg.xml READ-WRITE and that file is root-owned and
+# u+w-only in the image.  So the rule here is exactly docker's: no --user means
+# uid 0 inside, which under apptainer is --fakeroot.  Everything else keeps the
+# caller's uid, so output files belong to the caller -- and on this path they
+# do too, which is better than docker, where the .f32 dumps land root-owned.
+#
+# --cap-add=SYS_PTRACE / --security-opt seccomp=unconfined are dropped because
+# they have no apptainer equivalent AND no apptainer need: there is no seccomp
+# profile and no capability bounding set to widen, so gdb attaches to its own
+# child the way it does on the host.
+#
+# Environment:
+#   D710_APPTAINER_BIN       apptainer/singularity binary (default: whichever
+#                            is on PATH)
+#   D710_APPTAINER_OVERLAY   a directory to use as the writable layer instead
+#                            of tmpfs (unlimited size); `none` disables both
+#   D710_APPTAINER_FAKEROOT  1 force, 0 forbid, auto (default) probe once
+#   D710_APPTAINER_NV        1 force --nv, 0 forbid, auto (default) when
+#                            /dev/nvidiactl exists
+#   D710_APPTAINER_BIND      extra binds, space separated, appended to every
+#                            run -- the escape hatch when --fakeroot is not
+#                            available: extract a writable copy of
+#                            /usr/PET/systemConfig and bind it back over itself
+#   D710_APPTAINER_QUIET     1 to stop echoing the translated command
+set -euo pipefail
+
+self="docker(apptainer shim)"
+die() { echo "$self: $*" >&2; exit 1; }
+
+APPTAINER="${D710_APPTAINER_BIN:-}"
+if [[ -z "$APPTAINER" ]]; then
+    for c in apptainer singularity; do
+        if command -v "$c" >/dev/null 2>&1; then APPTAINER="$c"; break; fi
+    done
+fi
+[[ -n "$APPTAINER" ]] || die "neither apptainer nor singularity is on \$PATH.
+  This shim is only reachable through d710_apptainer / d710_isolate_stir_apptainer.sh,
+  so seeing this means one of two things:
+    - apptainer is not installed on this machine, or
+    - you are inside a container that has this shim bound in as /usr/bin/docker
+      (d710_isolate_stir.sh does that for \`export\`) -- nested apptainer does
+      not work.  Harmless: the only caller is utils/quant.py reading the WCC
+      factor, which it needs only for beds estimated before that factor was
+      written into estimate.json.  Pass D710_K instead."
+
+# --------------------------------------------------------- the .sif on disk
+resolve_image() {
+    local img="${1:-}"
+    [[ -n "$img" ]] || die "no image given"
+    if [[ -f "$img" ]]; then
+        printf '%s/%s\n' "$(cd "$(dirname "$img")" && pwd)" "$(basename "$img")"
+        return 0
+    fi
+    die "'$img' is not a file.
+  Under apptainer the image name IS the .sif path, and the wrappers export it:
+      export D710_SIF=/path/to/d710_full.sif
+      export D710_SIRF_SIF=/path/to/sirf_local.sif
+  (or put them in D710/.env).  Getting '$img' here means the wrapper was
+  bypassed -- run  ./d710_apptainer ...  not  ./d710 ..."
+}
+
+# ------------------------------------------------------------- subcommands
+sub="${1:-}"; shift || true
+case "$sub" in
+    run) : ;;
+    image)
+        [[ "${1:-}" == inspect ]] || die "unsupported: docker image ${*:-}"
+        shift
+        for i in "$@"; do
+            [[ "$i" == -* ]] && continue
+            resolve_image "$i" >/dev/null
+            exit 0
+        done
+        die "docker image inspect: no image named"
+        ;;
+    images)
+        # Only ever printed as advice in an error message, never parsed.
+        printf 'REPOSITORY (apptainer: these are .sif files)\n'
+        printf '%s\n' "${D710_IMAGE:-}" "${D710_SIRF_IMAGE:-}"
+        exit 0
+        ;;
+    *) die "unsupported docker subcommand '${sub:-<none>}'.
+  This shim covers exactly what D710/ uses: run, image inspect, images." ;;
+esac
+
+# ------------------------------------------------------------- parse `run`
+BINDS=(); ENVS=(); HOSTS=(); WORKDIR=""; ENTRY=""; IMAGE=""; CMD=()
+HAVE_USER=0; HAVE_HOME=0; WANT_OUT_PWD=0
+
+add_bind() {
+    local b="$1" dst
+    # docker -v with one field is an anonymous volume; apptainer has no such
+    # thing and no caller in this tree uses one.
+    [[ "$b" == *:* ]] || die "-v $b: anonymous volumes are not supported"
+    dst="${b#*:}"; dst="${dst%%:*}"
+    # d710_isolate_stir.sh mounts the docker socket into the SIRF container so
+    # utils/quant.py can start a SECOND container and read the WCC cal file.
+    # Apptainer inside apptainer does not work, so the socket is dead weight
+    # here -- and binding a socket into a squashfs image is a good way to fail
+    # a whole `export` over a value that is only a printed reference number.
+    # DROPPED.  The /usr/bin/docker bind beside it is KEPT on purpose: it puts
+    # this shim in the child container, so the call fails with an exit code
+    # that container.cal_tags already handles (returncode != 0 -> None) instead
+    # of a FileNotFoundError that would take `export` down with it.
+    if [[ "$dst" == /var/run/docker.sock || "$dst" == /run/docker.sock ]]; then
+        return 0
+    fi
+    BINDS+=(--bind "$b")
+    [[ "$dst" == /out ]] && WANT_OUT_PWD=1
+    return 0
+}
+
+while [[ $# -gt 0 ]]; do
+    arg="$1"; v=""; inline=0
+    if [[ "$arg" == --*=* ]]; then v="${arg#*=}"; arg="${arg%%=*}"; inline=1; fi
+    case "$arg" in
+        # ---- carry a value, and we translate it
+        -v|--volume)   (( inline )) || { v="${2:-}"; shift; }; add_bind "$v" ;;
+        -e|--env)      (( inline )) || { v="${2:-}"; shift; }
+                       ENVS+=(--env "$v")
+                       case "$v" in HOME=*) HAVE_HOME=1 ;; esac ;;
+        -w|--workdir)  (( inline )) || { v="${2:-}"; shift; }; WORKDIR="$v" ;;
+        --entrypoint)  (( inline )) || { v="${2:-}"; shift; }; ENTRY="$v" ;;
+        --add-host)    (( inline )) || { v="${2:-}"; shift; }
+                       # docker spells it name:ip, /etc/hosts wants "ip name"
+                       HOSTS+=("${v#*:} ${v%%:*}") ;;
+        -u|--user)     (( inline )) || { v="${2:-}"; shift; }; HAVE_USER=1 ;;
+
+        # ---- carry a value that apptainer has no use for
+        --group-add|--security-opt|--name|--network|--platform|--memory|--cpus|\
+        --shm-size|--ulimit|--pid|--ipc|--label|-l|--hostname|-h|\
+        --cap-add|--cap-drop|--device|--tmpfs)
+                       (( inline )) || shift; : ;;
+
+        # ---- boolean, no apptainer meaning
+        --rm|-i|--interactive|-t|--tty|-it|-ti|-d|--detach|--init|\
+        --no-healthcheck|--privileged|--read-only)
+                       : ;;
+
+        --) shift; break ;;
+        -*) echo "$self: ignoring unknown docker flag $1" >&2 ;;
+        *)  IMAGE="$arg"; shift; CMD=("$@"); break ;;
+    esac
+    shift || true
+done
+# `--` form: the image is the next word.
+if [[ -z "$IMAGE" && $# -gt 0 ]]; then IMAGE="$1"; shift; CMD=("$@"); fi
+[[ -n "$IMAGE" ]] || die "docker run: no image in the argument list"
+
+SIF="$(resolve_image "$IMAGE")"
+
+# docker's --entrypoint replaces argv[0]; the words after the image are its args.
+if [[ -n "$ENTRY" ]]; then CMD=("$ENTRY" ${CMD[@]+"${CMD[@]}"}); fi
+[[ ${#CMD[@]} -gt 0 ]] || die "docker run: no command given.
+  apptainer exec needs one; the image's CMD/ENTRYPOINT is not consulted."
+
+# ------------------------------------------------------------- the overlay
+OPTS=(--cleanenv)
+case "${D710_APPTAINER_OVERLAY:-tmpfs}" in
+    tmpfs) OPTS+=(--writable-tmpfs) ;;
+    none)  : ;;
+    *)     mkdir -p "$D710_APPTAINER_OVERLAY"
+           OPTS+=(--overlay "$D710_APPTAINER_OVERLAY") ;;
+esac
+
+# ---------------------------------------------------------------- fakeroot
+# docker without --user is root; apptainer's equivalent is --fakeroot.  Probed
+# rather than assumed, because it needs an /etc/subuid line or a setuid install
+# and the failure is otherwise a permission error 200 lines into a gdb log.
+if (( ! HAVE_USER )); then
+    want="${D710_APPTAINER_FAKEROOT:-auto}"
+    ok=0
+    case "$want" in
+        1) ok=1 ;;
+        0) ok=0 ;;
+        *) if "$APPTAINER" exec --fakeroot "$SIF" true >/dev/null 2>&1; then ok=1; fi ;;
+    esac
+    if (( ok )); then
+        OPTS+=(--fakeroot)
+    elif [[ "$want" != 0 ]]; then
+        cat >&2 <<EOF
+$self: WARNING -- this run has no --user, i.e. docker would have run it as root
+  (that is vendor/run.sh: pet_recon opens /usr/PET/systemConfig/cmcfg.xml
+  read-write, and that file is root-owned and u+w-only in the image), but
+  --fakeroot does not work on this machine.  Either give $(id -un) a line in
+  /etc/subuid and /etc/subgid, or extract a writable systemConfig and bind it
+  back over itself:
+      mkdir -p "\$D710_OUT/.sysconfig"
+      $APPTAINER exec "$SIF" tar -C /usr/PET -cf - systemConfig \\
+        | tar -C "\$D710_OUT/.sysconfig" -xf -
+      export D710_APPTAINER_BIND="\$D710_OUT/.sysconfig/systemConfig:/usr/PET/systemConfig"
+  Continuing without it -- expect pet_recon to die before it reads a sinogram.
+EOF
+    fi
+fi
+
+# No -e HOME means docker would have given root /root.  Keep the host home out,
+# the way docker does -- which also keeps a stray ~/.gdbinit out of the batch
+# gdb run that drives pet_recon.
+if (( ! HAVE_HOME )); then OPTS+=(--no-home); ENVS+=(--env HOME=/root); fi
+
+# --------------------------------------------------------------- /etc/hosts
+# The console's own names (CT85_OC0, loghost, ...) -- without them the vendor
+# startup path dies in gethostbyname before it reads a sinogram.  They cannot
+# be baked into the image and apptainer has no --add-host, so the file is
+# synthesised here and bound over.
+TMPD=""
+cleanup() { [[ -n "$TMPD" ]] && rm -rf "$TMPD"; return 0; }
+trap cleanup EXIT
+if [[ ${#HOSTS[@]} -gt 0 ]]; then
+    TMPD="$(mktemp -d)"
+    cat /etc/hosts > "$TMPD/hosts" 2>/dev/null || printf '127.0.0.1 localhost\n' > "$TMPD/hosts"
+    printf '%s\n' "${HOSTS[@]}" >> "$TMPD/hosts"
+    BINDS+=(--bind "$TMPD/hosts:/etc/hosts")
+fi
+
+# ------------------------------------------------------------------ extras
+for b in ${D710_APPTAINER_BIND:-}; do BINDS+=(--bind "$b"); done
+
+case "${D710_APPTAINER_NV:-auto}" in
+    1) OPTS+=(--nv) ;;
+    0) : ;;
+    *) if [[ -e /dev/nvidiactl ]]; then OPTS+=(--nv); fi ;;
+esac
+
+# --pwd: docker honours the image's WORKDIR, apptainer starts in the host cwd.
+# d710:full sets WORKDIR /out, so restore that -- but only when /out is really
+# mounted, which is exactly the decode and pet_recon runs.  The others (tostir,
+# read, cal reads) name every path absolutely and do not care.
+if   [[ -n "$WORKDIR" ]];  then OPTS+=(--pwd "$WORKDIR")
+elif (( WANT_OUT_PWD ));   then OPTS+=(--pwd /out)
+fi
+
+ARGV=("$APPTAINER" exec "${OPTS[@]}" ${ENVS[@]+"${ENVS[@]}"} \
+      ${BINDS[@]+"${BINDS[@]}"} "$SIF" "${CMD[@]}")
+
+[[ "${D710_APPTAINER_QUIET:-0}" == 1 ]] || printf '+ %s\n' "${ARGV[*]}" >&2
+
+# NOT exec: the synthesised /etc/hosts has to outlive the container and then be
+# cleaned up, which an exec would skip.
+rc=0
+"${ARGV[@]}" || rc=$?
+exit "$rc"

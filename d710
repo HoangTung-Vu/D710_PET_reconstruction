@@ -13,6 +13,8 @@
 #   d710 lm       check|tofcheck|recon --case N    list-mode OSEM (PyTomography)
 #                 recon takes --resume, like osem
 #   d710 lowdose  --case N --drf D                 thinned copy of a case
+#                 [--mode low-count|low-dose]      shorter scan / less activity
+#                 [--sinogram derived|binomial]    -> <case>/raw_simulation/
 #
 #   d710 export   --case N [--format nifti|dicom] [--lm]
 #                                                 Bq/mL + SUV -> NIfTI/DICOM

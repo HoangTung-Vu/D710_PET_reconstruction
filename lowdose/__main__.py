@@ -1,13 +1,22 @@
-"""`d710 lowdose` — build a lower-dose copy of a decoded exam.
+"""`d710 lowdose` — build a lower-count or lower-dose copy of a decoded exam.
 
-    d710 lowdose --case ped --drf 10                  -> ped_drf10
-    d710 lowdose --case ped --drf 10 --mode randoms   -> randoms go as f^2
-    d710 lowdose --case ped --split 2                 -> ped_r0, ped_r1 (Noise2Noise)
-    d710 lowdose --case ped --drf 4 --replicates      -> 4 disjoint realisations
+    d710 lowdose --case ped --drf 10                    -> ped_drf10   (low-count)
+    d710 lowdose --case ped --drf 10 --mode low-dose    -> randoms go as f^2
+    d710 lowdose --case ped --split 2                   -> ped_r0, ped_r1 (Noise2Noise)
+    d710 lowdose --case ped --drf 4 --replicates        -> 4 disjoint realisations
 
-Needs the list-mode `decoded/bed<n>.lm.npy` of the source case, and its `work/bed<n>`
-terms. The result is an ordinary case: `d710 osem`, `d710 lm` and `d710 export`
-take it unchanged.
+Two things are simulated, and they are not the same experiment:
+
+    low-count   a SHORTER SCAN of the same patient. Every coincidence rate is
+                linear in the live time, so prompts, randoms and scatter all
+                scale by f. The default, and the primary result.
+    low-dose    LESS ACTIVITY. Trues and scatter still go as f, but randoms are
+                coincidences between two unrelated singles and go as f^2.
+
+Needs the list-mode `decoded/bed<n>.lm.npy` of the source case, and its
+`work/bed<n>` terms. `--sinogram binomial` drops the list-mode requirement by
+thinning the source histogram directly, at the cost of an event table. The result
+is an ordinary case: `d710 osem`, `d710 lm` and `d710 export` take it unchanged.
 """
 
 from __future__ import annotations
@@ -24,48 +33,140 @@ from utils.paths import case as get_case
 from . import thin, verify, write
 
 
-def _rho(C, n, e, binmap):
-    """`(rho per plane, rho per bin, flat bin index)` -- see `thin.rho_per_plane`."""
-    b = ev.bins(e, binmap)
+def _source_prompts(C, n, binmap, axis, b=None):
+    """Source prompts aggregated at `axis`, from the bin indices or from `bed<n>.s`.
+
+    `(n_plane,)` for `plane`, `(n_plane, n_tang)` for `tangential`.
+    """
     nvt = binmap.n_view * binmap.n_tang
-    p = np.bincount((b[b >= 0] // nvt), minlength=binmap.n_plane)
-    r = verify.plane_sums(C.work_bed(n) / "randoms.s", binmap.n_plane, nvt)
-    rho = thin.rho_per_plane(p, r, binmap)
-    return rho[:: nvt], rho, b
+    if b is None:
+        return (verify.plane_sums(C.decoded / f"bed{n}.s", binmap.n_plane, nvt, "<i2")
+                if axis == "plane" else
+                verify.plane_tang_sums(C.decoded / f"bed{n}.s", binmap.n_plane,
+                                       binmap.n_tang, nvt, "<i2"))
+    ok = b[b >= 0]
+    if axis == "plane":
+        return np.bincount(ok // nvt, minlength=binmap.n_plane)
+    return np.bincount((ok // nvt) * binmap.n_tang + ok % binmap.n_tang,
+                       minlength=binmap.n_plane * binmap.n_tang
+                       ).reshape(binmap.n_plane, binmap.n_tang)
 
 
-def build(C, dst_name, beds, f, mode, seed, label=None, part=None):
-    """Returns `(case, binmap, q)` -- `q[bed]` is the per-plane keep probability."""
+def _tof_profile(b, t_idx, binmap, n_tof):
+    """`phi(u, t)`: the TOF distribution of the prompts at each radial offset `u`.
+
+    Measured on the **source** events, at `n_tang * n_tof` cells (~707 counts each
+    on fdg26081008 bed 1) rather than per bin, where it would be ~0.001. It is the
+    only thing `thin.tof_rho_factor` needs to turn the non-TOF `rho` into a
+    TOF-resolved one.
+    """
+    ok = b >= 0
+    u = (b[ok] % binmap.n_tang).astype(np.int64)
+    t = np.asarray(t_idx)[ok].astype(np.int64)
+    return np.bincount(u * n_tof + t,
+                       minlength=binmap.n_tang * n_tof
+                       ).reshape(binmap.n_tang, n_tof).astype(np.float64)
+
+
+def _rho(C, n, binmap, axis, b=None):
+    """`(rho at the aggregate's own shape, rho per bin)`.
+
+    `rho` comes back twice: at the aggregate's shape, which is what the binomial
+    check needs to build the per-plane expectation, and broadcast over every bin,
+    which is what `thin.keep` looks each event up in.
+    """
+    nvt = binmap.n_view * binmap.n_tang
+    p = _source_prompts(C, n, binmap, axis, b)
+    rp = C.work_bed(n) / "randoms.s"
+    r = (verify.plane_sums(rp, binmap.n_plane, nvt) if axis == "plane" else
+         verify.plane_tang_sums(rp, binmap.n_plane, binmap.n_tang, nvt))
+    rho = thin.rho_bins(p, r, binmap, axis)
+    small = (rho[::nvt] if axis == "plane" else
+             rho.reshape(binmap.n_plane, binmap.n_view, binmap.n_tang)[:, 0, :])
+    return small, rho
+
+
+def build(C, dst_name, beds, f, mode, seed, label=None, part=None,
+          sinogram="derived", rho_axis="tangential", tof_rho="model",
+          window="uniform"):
+    """Returns `(case, binmap, q)`.
+
+    `q[bed]` is what `verify.binomial` needs to build the per-plane expectation:
+    the keep probability at whatever resolution `rho` was estimated at, or a
+    `(mean weight, variance weight)` pair when `rho` also follows TOF and `q`
+    therefore varies inside a cell.
+    """
+    mode = thin.canonical(mode)
     D = Case(dst_name, C.root.parent)
-    _refuse_to_clobber(D, C.name, f, mode, label)
+    _refuse_to_clobber(D, C.name, f, mode, label, sinogram,
+                       rho_axis if mode == "low-dose" else None,
+                       tof_rho if mode == "low-dose" else None, window)
     D.root.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(seed)
     rows, q = [], {}
     for n in beds:
         binmap = geom.BinMap(C.prompt(n))
-        e = ev.load(C.decoded / f"bed{n}.lm.npy", mmap=False)
         q[n] = np.full(binmap.n_plane, f)
-        if part is not None:
+        e = mask = b = swap = None
+        if sinogram != "binomial":
+            e = ev.load(C.decoded / f"bed{n}.lm.npy", mmap=False)
+            # One pass for both: `swap` marks events recorded against the bin's own
+            # direction, and their TOF index is mirrored (`lm.events.tof_index`).
+            b, swap = ev.bins(e, binmap, with_swap=True)
+        if window == "time":
+            # A shorter acquisition, literally: keep the first f of the frame.
+            hdr = C.header(n)
+            mask = thin.time_window(np.asarray(e["t_ms"]), f,
+                                    hdr["frame_duration_ms"])
+            lin, quad = thin.decay_scales(hdr["half_life_s"],
+                                          hdr["frame_duration_ms"], f)
+            small, _ = _rho(C, n, binmap, rho_axis, b)
+            q[n] = lin * (1 - small) + quad * small
+        elif part is not None:
             k, of = part
             mask = thin.split(len(e), of, np.random.default_rng(seed)) == k
-        elif mode == "randoms":
-            rho_plane, rho, b = _rho(C, n, e, binmap)
-            q[n] = f * (1 - rho_plane) + f * f * rho_plane
-            mask = thin.keep(e, f, "randoms", rng, bins=b, rho=rho)
-        else:
-            mask = thin.keep(e, f, "uniform", rng)
-        rows.append(write.bed(C, D, n, e, mask, binmap, f,
-                              randoms_power=2 if mode == "randoms" else 1))
+        elif mode == "low-dose":
+            small, rho = _rho(C, n, binmap, rho_axis, b)
+            q[n] = f * (1 - small) + f * f * small
+            # Randoms are flat in TOF and trues are not, so rho really depends on
+            # TOF as well.
+            tof = None
+            if e is not None and tof_rho == "model" and rho_axis == "tangential":
+                n_tof = geom.N_TOF_RAW
+                t_idx = ev.tof_index(e, binmap, n_tof, swap)
+                phi = _tof_profile(b, t_idx, binmap, n_tof)
+                tof = (t_idx, thin.tof_rho_factor(phi, n_tof))
+            if e is not None:
+                mask = thin.keep(e, f, mode, rng, bins=b, rho=rho, tof=tof)
+                # The EXACT mean and variance of the draw, summed per event -- the
+                # only honest expectation once `q` varies inside a plane.
+                qe, okm = thin.event_q(f, b, rho, tof)
+                q[n] = thin.expectation(
+                    qe, b[okm] // (binmap.n_view * binmap.n_tang), binmap.n_plane)
+        elif e is not None:
+            mask = thin.keep(e, f, mode, rng)
+        rows.append(write.bed(C, D, n, e, mask, binmap, f, mode,
+                              sinogram=sinogram, q=q[n], rng=rng, window=window))
         r = rows[-1]
-        print(f"  bed {n}: {len(e):,} -> {r['events']:,} events "
-              f"({r['events'] / max(len(e), 1):.4f}), {r['prompts']:,} binned, "
-              f"{r['dropped']:,} outside the sinogram")
+        if r["events"] is None:
+            print(f"  bed {n}: {r['prompts']:,} counts binned "
+                  f"(sinogram thinned directly, no event table)")
+        else:
+            print(f"  bed {n}: {len(e):,} -> {r['events']:,} events "
+                  f"({r['events'] / max(len(e), 1):.4f}), {r['prompts']:,} binned, "
+                  f"{r['dropped']:,} outside the sinogram")
+        if r["scatter_tof_profile"]:
+            print(f"          scatter TOF profile carried: {r['scatter_tof_profile']}")
         del e
-    write.manifest(D, C.name, f, mode, seed, rows, replicate=label)
+    write.manifest(D, C.name, f, mode, seed, rows, replicate=label,
+                   sinogram=sinogram, rho_axis=rho_axis, tof_rho=tof_rho,
+                   window=window)
+    write.readme(D, C.name, f, mode, seed, sinogram, rho_axis, tof_rho, window)
     return D, binmap, q
 
 
-def _refuse_to_clobber(D, src, f, mode, label) -> None:
+def _refuse_to_clobber(D, src, f, mode, label, sinogram=None, rho_axis=None,
+                       tof_rho=None, window=None) -> None:
     """A case built with different settings must not be silently replaced.
 
     The destination name carries the mode, so this only fires on a real
@@ -78,9 +179,22 @@ def _refuse_to_clobber(D, src, f, mode, label) -> None:
     if not p.exists():
         return
     old = json.loads(p.read_text())
-    now = {"source_case": src, "dose_fraction": f, "mode": mode,
-           "replicate": label}
-    diff = {k: (old.get(k), v) for k, v in now.items() if old.get(k) != v}
+    # Canonicalise the stored mode: a case written before the modes were renamed
+    # says "uniform", and that is the same experiment as "low-count". A mode this
+    # version has never heard of is left alone -- it will differ, which is the
+    # right answer, and a traceback here would bury the message below.
+    try:
+        old_mode = thin.canonical(old["mode"]) if old.get("mode") else None
+    except ValueError:
+        old_mode = old.get("mode")
+    # Every field here changes the DATA, so a mismatch means a different dataset.
+    # `sinogram` and `rho_axis` belong in that list as much as the mode does: the
+    # same DRF with rho per plane is not the same exam as rho per (plane, u).
+    now = {"source_case": src, "dose_fraction": f, "mode": thin.canonical(mode),
+           "replicate": label, "sinogram": sinogram, "rho_axis": rho_axis,
+           "tof_rho": tof_rho, "window": window}
+    was = {**old, "mode": old_mode}
+    diff = {k: (was.get(k), v) for k, v in now.items() if was.get(k) != v}
     if diff:
         raise SystemExit(
             f"error: {D.root} already holds a low-dose case built differently:\n"
@@ -96,7 +210,29 @@ def main(argv=None) -> int:
     ap.add_argument("--dst", help="destination case name (default <case>_drf<D>)")
     ap.add_argument("--drf", type=float, default=1.0,
                     help="dose reduction factor; f = 1/DRF")
-    ap.add_argument("--mode", choices=thin.MODES, default="uniform")
+    ap.add_argument("--mode", choices=thin.MODES + tuple(thin.ALIASES),
+                    default="low-count", metavar="{low-count,low-dose}",
+                    help="low-count: everything x f (a shorter scan). "
+                         "low-dose: randoms x f^2 (less activity).")
+    ap.add_argument("--sinogram", choices=write.SINOGRAM, default="derived",
+                    help="derived: histogram the thinned events, so both paths "
+                         "see the same data. binomial: thin the source sinogram "
+                         "directly -- no event table, so `d710 lm` cannot run.")
+    ap.add_argument("--window", choices=thin.WINDOWS, default="uniform",
+                    help="uniform: keep a fraction f of every event, whatever time "
+                         "it arrived -- a short scan at the frame's MID time. "
+                         "time: keep the first f of the frame -- a short scan at "
+                         "its START, with decay-weighted term factors")
+    ap.add_argument("--tof-rho", choices=("model", "off"), default="model",
+                    help="low-dose only: model rho's TOF dependence from the "
+                         "measured TOF profile (randoms are flat in TOF, trues are "
+                         "not). off reproduces the pre-2026-09-12 behaviour, which "
+                         "keeps up to 7x too many counts in the deep TOF tails")
+    ap.add_argument("--rho", choices=thin.RHO_AXES, default="tangential",
+                    help="low-dose only: resolution the randoms fraction is "
+                         "estimated at. tangential (per plane per tangential bin) "
+                         "is the axis rho really varies along; plane is the old, "
+                         "coarser choice and keeps ~6x too many counts in the tails")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--beds", type=int, nargs="+")
     ap.add_argument("--replicates", action="store_true",
@@ -111,31 +247,82 @@ def main(argv=None) -> int:
         args.drf, args.replicates = float(args.split), True
     if args.drf < 1:
         raise SystemExit("error: --drf must be >= 1")
-    if args.replicates and args.mode != "uniform":
+    mode = thin.canonical(args.mode)
+    if args.replicates and mode != "low-count":
         raise SystemExit("error: --replicates partitions the stream, which is "
-                         "uniform by construction; drop --mode randoms")
+                         "uniform by construction; drop --mode low-dose")
+    if args.replicates and args.sinogram != "derived":
+        raise SystemExit("error: --replicates splits the event stream, so it "
+                         "needs --sinogram derived")
+    if args.window == "time":
+        # Deliberately restricted. `low-dose` reduces the activity while `time`
+        # shortens the frame, and combining them means integrating a DIFFERENT
+        # decaying activity over a shorter window -- a third set of factors that
+        # nothing here has measured. Refuse rather than guess.
+        if mode != "low-count":
+            raise SystemExit(
+                "error: --window time simulates a shorter SCAN, which is a "
+                "low-count experiment.\n  Combining it with --mode low-dose would "
+                "reduce the activity and the duration at once, and the term "
+                "factors for that\n  are not the ones `thin.decay_scales` "
+                "computes. Use --mode low-count.")
+        if args.sinogram != "derived":
+            raise SystemExit("error: --window time selects events by timestamp, "
+                             "so it needs the event table: --sinogram derived")
+        if args.replicates:
+            raise SystemExit(
+                "error: --replicates with --window time would give replicates that "
+                "are different TIME windows -- \n  different decay, different "
+                "motion, not exchangeable. Use the default --window uniform.")
     f = 1.0 / args.drf
 
     C = get_case(args.case, args.out)
+    lm = args.sinogram == "derived"
     beds = args.beds or [n for n in C.beds()
-                         if (C.decoded / f"bed{n}.lm.npy").exists()]
+                         if not lm or (C.decoded / f"bed{n}.lm.npy").exists()]
     if not beds:
         raise SystemExit(
             f"error: no bed of {C.name!r} has both a list-mode bed<n>.lm.npy and the "
             f"correction terms.\n  d710 decode --raw <SINO> --lists <petLists> "
-            f"--case {C.name} --listmode --format npy")
+            f"--case {C.name} --listmode --format npy\n"
+            f"  or thin the sinogram alone: --sinogram binomial")
 
-    # The mode goes in the name: a randoms-aware run and a uniform one at the
-    # same DRF are different datasets and must not land on top of each other.
+    # The `derived` sinogram is a thinning of the EVENT TABLE, so the event table
+    # has to be what the decoded sinogram holds. Checked once, before any work.
+    if lm and not args.no_check:
+        print("=== does the event table reproduce the decoded sinogram?")
+        bad = verify.lm_matches_sinogram(C, beds)
+        if bad:
+            raise SystemExit(
+                f"\nerror: beds {bad} disagree, so histogramming the thinned events "
+                f"would\n  thin a different sinogram from the one on disk. Re-decode "
+                f"the case, or\n  thin the sinogram directly with --sinogram binomial "
+                f"(no event table).")
+
+    # The mode goes in the name: a low-dose run and a low-count one at the same
+    # DRF are different datasets and must not land on top of each other.
     base = args.dst or (f"{C.name}_drf{args.drf:g}"
-                        + ("" if args.mode == "uniform" else f"_{args.mode}"))
+                        + ("" if mode == "low-count" else "_lowdose"))
     jobs = ([(f"{base}_r{k}", (k, int(args.drf)), k) for k in range(int(args.drf))]
             if args.replicates else [(base, None, None)])
 
     for name, part, label in jobs:
         print(f"\n=== {C.name} -> {name}   f = {f:g} (DRF {args.drf:g}), "
-              f"mode {args.mode}" + (f", replicate {label}" if part else ""))
-        D, binmap, q = build(C, name, beds, f, args.mode, args.seed, label, part)
+              f"mode {mode}, window {args.window}, sinogram {args.sinogram}"
+              + (f", rho per {args.rho}, TOF rho {args.tof_rho}"
+                 if mode == "low-dose" else "")
+              + (f", replicate {label}" if part else ""))
+        if args.window == "time":
+            h = C.header(beds[0])
+            lin, quad = thin.decay_scales(h["half_life_s"],
+                                          h["frame_duration_ms"], f)
+            print(f"    frame {h['frame_duration_ms'] / 1000:g} s -> "
+                  f"{h['frame_duration_ms'] * f / 1000:g} s;  decay-weighted "
+                  f"scales: trues/scatter x {lin:.6f}, randoms x {quad:.6f} "
+                  f"(nominal f = {f:g})")
+        D, binmap, q = build(C, name, beds, f, mode, args.seed, label, part,
+                             sinogram=args.sinogram, rho_axis=args.rho,
+                             tof_rho=args.tof_rho, window=args.window)
         if not args.no_check:
             nvt = binmap.n_view * binmap.n_tang
             print()
@@ -146,7 +333,8 @@ def main(argv=None) -> int:
             bad = verify.invariants(D, beds, binmap.n_plane, nvt)
             print(f"\ninvariant violations: {bad}"
                   + ("" if not bad else "   <- do not reconstruct this"))
-        print(f"\nwrote {D.root}\n  next:  d710 osem --case {name}"
+        print(f"\nwrote {D.root}\n  raw:   {D.raw_sim}"
+              f"\n  next:  d710 osem --case {name}"
               f"   (export applies K x {1 / f:g} on its own)")
     return 0
 

@@ -12,6 +12,21 @@ under a root the operator names:
         logs/
         recon.npz      the stitched volume (count/voxel), the osem -> export bridge
 
+A case built by `d710 lowdose` has one directory more, and it is the only thing
+that tells a simulated case from a measured one:
+
+    $D710_OUT/<case>/
+        raw_simulation/    EVERYTHING the simulator generated, and nothing else
+            bed<n>.{hs,s}          thinned prompt sinogram
+            bed<n>.lm.npy          thinned event table, the same draw
+            bed<n>/{randoms,scatter,background}.{hs,s}   scaled terms
+        lowdose.json       dose fraction, mode, seed, per-bed counts, k_scale
+
+Those files are symlinked into `decoded/` and `work/bed<n>/` under their usual
+names, so a thinned case reconstructs like any other; the terms that thinning
+does NOT change (`normdt`, `norm_only`, `attn`) are ordinary copies in
+`work/bed<n>/`. See `lowdose/README.md`.
+
 **There is no default root.** Missing both `--out` and `$D710_OUT` is an error,
 not a fallback to the code directory — that fallback is exactly what this
 refactor removed.
@@ -87,6 +102,19 @@ class Case:
     @property
     def logs(self) -> Path:
         return self.root / "logs"
+
+    @property
+    def raw_sim(self) -> Path:
+        """Simulated raw data — present only on a case built by `d710 lowdose`.
+
+        Its existence is what distinguishes a simulated case from a measured one,
+        which is why the thinned files live here and are linked into `decoded/`
+        and `work/bed<n>/` rather than simply being written there.
+        """
+        return self.root / "raw_simulation"
+
+    def raw_sim_bed(self, n: int) -> Path:
+        return self.raw_sim / f"bed{n}"
 
     @property
     def recon(self) -> Path:

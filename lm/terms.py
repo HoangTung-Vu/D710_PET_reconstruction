@@ -66,12 +66,16 @@ def lor_sensitivity(case, bed: int, binmap):
 def scatter_tof_weights(case, bed: int, binmap, n_tof: int, e=None):
     """`(w, note)`: the scatter's TOF shape, summing to 1 over TOF.
 
-    GE's own (`scatter_tof.npy`) when the bed was estimated with `reconMethod 3`;
-    otherwise measured from this bed's own tail ring, exactly the way
-    `utils.terms.scatter_tof_profile` does it for the sinogram path -- fed the
-    events' own `(tof, tangential)` histogram in place of a TOF sinogram.
+    Three sources, in order of preference: GE's own (`scatter_tof.npy`) when the
+    bed was estimated with `reconMethod 3`; a profile measured at full count and
+    left on disk (`scatter_tof_profile.npy` -- what `d710 lowdose` writes, because
+    a thinned bed's tails are too sparse to measure from); otherwise measured from
+    this bed's own tail ring, exactly the way `utils.terms.scatter_tof_profile`
+    does it for the sinogram path -- fed the events' own `(tof, tangential)`
+    histogram in place of a TOF sinogram.
     """
-    got = sino.vendor_tof_weights(case, bed, n_tof, binmap.n_view, binmap.n_tang)
+    got = (sino.vendor_tof_weights(case, bed, n_tof, binmap.n_view, binmap.n_tang)
+           or sino.measured_tof_weights(case, bed, n_tof))
     if got:
         return got
     if e is None:

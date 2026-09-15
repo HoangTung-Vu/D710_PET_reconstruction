@@ -168,6 +168,46 @@ def check_tof_axis(case, n: int) -> None:
         "  or reconstruct without TOF:  d710 decode ... --no-tof" % (hs, case.name, case.name))
 
 
+#: A 1-D scatter TOF profile measured elsewhere and left on disk for this bed, at
+#: the RDF's full 55 bins. `d710 lowdose` writes one, measured on the FULL-COUNT
+#: source, because the profile is a *shape* and does not depend on the dose --
+#: while the thinned tails it would otherwise be measured from do.
+TOF_PROFILE_FILE = "scatter_tof_profile.npy"
+
+
+def measured_tof_weights(case, n: int, n_tof: int):
+    """`(w, note)` from `work/bed<n>/scatter_tof_profile.npy`, or `None`.
+
+    The fallback between GE's own per-`(view, u)` weights and measuring the
+    profile off this bed's own tail ring. It exists because a *derived* case --
+    one `d710 lowdose` thinned -- has tails too sparse to measure from: at DRF 10
+    the profile came out 9 % of peak away from the source's, and in low-dose mode
+    the tail ring disappeared altogether. The shape is dose-independent, so the
+    honest thing is to measure it once at full count and carry it.
+
+    Stored at 55 bins and mashed down here, the same way `vendor_tof_weights` and
+    `gerdf.cli.mash_tof` mash theirs, so one file serves every `--tof-bins`.
+    """
+    import numpy as np
+
+    path = case.work_bed(n) / TOF_PROFILE_FILE
+    if not path.exists():
+        return None
+    w = np.load(path).astype(np.float64).ravel()
+    if w.size % n_tof:
+        raise SystemExit(
+            "error: %s has %d TOF bins, which does not divide into the %d bins "
+            "of the prompts.\n  delete it, or rebuild the case with a --tof-mash "
+            "that divides %d." % (path, w.size, n_tof, w.size))
+    if w.min() < 0 or not w.sum():
+        raise SystemExit(f"error: {path} must be non-negative and sum to > 0")
+    n_full = w.size
+    w = w.reshape(n_tof, n_full // n_tof).sum(axis=1)
+    w = w / w.sum()
+    return w, (f"measured on the full-count source, {n_full} bins -> {n_tof}, "
+               f"peak bin {int(w.argmax())}, max/mean {w.max() * n_tof:.2f}")
+
+
 def vendor_tof_weights(case, n: int, n_tof: int, n_view: int, n_tang: int):
     """GE's own TOF distribution for this bed's scatter, or `None`.
 
@@ -456,7 +496,8 @@ def expand_to_tof(case, n: int, objs, A, n_tof: int, tof_scatter=None) -> None:
         note = "supplied profile"
     else:
         _, n_view, n_tang = A["scatter"].shape[1:]
-        got = vendor_tof_weights(case, n, n_tof, n_view, n_tang)
+        got = (vendor_tof_weights(case, n, n_tof, n_view, n_tang)
+               or measured_tof_weights(case, n, n_tof))
         w, note = got if got else scatter_tof_profile(A, n_tof)
     print(f"  TOF: {n_tof} bins -- S repeated (exact), randoms/{n_tof} "
           f"(confirmed by measurement), scatter: {note}")

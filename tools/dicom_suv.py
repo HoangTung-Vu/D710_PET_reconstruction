@@ -1,32 +1,5 @@
 #!/usr/bin/env python3
-"""Một series PET DICOM (BQML) -> một file NIfTI SUVbw.
-
-    python3 -m tools.dicom_suv --all              # ảnh của GE, mọi ca
-    python3 -m tools.dicom_suv --case fdg26081008
-    python3 -m tools.dicom_suv --dicom <thư mục PT> --out suv.nii.gz
-
-Dùng để so ảnh bằng **SUV** thay vì Bq/mL. SUV bỏ đi hai thứ khác nhau giữa các
-ca — liều tiêm và cân nặng — nên hai ca mới đặt cạnh nhau được, và thang SUV là
-thang người đọc phim thực sự nhìn.
-
-    SUVbw = C(Bq/mL) / (liều còn lại lúc quét / cân nặng)
-
-**Đồng hồ: chỉ trừ trong CÙNG một file, không bao giờ trộn hai nguồn.** Header
-RDF ghi giờ UTC còn DICOM ghi giờ địa phương (lệch +7 h ở đây), nên lấy giờ quét
-từ file này rồi trừ giờ tiêm từ file kia là sai đúng 7 h — tức là SUV sai ~1,5
-lần. Cả `SeriesTime` lẫn `RadiopharmaceuticalStartTime` đều đọc từ chính series
-đang xử lý, nên chênh lệch luôn đúng dù series đó của ai.
-
-**Mốc thời gian.** `DecayCorrection = START` nghĩa là giá trị điểm ảnh đã quy về
-lúc BẮT ĐẦU series, nên mẫu số phải là liều còn lại **ở đúng lúc đó**. Kiểm trên
-dữ liệu: `SeriesTime` của GE = 11:53:16, còn giờ bắt đầu bed 1 mà pipeline tính
-ra từ RDF là 11:53:18 — lệch 2 s. Vì `d710 export` ghi `SeriesTime` theo đúng
-quy ước ấy, một mã này chạy được cho cả ảnh của GE lẫn ảnh của mình.
-
-Chạy trên `export/dicom` của chính mình thì phải ra đúng
-`<case>_suvbw.nii.gz` mà `d710 export` đã ghi — `--ours` làm việc đó, và đó là
-phép thử rằng file DICOM giao cho bác sĩ đọc SUV ra đúng như mình tính.
-"""
+"""One PET DICOM series in BQML to a NIfTI volume in SUVbw."""
 from __future__ import annotations
 
 import argparse
@@ -43,12 +16,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.paths import out_root
 from utils.quant import suv_bw
 
-#: Ngoài dải này thì gần như chắc chắn sai đồng hồ, không phải ca lạ.
 UPTAKE_MIN_OK = (5.0, 300.0)
 
 
 def read_series(d: str):
-    """`(vol Bq/mL [z,y,x], meta)` — đọc, sắp theo z, áp rescale."""
+    """`(volume Bq/mL [z, y, x], meta)`, ordered by z with the rescale applied."""
     import pydicom
 
     files = sorted(glob.glob(os.path.join(d, "*")))
@@ -59,7 +31,7 @@ def read_series(d: str):
         try:
             sl.append(pydicom.dcmread(f))
         except Exception:
-            continue                      # DICOMDIR, README, ... bỏ qua
+            continue
     if not sl:
         raise SystemExit(f"error: không đọc được file DICOM nào trong {d}")
     sl.sort(key=lambda s: float(s.ImagePositionPatient[2]))
@@ -88,7 +60,7 @@ def read_series(d: str):
         print(f"  ⚠ khoảng cách lát không đều (dz {np.diff(z).min():.4f}.."
               f"{np.diff(z).max():.4f}) — affine dùng trung vị {dz:.4f}")
 
-    py, px = (float(v) for v in d0.PixelSpacing)      # [hàng, cột] = [y, x]
+    py, px = (float(v) for v in d0.PixelSpacing)
     return vol, {
         "ds": d0, "n": len(sl), "shape": vol.shape,
         "x0": float(d0.ImagePositionPatient[0]),
@@ -105,7 +77,7 @@ def _dt(date: str, time: str) -> dt.datetime:
 
 
 def scan_and_injection(ds, which: str = "series"):
-    """`(giờ quét, giờ tiêm, T½ s, liều Bq, cân nặng kg)` — TẤT CẢ từ một file."""
+    """`(scan time, injection time, half-life s, dose Bq, weight kg)`, all from one file."""
     date = str(getattr(ds, "SeriesDate", "") or getattr(ds, "AcquisitionDate", ""))
     tmap = {"series": "SeriesTime", "acquisition": "AcquisitionTime",
             "content": "ContentTime"}
@@ -126,12 +98,11 @@ def scan_and_injection(ds, which: str = "series"):
             str(rp.RadiopharmaceuticalStartDateTime)[:14], "%Y%m%d%H%M%S")
     else:
         inj = _dt(date, str(rp.RadiopharmaceuticalStartTime))
-        # Tiêm trước nửa đêm, quét sau: chỉ xảy ra khi mượn SeriesDate.
         if inj > scan:
             inj -= dt.timedelta(days=1)
 
-    dose = float(rp.RadionuclideTotalDose)              # Bq
-    half = float(rp.RadionuclideHalfLife)               # s
+    dose = float(rp.RadionuclideTotalDose)
+    half = float(rp.RadionuclideHalfLife)
     w = float(getattr(ds, "PatientWeight", 0) or 0)
     if w <= 0:
         raise SystemExit("error: PatientWeight rỗng — SUVbw cần cân nặng")
@@ -139,16 +110,14 @@ def scan_and_injection(ds, which: str = "series"):
 
 
 def to_suv(vol, ds, which: str = "series", out=print):
-    """Bq/mL -> SUVbw. Trả về `(suv, thông tin)`."""
+    """Bq/mL to SUVbw."""
     scan, inj, half, dose, w = scan_and_injection(ds, which)
     uptake = (scan - inj).total_seconds()
     decay_tag = str(getattr(ds, "DecayCorrection", "?"))
 
     if decay_tag == "START":
-        # Điểm ảnh đã quy về lúc bắt đầu quét -> mẫu số là liều CÒN LẠI lúc đó.
         dose_ref = dose * 2 ** (-uptake / half)
     elif decay_tag == "ADMIN":
-        # Đã quy về lúc tiêm -> mẫu số là toàn bộ liều.
         dose_ref = dose
     else:
         raise SystemExit(
@@ -174,15 +143,10 @@ def to_suv(vol, ds, which: str = "series", out=print):
 
 
 def write_nifti(data_zyx, path, m):
-    """Ghi `.nii.gz`. Affine RAS dựng từ ImagePositionPatient THẬT của series.
-
-    Cùng quy ước với `utils/export.write_nifti` (LPS -> RAS bằng cách đổi dấu x,
-    y), nên ảnh của GE và ảnh của mình nằm chung một không gian và chồng lên
-    nhau được mà không cần căn gì thêm.
-    """
+    """Write a `.nii.gz`."""
     import nibabel as nib
 
-    data = np.transpose(np.ascontiguousarray(data_zyx), (2, 1, 0))   # (x, y, z)
+    data = np.transpose(np.ascontiguousarray(data_zyx), (2, 1, 0))
     affine = np.array([[-m["px"], 0.0, 0.0, -m["x0"]],
                        [0.0, -m["py"], 0.0, -m["y0"]],
                        [0.0, 0.0, m["dz"], m["z0"]],
@@ -201,7 +165,7 @@ def convert(dicom_dir: str, out_path: str, which: str = "series") -> dict:
           f"{m['px']:.4f} mm, dz {m['dz']:.4f}   '{m['desc']}'  {m['recon']}")
     suv, info = to_suv(vol, m["ds"], which)
 
-    body = suv > 0.02 * np.percentile(suv, 99.9)      # ngưỡng tương đối
+    body = suv > 0.02 * np.percentile(suv, 99.9)
     print(f"  SUVbw  trung vị thân {np.median(suv[body]):.3f}   "
           f"p95 {np.percentile(suv[body], 95):.2f}   max {suv.max():.1f}")
     p = write_nifti(suv, out_path, m)
@@ -215,7 +179,7 @@ def convert(dicom_dir: str, out_path: str, which: str = "series") -> dict:
 
 
 def vendor_dir(root, case: str) -> str:
-    """Series BQML của GE cho một ca, lấy từ sidecar `tools.compare_vendor` để lại."""
+    """GE's BQML series for a case, from the sidecar `tools.compare_vendor` leaves."""
     for name in ("calib_sino.json", "calib_lm.json"):
         p = root / case / name
         if p.exists():
@@ -248,7 +212,6 @@ def main(argv=None) -> int:
                          "đúng cho GE và cho ảnh của mình)")
     args = ap.parse_args(argv)
     if args.out and (args.all or args.ours):
-        # Một --out cho nhiều series thì series sau đè series trước, im lặng.
         ap.error("--out chỉ dùng cho MỘT series; bỏ nó đi để mỗi ca tự đặt tên")
 
     if args.dicom:

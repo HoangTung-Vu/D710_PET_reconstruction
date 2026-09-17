@@ -1,65 +1,5 @@
 #!/usr/bin/env python3
-"""One command: raw sinogram + CT DICOM -> randoms, scatter, sensitivity, dead time.
-
-Normally driven by the CLI, which works out --out for you:
-
-    d710 estimate --raw <petRDFS/.../DIR> --ct <CT series> --case ped --bed 6
-
-By hand it is the same thing with the paths spelled out:
-
-    PYTHONPATH=<D710> python3 vendor/estimate.py \\
-        --raw ~/Documents/12082026/petRDFS/.../SINO0001 \\
-        --ct  ~/Documents/12082026/PESI/p1/e1/s2 \\
-        --out $D710_OUT/nema/vendor/bed2
-
-Everything is estimated by GE's own `pet_recon`, running under gdb in the
-`d710:full` container -- these are the vendor's kernels, not a reimplementation.
-
-**This script needs nothing but python3 and docker.** No conda, no numpy, no
-pydicom: every step that needs a library runs inside the image, which already
-has them, and every vendor file it reads is already in the image too. It stays
-on the host only because it drives `docker` itself.
-
-What it does, in order:
-
-  1. reads the raw RDF header (`ge_rdf_tool.py info`, in the container) for the
-     bed's table position, which is what registers the CT to the PET bed;
-  2. turns the CT series into a mu-map on GE's PIFA grid (`ct_to_pifa.py`, in
-     the container);
-  3. writes a job file from the vendor's own XR job template, with only the
-     three input paths swapped;
-  4. runs `extract.gdb` in the container with the data mounted read-only and
-     --out mounted straight onto /out, so the kernels write their results in
-     place -- no staging directory, and two beds can run at the same time;
-  5. leaves the sinograms plus a JSON sidecar each in --out.
-
-Outputs (all float32 unless noted, view x v x u = 288 x 553 x 381):
-
-    randoms.f32     randoms
-    scatter.f32     model-based (SSS) scatter
-    scatter_tof.f32 the TOF distribution of that scatter, on GE's coarse grid
-                    (288 x 55 x 43 x 4 x 4); TOF runs only
-    normdt.f32      normalisation x dead time   <- the sensitivity term
-    norm_only.f32   normalisation alone; dead time = normdt / norm_only
-    prompts.u16     the emission sinogram as the vendor loaded it
-    singles.i32     per-crystal singles          576 x 24
-    dt_int.f32      per-block dead time          256
-
-TOF is on by default, matching `d710 decode`.  It costs one extra SSS pass and
-41.6 MB, and it is the only way to get a scatter estimate that knows *when*
-along the LOR the photon scattered -- which is the whole point of TOF OSEM.
-`--no-tof` reverts to `reconMethod = 2`, the plain 3D OSEM job.  Measured on ped
-bed 1, turning it on leaves `randoms.f32` bit-identical and moves `scatter.f32`
-by 0.04 % in total, so the non-TOF outputs of a TOF run stay usable.
-
-No well-counter (WCC) scaling is applied anywhere, so the absolute scale is
-yours to calibrate -- but the exam's own WCC factor is recorded in
-`estimate.json`, which is where `d710 export` picks it up.
-
-LIST-MODE: not accepted here.  A LIST*.BLF has to be histogrammed into a SINO*
-first; see `d710 decode --listmode`.  Every LIST*.BLF on disk has a matching
-SINO* from the same acquisition, so pass that instead.
-"""
+"""One command: raw sinogram and CT series to randoms, scatter, sensitivity and dead time."""
 from __future__ import annotations
 
 import argparse
@@ -77,20 +17,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 OUTPUTS = ["randoms.f32", "scatter.f32", "normdt.f32", "norm_only.f32",
            "prompts.u16", "singles.i32", "dt_int.f32", "dt_mux.f32"]
 
-#: Written only when TOF is on, so it is kept out of OUTPUTS' completeness check
-#: and added back in `main` when it applies.
 TOF_OUTPUT = "scatter_tof.f32"
 
 
 def raw_header(raw):
-    """table_position_mm and friends, straight from the RDF header.
-
-    The text form of `info` rather than `--json`: every number below is read by
-    a regex that was calibrated against exactly that printout, and the two
-    forms are not guaranteed to round the same way.  Host and container were
-    diffed on a real bed -- the only line that differs is the one echoing the
-    file's own path, which nothing here reads.
-    """
+    """Table position and related fields, straight from the RDF header."""
     out = container.rdf_info(raw)
     info = {}
     for key, pat in (("table_position_mm", r"table_position_mm\s*:\s*(-?[\d.]+)"),
@@ -102,9 +33,6 @@ def raw_header(raw):
         m = re.search(pat, out)
         if m:
             info[key] = float(m.group(1).replace(",", ""))
-    # Header 0xEEC is the norm cal UID.  ge_rdf_tool still prints it under the
-    # old, wrong label "study_instance_uid" (0xF74 / "series_instance_uid" is
-    # really the WCC cal UID) -- see the d710-wcc-and-norm-cal note.
     m = re.search(r"study_instance_uid\s*:\s*([\d.]+)", out)
     if m:
         info["norm_cal_uid"] = m.group(1)
@@ -119,22 +47,7 @@ def raw_header(raw):
 
 
 def resolve_norm(norm_cal_uid, raw):
-    """Find the norm scan THIS exam declares, instead of guessing one.
-
-    The chain, all of it checkable:
-
-        emission RDF header 0xEEC  = norm_cal_uid
-          -> /usr/PET/systemConfig/cal/<uid>.3dnorm   (508 B of DICOM, in the image)
-             (0017,1005) "PET 3D Normalization"   <- not a WCC scan
-             (0017,1007) /petRDFS/<a>/<b>/<c>/SINO000n   <- the source scan
-          -> that same relative path under the exam's own drop directory
-
-    The DICOM read happens in the container, because that is where the vendor's
-    calibration tree lives now.  The walk down the drop happens here, because
-    the drop is on the host and only the host can see it.
-
-    Returns the host path, or None with a printed reason.
-    """
+    """Find the norm scan this exam declares."""
     if not norm_cal_uid:
         return None
     got = container.cal_tags(norm_cal_uid, "3dnorm",
@@ -150,8 +63,6 @@ def resolve_norm(norm_cal_uid, raw):
               file=sys.stderr)
         return None
 
-    # src is a console path like /petRDFS/AAA/BBB/CCC/SINO0001.  The exam drop
-    # keeps the same tree, so walk up from the raw file until petRDFS matches.
     tail = src.lstrip("/").split("/")
     d = os.path.dirname(os.path.abspath(raw))
     for _ in range(6):
@@ -159,13 +70,6 @@ def resolve_norm(norm_cal_uid, raw):
         cand = os.path.join(d, *tail)
         if os.path.exists(cand):
             return cand
-    # Not in the drop -- fall back to the copy kept beside the tool, but ONLY
-    # when that copy is the very scan this exam declares.  The repo's own
-    # `cal/<uid>.3dnorm` names the scan the bundled `.rdf` came from, so the
-    # two console paths have to be the same string.  Without this check any
-    # exam whose norm is missing gets the bundled one handed to it -- another
-    # calibration, possibly another scanner, and nothing downstream can tell:
-    # the sinogram has the right shape and the image still looks like an image.
     local = os.path.join(HERE, "cal", "norm_DXRM3_20231020.rdf")
     record = os.path.join(HERE, "cal", norm_cal_uid + ".3dnorm")
     if os.path.exists(local) and os.path.exists(record) and \
@@ -179,11 +83,7 @@ def resolve_norm(norm_cal_uid, raw):
 
 
 def bundled_source(record):
-    """(0017,1007) out of a `.3dnorm` kept in `vendor/cal/`, or "".
-
-    Read in the container for the same reason as the one above: pydicom is in
-    the image, not necessarily on the host.  The file is mounted in.
-    """
+    """The (0017,1007) tag of a `.3dnorm` kept in `vendor/cal/`, or an empty string."""
     d, name = os.path.dirname(record), os.path.basename(record)
     code = ("import json,pydicom\n"
             "d=pydicom.dcmread('/cal/%s', force=True)\n"
@@ -198,12 +98,7 @@ def bundled_source(record):
 
 
 def write_job(dst, emission, transmission, normalization):
-    """Copy the vendor's XR job, swapping only the three input paths.
-
-    job.gdb carries all 524 IgJobReq fields from GE's own selftest_kh_3dir.job.
-    Regenerating it from scratch would mean re-deriving every correction flag,
-    so only the file names are touched and everything else stays the vendor's.
-    """
+    """Copy the vendor's XR job, replacing only the three input paths."""
     swaps = {"inputEmissionFileName[0]": emission,
              "inputTransmissionFileName[0]": transmission,
              "normalizationSinogramFile": normalization}
@@ -256,7 +151,6 @@ def main():
             raise SystemExit("error: no such path: %s" % p)
     os.makedirs(out, exist_ok=True)
 
-    # ---------------------------------------------------------- 1. the bed
     print("== reading the raw header")
     info = raw_header(raw)
     table = args.table_location if args.table_location is not None \
@@ -265,8 +159,6 @@ def main():
           % (info.get("bed_number"), table, info.get("prompts"),
              info.get("num_tof_bins")))
 
-    # The container sees one directory, so everything the job names has to live
-    # under it.  Copy the two inputs in rather than mounting three host trees.
     data = os.path.join(out, "data")
     os.makedirs(data, exist_ok=True)
     shutil.copy2(raw, os.path.join(data, "emission.rdf"))
@@ -288,9 +180,6 @@ def main():
               "!! scanner, NOT yours.  randoms and scatter are unaffected."
               % selftest_norm, file=sys.stderr)
 
-    # -------------------------------------------------------- 2. the mu-map
-    # In the container: it has numpy/scipy/pydicom, and the result was checked
-    # byte-for-byte against the host's on a real bed.
     print("== CT -> mu-map -> PIFA")
     container.python(
         ["/d710/vendor/ct_to_pifa.py", "/ct", "/out/data/mu.pifa",
@@ -301,17 +190,10 @@ def main():
     if not os.path.exists(pifa):
         raise SystemExit("error: ct_to_pifa wrote no %s" % pifa)
 
-    # ----------------------------------------------------------- 3. the job
     print("== writing the job")
     write_job(os.path.join(out, "job.gdb"), "/data/emission.rdf",
               "/data/mu.pifa", norm_in_container)
 
-    # --------------------------------------------------------- 4. the recon
-    # --out IS /out.  extract.gdb writes the final files straight into it, so
-    # there is no staging directory to collide over and nothing to move.
-    # Clear scatter_tof.f32 even on a --no-tof run: leaving a stale one behind
-    # would let `to_stir` pick up the TOF distribution of an earlier, different
-    # estimate and pair it with this run's scatter.
     for f in OUTPUTS + [TOF_OUTPUT]:
         for p in (os.path.join(out, f), os.path.join(out, f + ".json")):
             if os.path.exists(p):
@@ -333,30 +215,20 @@ def main():
         raise SystemExit("error: the container failed; see %s "
                          "(use --keep-going to collect partial output)" % log)
 
-    # --------------------------------------------------------- 5. the sidecar
     got = [f for f in outputs if os.path.exists(os.path.join(out, f))]
 
-    # The exam's own well-counter factor, recorded here rather than looked up
-    # again at export time: this is the one moment the cal UID and a container
-    # are both in hand.  Nothing is scaled by it -- `d710 export` decides that.
     wcc = container.cal_tags(info.get("wcc_cal_uid"), "3dwcc",
                              [("name", 0x00191006), ("factor", 0x0019100B)]) \
         if info.get("wcc_cal_uid") else None
 
     with open(os.path.join(out, "estimate.json"), "w") as f:
         json.dump({"raw": raw, "ct": ct,
-                   # the norm actually used, not the one asked for: without
-                   # this the sidecar claims the selftest norm on every run
-                   # that resolved its own.
                    "norm": norm or selftest_norm,
                    "norm_source": ("--norm" if args.norm else
                                    "resolved from norm_cal_uid" if norm else
                                    "vendor selftest fallback"),
                    "mu_orientation": "DICOM LPS (measured; no flips)",
                    "table_position_mm": table, "rdf_header": info,
-                   # Which branch of GE's scatter model ran.  Travels with the
-                   # data because scatter.f32 alone does not say whether a TOF
-                   # distribution for it exists.
                    "recon_method": 3 if tof else 2,
                    "tof_scatter": tof,
                    "outputs": got, "container_exit": rc,

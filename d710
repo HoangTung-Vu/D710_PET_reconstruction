@@ -1,159 +1,20 @@
 #!/usr/bin/env bash
-# d710 -- the SINGLE entry point of the GE Discovery 710 reconstruction pipeline.
-#
-#   d710 decode   --raw D --case N [--tof]         RDF -> Interfile, all beds
-#                 [--listmode --lists D [--format npy|petsird]]  + the event table
-#   d710 estimate --raw D --ct D --case N [--bed n] [--tof]  GE kernel -> .f32
-#   d710 tostir   --case N [--bed n]               .f32 -> STIR Interfile
-#   d710 exam     --raw D --ct D --case N          = decode + estimate + tostir
-#                 [--listmode --lists D]           forwarded to decode, so one
-#                                                  `exam` feeds BOTH paths
-#   d710 attn     --case N                         CT -> work/bed<n>/attn.hs
-#   d710 osem     --case N [--beds ...] [--iters]  OSEM + bed stitching
-#   d710 lm       check|tofcheck|recon --case N    list-mode OSEM (PyTomography)
-#                 recon takes --resume, like osem
-#   d710 lowdose  --case N --drf D                 thinned copy of a case
-#                 [--mode low-count|low-dose]      shorter scan / less activity
-#                 [--sinogram derived|binomial]    -> <case>/raw_simulation/
-#
-#   d710 export   --case N [--format nifti|dicom] [--lm]
-#                                                 Bq/mL + SUV -> NIfTI/DICOM
-#                                                 --lm reads recon_lm.npz
-#   d710 read     <file.f32>                       read one vendor dump
-#   d710 shell    [--case N]                       shell inside the container
-#
-# THREE PLACES THINGS RUN, DELIBERATELY SEPARATE:
-#   d710:full        decode estimate tostir exam read shell -- GE's own software
-#   sirf-local:0.1   attn osem export   -- run them through ./d710_isolate_stir.sh
-#   host python      lm lowdose         -- PyTomography (+ parallelproj); no SIRF
-# Nothing in lm/ or lowdose/ imports sirf or stir.  See lm/README.md and
-# lowdose/README.md.
-#
-# ONE IMAGE GRID for both.  The two SIRF builds disagree about what --xy means:
-# sirf-local pins the FOV at 718.01 mm and scales the voxel, the host pins the
-# voxel at 2.1306 mm and scales the FOV.  utils/scanner.py holds every geometry
-# and machine constant, and its XY = 337 is the one matrix size that gives
-# 2.130600 mm in BOTH.  Anything built on the old 256 grid must be rerun.
-#
-# TOF IS OFF BY DEFAULT.  Not because it does not work -- it does, and the TOF
-# scatter is the vendor's own (see below) -- but because of the time COST on
-# this machine.
-#
-# THIS APPLIES TO THE SINOGRAM PATH ONLY.  `d710 lm` pays nothing for TOF: each
-# event's ray is cut to +-3 sigma about its own TOF position, so it is SHORTER
-# than the full chord.  Measured, ped bed 1, grid 337, 2x24: TOF at all 55 bins
-# is 2m01s/bed against 2m39s non-TOF.  See lm/README.md.
-#
-#   measured 2026-08-27, ped bed 1, parallelproj, 16 cores, NO GPU
-#   non-TOF                          ~2 min/bed
-#   TOF 5 bins,  grid 128            9.6 min/bed
-#   TOF 5 bins,  grid 337 (default)  ~48 min/bed
-#   TOF 11 bins, grid 337            ~1.6 h/bed   -> 6 beds x 3 iter ~ 29 HOURS
-#
-# The machine has no NVIDIA GPU and every parallelproj here is a CPU build --
-# both in the conda env and in `sirf-local:0.1`.  Note there are TWO of them and
-# they are not the same library: STIR links the C++ `libparallelproj.so` (2.0.7,
-# built by SIRF-SuperBuild), which is what this table times; the Python package
-# loads `libparallelproj_c.so` (1.10.2, conda-forge) by ctypes, and that one
-# serves PyTomography in `lm/`.  With a GPU the table above changes completely
-# and TOF should become the default again.
-#
-#   --tof            enable TOF (decode mashing 5 bins + estimate reconMethod 3)
-#   --tof-mash N     implies --tof, changes the mash factor (N must divide 55)
-#   --no-tof         the default; spelled out for clarity
-#
-# The TOF axis was MIRRORED until 2026-08-29 -- GE's bin order written straight
-# through, against STIR's signed timing positions -- so OSEM put the activity on
-# the wrong half of every LOR and TOF came out worse than non-TOF.  Fixed by
-# reversing it where it is written: gerdf.cli._tof_to_stir for the prompts and
-# vendor/to_stir.py for the scatter weights, one change in two places.  Measured
-# again afterwards with tools/tof_direction.py on ped/pedtof5 bed 1: the model
-# now agrees with the data at +0.983 and the TOF centroid to 0.055 bins, exactly
-# swapping the two columns of the 2026-08-27 run.
-#
-# ANYTHING DECODED BEFORE THAT DATE IS MIRRORED AND MUST BE DECODED AGAIN.
-# Nothing else can tell: counts, file size and every invariant are identical
-# either way, only the image differs.  So TOF headers now carry a `; TOF axis`
-# line, and `utils.terms.load` refuses prompts that lack it -- re-run
-# `d710 decode --tof --force` and then `d710 tostir` (both are seconds).
-#
-# Why mash 5 when enabled.  55 = 5 x 11, so there are only four choices:
-# 1, 5, 11, 55.
-#
-#   mash  bins  RAM for OSEM  effective TOF resolution   SNR benefit retained
-#      1   55        40 GB      681 ps = 102 mm                     100 %
-#      5   11         8 GB      809 ps = 121 mm                      92 %
-#     11    5       3.6 GB     1191 ps = 179 mm                      76 %
-#
-# (effective resolution = quadrature of 675 ps -- TIMING_RESOLUTION in
-# sharcAp.cfg.XR -- with the bin width; SNR ~ sqrt(D/dx).)
-#
-# Keeping all 55 bins is NOT feasible here: OSEM needs prompts + background +
-# sensitivity at the same time, float32, which is ~40 GB, and this machine has
-# 30 GB.  Mashing 11 fits comfortably but its 982 ps bins are wider than the
-# scanner's 675 ps, losing 24 %.  Mashing 5 loses 8 %.
-#
-# When ENABLED, `estimate` runs TOF too: `IgJobReq.reconMethod = 3` turns on
-# `CScatterFully3dModel::m_bTOFDim`, and GE's own scatter model keeps the time
-# axis -> `scatter_tof.f32`.  That is the vendor's REAL TOF scatter, not an
-# improvised measured profile.  See `tests/audit_frameworks.md`.
-#
-# One switch drives both decode and estimate, deliberately: TOF prompts with
-# non-TOF scatter make OSEM silently fall back to an improvised profile.
-#
-# WHERE THE OUTPUT GOES:  --out  >  $D710_OUT  >  ERROR.
-# Deliberately no default -- output must never land inside the source tree.
-#
-#   export D710_OUT=~/UET/d710_out
-#   d710 exam --raw ~/Documents/11082026/petRDFS/NQLHQWPU/SYQGRVWD/QONDOBON \
-#             --ct  ~/Documents/11082026/PESI/p1/e1/s2 --case ped
-#
-# The `d710:full` IMAGE is HANDED OVER AS-IS, never rebuilt:
-#   docker load -i d710_full.tar
-# So there is no `d710 build`. The Dockerfile here only records what the image
-# contains -- rebuilding it needs the 18 GB custom_tool/petsw/ tree, which is
-# not in the repo. The D710/ code is NOT baked into the image but mounted at
-# run time, so code edits take effect immediately.
-#
-# WHERE EACH COMMAND RUNS
-#   decode, tostir, read   -> in the container (only bash + docker needed)
-#   estimate               -> host orchestrates with a BARE python3, every
-#                             sub-step runs in the container
-#   attn, osem, export     -> SIRF.  Either `./d710_isolate_stir.sh <cmd>`, which
-#                             runs them in `sirf-local:0.1`, or a host install:
-#                             conda activate petct_reconstruction
-#   lm, lowdose            -> PyTomography, NO SIRF:
-#                             conda activate petct_recon
-#
-# Environment variables, all of which can also be set in `D710/.env`
-# (copy `.env.example` -- they are identical -- and edit):
-#   D710_OUT     root of the output tree
-#   D710_IMAGE   image name (default d710:full)
-#   D710_CASE    default case name for --case
-#   D710_PYTHON  interpreter for osem/export (default python3)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# ------------------------------------------------------------------ .env
-# `D710/.env` holds this machine's settings -- above all the image names, which
-# are whatever `docker load` happened to restore them as.  $D710_ENV_FILE points
-# somewhere else.  See `.env.example`.
 ENV_FILE="${D710_ENV_FILE:-$HERE/.env}"
 if [[ -f "$ENV_FILE" ]]; then
     while IFS='=' read -r k v; do
-        k="${k#"${k%%[![:space:]]*}"}"                       # ltrim
+        k="${k#"${k%%[![:space:]]*}"}"
         [[ "$k" == export[[:space:]]* ]] && k="${k#export}"
         k="${k//[[:space:]]/}"
-        # Comments, blank lines and anything malformed fail this and are
-        # skipped in silence: a typo must not stop a reconstruction.
         [[ "$k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-        [[ -v "$k" ]] && continue                            # the shell wins
-        v="${v%$'\r'}"; v="${v%%[[:space:]]#*}"              # CRLF, # comment
-        v="${v#"${v%%[![:space:]]*}"}"                       # ltrim (KEY = val)
-        v="${v%"${v##*[![:space:]]}"}"                       # rtrim
+        [[ -v "$k" ]] && continue
+        v="${v%$'\r'}"; v="${v%%[[:space:]]#*}"
+        v="${v#"${v%%[![:space:]]*}"}"
+        v="${v%"${v##*[![:space:]]}"}"
         [[ "$v" == \"*\" || "$v" == \'*\' ]] && v="${v:1:${#v}-2}"
-        # docker and python both take these verbatim; neither expands a tilde.
         [[ "$v" == '~/'* ]] && v="$HOME${v:1}"
         export "$k=$v"
     done < "$ENV_FILE"
@@ -162,18 +23,110 @@ fi
 IMAGE="${D710_IMAGE:-d710:full}"
 PY="${D710_PYTHON:-python3}"
 
-
 export D710_IMAGE="$IMAGE"
 
 die() { echo "error: $*" >&2; exit 2; }
 usage() {
-    # The whole comment block at the top of the file, up to the first non-comment line.
-    awk 'NR==1 {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "${BASH_SOURCE[0]}"
+    cat <<'USAGE'
+d710 -- the single entry point of the GE Discovery 710 reconstruction pipeline.
+
+COMMANDS
+  d710 decode   --raw D --case N [--tof]         RDF -> Interfile, all beds
+                [--listmode --lists D [--format npy|petsird]]  plus the event table
+  d710 estimate --raw D --ct D --case N [--bed n] [--tof]  GE kernel -> .f32
+  d710 tostir   --case N [--bed n]               .f32 -> STIR Interfile
+  d710 exam     --raw D --ct D --case N          decode + estimate + tostir
+                [--listmode --lists D]           forwarded to decode, so one
+                                                 exam feeds both paths
+  d710 attn     --case N                         CT -> work/bed<n>/attn.hs
+  d710 osem     --case N [--beds ...] [--iters]  OSEM and bed stitching
+  d710 lm       check|tofcheck|recon --case N    list-mode OSEM (PyTomography)
+                recon accepts --resume, as osem does
+  d710 lowdose  --case N --drf D                 a thinned copy of a case
+                [--mode low-count|low-dose]      shorter scan / less activity
+                [--sinogram derived|binomial]    -> <case>/raw_simulation/
+  d710 export   --case N [--format nifti|dicom] [--lm]
+                                                 Bq/mL and SUV -> NIfTI/DICOM
+                                                 --lm reads recon_lm.npz
+  d710 read     <file.f32>                       read one vendor dump
+  d710 shell    [--case N]                       a shell inside the container
+
+THREE RUNTIMES, KEPT SEPARATE
+  d710:full        decode estimate tostir exam read shell -- GE's own software
+  sirf-local:0.1   attn osem export -- run through ./d710_isolate_stir.sh
+  host python      lm lowdose -- PyTomography and parallelproj; no SIRF
+
+Nothing in lm/ or lowdose/ imports sirf or stir. See lm/README.md and
+lowdose/README.md.
+
+ONE IMAGE GRID FOR BOTH
+The two SIRF builds disagree about the meaning of --xy: sirf-local fixes the
+FOV at 718.01 mm and scales the voxel, while the host build fixes the voxel at
+2.1306 mm and scales the FOV. utils/scanner.py holds every geometric and
+machine constant, and its XY = 337 is the one matrix size giving 2.130600 mm in
+both. Anything built on the earlier 256 grid must be rerun.
+
+TIME OF FLIGHT
+  --tof            enable TOF (decode mashing to 5 bins, estimate reconMethod 3)
+  --tof-mash N     implies --tof and changes the mash factor (N must divide 55)
+  --no-tof         the default, spelled out for clarity
+
+TOF is off by default on the sinogram path because of its cost on this machine,
+not because it is unsupported. Measured 2026-08-27, ped bed 1, parallelproj,
+16 cores, no GPU:
+
+  non-TOF                          ~2 min/bed
+  TOF 5 bins,  grid 128            9.6 min/bed
+  TOF 5 bins,  grid 337 (default)  ~48 min/bed
+  TOF 11 bins, grid 337            ~1.6 h/bed
+
+This applies to the sinogram path only. `d710 lm` pays nothing for TOF: each
+event's ray is truncated to +-3 sigma about its own TOF position and is
+therefore shorter than the full chord. Measured on ped bed 1, grid 337, 2x24,
+TOF at all 55 bins takes 2 m 01 s per bed against 2 m 39 s non-TOF.
+
+Because 55 = 5 x 11, the only mash factors are 1, 5, 11 and 55:
+
+  mash  bins  RAM for OSEM  effective TOF resolution   SNR benefit retained
+     1   55        40 GB      681 ps = 102 mm                     100 %
+     5   11         8 GB      809 ps = 121 mm                      92 %
+    11    5       3.6 GB     1191 ps = 179 mm                      76 %
+
+Keeping all 55 bins is not feasible here: OSEM needs prompts, background and
+sensitivity simultaneously in float32, about 40 GB, and this machine has 30 GB.
+
+One switch drives both decode and estimate, deliberately: TOF prompts combined
+with non-TOF scatter make OSEM fall back silently to an improvised profile.
+
+The TOF axis was mirrored until 2026-08-29. Anything decoded before that date
+must be decoded again: counts, file size and every invariant are identical
+either way and only the image differs. TOF headers now carry a `; TOF axis`
+line, and utils.terms.load refuses prompts that lack it. Re-run
+`d710 decode --tof --force` and then `d710 tostir`; both take seconds.
+
+OUTPUT LOCATION
+  --out  >  $D710_OUT  >  error. There is deliberately no default, so that
+  output never lands inside the source tree.
+
+    export D710_OUT=~/UET/d710_out
+    d710 exam --raw <petRDFS dir> --ct <CT series dir> --case ped
+
+The d710:full image is delivered as-is and never rebuilt
+(`docker load -i d710_full.tar`), so there is no `d710 build`. The Dockerfile
+here only records the image contents; rebuilding requires the 18 GB
+custom_tool/petsw/ tree, which is not in the repository. The D710/ code is not
+baked into the image but mounted at run time, so code edits take effect
+immediately.
+
+ENVIRONMENT VARIABLES
+All may also be set in D710/.env; copy .env.example and edit it.
+  D710_OUT     root of the output tree
+  D710_IMAGE   image name (default d710:full)
+  D710_CASE    default case name for --case
+  D710_PYTHON  interpreter for osem and export (default python3)
+USAGE
 }
 
-# --------------------------------------------------------------- output
-# --out > $D710_OUT > error.  This is the only place that rule is enforced in
-# bash; on the Python side it lives in utils/paths.py:out_root().
 resolve_out() {
     local o="${OUT:-${D710_OUT:-}}"
     [[ -n "$o" ]] || die "no idea where to write the output.
@@ -198,39 +151,21 @@ need_image() {
   or, for one run:  D710_IMAGE=<name:tag> d710 $CMD ..."
 }
 
-# Only `osem` and `export` need the project environment.  Check EARLY, because
-# otherwise a bare `python3` walks straight into an `import numpy` deep inside a
-# package and dies with a ModuleNotFoundError that says nothing.
-#
-# The two commands need two different things, and the difference matters:
-#   osem   -> sirf.STIR, and SIRF only loads once the env is ACTIVATED (the loader
-#             needs the env's LD_LIBRARY_PATH; the interpreter path is not enough)
-#   export -> numpy + nibabel + pydicom, pure Python, interpreter path is enough
-# Forcing `export` to activate like `osem` would be asking for too much.
-# Interpreters to try, in preference order.  `python3` is NOT assumed to be the
-# right one, or even to exist: on a machine whose PATH puts /usr/bin first,
-# `python3` is the system interpreter even inside an activated conda env, while
-# `python` is conda's -- so trying only one of the two picks the wrong
-# interpreter on about half the machines this runs on.  The resolution itself
-# assumes nothing: a conda env, a plain venv, or a bare `python3` all resolve.
 py_candidates() {
     local seen=""
-    # An explicit choice wins outright and is never second-guessed.
     if [[ -n "${D710_PYTHON:-}" ]]; then echo "$D710_PYTHON"; return; fi
     local c
     for c in python3 python \
              "${VIRTUAL_ENV:+$VIRTUAL_ENV/bin/python}" \
              "${CONDA_PREFIX:+$CONDA_PREFIX/bin/python}" \
              /usr/bin/python3 /usr/local/bin/python3; do
-        [[ -n "$c" ]] || continue                       # unset VIRTUAL_ENV etc.
-        case " $seen " in *" $c "*) continue ;; esac    # no duplicates
+        [[ -n "$c" ]] || continue
+        case " $seen " in *" $c "*) continue ;; esac
         seen="$seen $c"
         echo "$c"
     done
 }
 
-#: First candidate that is a working Python 3, or empty.  Used for the steps
-#: that need only the standard library (decode / estimate / tostir).
 resolve_py() {
     local c
     for c in $(py_candidates); do
@@ -241,13 +176,8 @@ resolve_py() {
     return 1
 }
 
-# $3 is the conda env to suggest.  Two exist and they are NOT interchangeable:
-# `petct_recon` is the host runtime built from environment.yml (PyTomography +
-# parallelproj, no SIRF), `petct_reconstruction` is the one SIRF was built into
-# from source.  Suggesting the wrong one sends people down a 30-60 min rebuild.
 need_py() {
     local mods="$1" what="$2" env="${3:-petct_recon}" c
-    # An explicit D710_PYTHON is honoured or refused -- never silently replaced.
     if [[ -n "${D710_PYTHON:-}" ]]; then
         "$D710_PYTHON" -c "import ${mods}" 2>/dev/null && { PY="$D710_PYTHON"; return; }
     else
@@ -279,25 +209,14 @@ need_export_py() {
     need_py "numpy, nibabel, pydicom" "The project environment is required:"
 }
 
-# The stdlib-only steps still need SOME working Python 3, and `python3` is not
-# guaranteed to be one (or to exist).  Resolve it now so decode/estimate/tostir
-# fail here, with the list of what was tried, rather than three frames deep.
 if [[ -z "${D710_PYTHON:-}" ]]; then
     PY="$(resolve_py)" || die "no working Python 3 found on this machine.
   tried: $(py_candidates | tr '\n' ' ')
   install one, or point at it:  export D710_PYTHON=/path/to/python"
 fi
 
-# docker run with --user, so every file created belongs to the caller.  Without
-# it everything under the output directory ends up owned by root.
-#
-# It is a function, so it CANNOT `exec` -- callers let it run normally and then
-# exit on its return code.  (The only exception to --user is the pet_recon path,
-# see vendor/run.sh.)
 drun() { docker run --rm -i --user "$(id -u):$(id -g)" -e HOME=/tmp "$@"; }
 
-# beds_from <dir> <glob> <suffix to strip> -> array $beds, sorted NUMERICALLY.
-# Numerically, not lexically: bed10 must come after bed9, not after bed1.
 beds=()
 beds_from() {
     local dir="$1" pat="$2" strip="$3" p b
@@ -312,8 +231,6 @@ beds_from() {
     mapfile -t beds < <(printf '%s\n' "${beds[@]}" | sort -n)
 }
 
-# Which SINO* corresponds to bed n -- taken from the sidecar decode wrote, never
-# guessed from file order: the bed number is IN the header, and LIST0000 is bed 1.
 sino_for_bed() {
     local dec="$1" n="$2"
     "$PY" - "$dec/bed$n.json" <<'PY'
@@ -322,19 +239,10 @@ print(json.load(open(sys.argv[1]))["path"].rsplit("/", 1)[-1])
 PY
 }
 
-# ------------------------------------------------------------------ parse
 CMD="${1:-}"; shift || true
 case "$CMD" in ""|-h|--help|help) usage; exit $([[ -z "$CMD" ]] && echo 2 || echo 0) ;; esac
 
 RAW=""; CT=""; LISTS=""; CASE="${D710_CASE:-}"; OUT=""; BED=""
-# TOF is OFF by default (see top of file: 29 hours vs 12 minutes for a 6-bed case).
-#
-# ONE switch, three derived flags, because all three steps must agree:
-#   TOF       -> `gerdf convert --collapse-tof`   (decode)
-#   TOF_MASH  -> `gerdf convert --tof-mash N`     (decode)
-#   NO_TOF    -> `estimate.py --no-tof`           (reconMethod 2 instead of 3)
-# TOF prompts with non-TOF scatter make OSEM silently fall back to an improvised
-# profile; the reverse wastes the scatter's TOF axis. So they cannot be set apart.
 FORCE=0; LISTMODE=0; TOF_ON=0; MASH=5; FORMAT=""; REST=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -348,9 +256,6 @@ while [[ $# -gt 0 ]]; do
     --listmode) LISTMODE=1; shift ;;
     --tof)      TOF_ON=1; shift ;;
     --no-tof|--collapse-tof) TOF_ON=0; shift ;;
-    # --tof-mash IMPLIES --tof: asking for a mash factor while running non-TOF is
-    # meaningless, and ignoring it silently is the kind of bug that only surfaces
-    # after hours of reconstruction.
     --tof-mash) TOF_ON=1; MASH="$2"; shift 2 ;;
     --force)    FORCE=1; shift ;;
     -h|--help)  usage; exit 0 ;;
@@ -358,7 +263,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# One switch -> three derived flags, derived in exactly one place.
 if (( TOF_ON )); then
     TOF=""; TOF_MASH="--tof-mash $MASH"; NO_TOF=""
 else
@@ -367,7 +271,6 @@ fi
 
 case "$CMD" in
 
-# --------------------------------------------------------------- decode
 decode)
     need_case; need_image
     [[ -n "$RAW" ]] || die "--raw is required"
@@ -382,14 +285,11 @@ decode)
         [[ -d "$LISTS" ]] || die "no such lists directory: $LISTS"
         mounts+=(-v "$(cd "$LISTS" && pwd):/lists:ro")
     fi
-    # NOTHING IS COPIED INTO THE CONTAINER: raw is mounted read-only, every
-    # result lands on the output mount.  One exam is tens of GB.
     drun "${mounts[@]}" "$IMAGE" bash /decode/decode_in.sh \
          "$LISTMODE" "$FORCE" "$TOF $TOF_MASH" "${FORMAT:-npy}"
     exit $?
     ;;
 
-# ------------------------------------------------------------- estimate
 estimate)
     need_case; need_image
     [[ -n "$RAW" && -n "$CT" ]] || die "--raw and --ct are both required"
@@ -404,11 +304,6 @@ estimate)
     rc=0
     for n in "${beds[@]}"; do
         VOUT="$O/$CASE/vendor/bed$n"
-        # Every file the step produces, not one standing for all of them: a run
-        # killed part-way leaves some of them behind, and a single sentinel then
-        # calls the bed finished for ever.  This is `vendor/estimate.py`'s own
-        # OUTPUTS list, plus scatter_tof.f32 when TOF is on -- the same
-        # completeness check it makes before returning 0.
         done_=1
         for f in randoms.f32 scatter.f32 normdt.f32 norm_only.f32 \
                  prompts.u16 singles.i32 dt_int.f32 dt_mux.f32 \
@@ -420,8 +315,6 @@ estimate)
         fi
         sino="$(sino_for_bed "$DEC" "$n")"
         echo "=============== bed $n  <- $sino ==============="
-        # estimate.py copies raw into <out>/data/, so --raw must be the real
-        # SINO* file, not the symlink in decoded/.
         PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}" \
             "$PY" "$HERE/vendor/estimate.py" \
                 --raw "$RAW/$sino" --ct "$CT" --out "$VOUT" $NO_TOF \
@@ -430,15 +323,12 @@ estimate)
     exit "$rc"
     ;;
 
-# --------------------------------------------------------------- tostir
 tostir)
     need_case; need_image
     O="$(resolve_out)"; DEC="$O/$CASE/decoded"
     if [[ -n "$BED" ]]; then beds=("$BED"); else beds_from "$O/$CASE/vendor" 'bed*' ''; fi
     [[ ${#beds[@]} -gt 0 ]] || die "no estimated bed found in $O/$CASE/vendor"
 
-    # numpy is enough, and the image already has it -- so this step does not need
-    # the project environment.
     rc=0
     for n in "${beds[@]}"; do
         echo "=============== tostir bed $n ==============="
@@ -452,19 +342,12 @@ tostir)
     exit "$rc"
     ;;
 
-# ------------------------------------------------------------------ exam
 exam)
     need_case
     [[ -n "$RAW" && -n "$CT" ]] || die "--raw, --ct and --case are all required"
     args=(--case "$CASE"); [[ -n "$OUT" ]] && args+=(--out "$OUT")
     (( FORCE )) && args+=(--force)
-    # The TOF choice must reach BOTH decode AND estimate: if prompts and scatter
-    # disagree, OSEM has to improvise, and no command reports an error.
     if (( TOF_ON )); then args+=(--tof-mash "$MASH"); else args+=(--no-tof); fi
-    # `--listmode` belongs to decode alone, so it goes in its own array rather
-    # than in the one estimate and tostir also receive.  Without this, `exam`
-    # quietly builds the sinogram path only and `d710 lm recon` later stops on a
-    # missing bed<n>.lm.npy -- with nothing to say `exam` was the reason.
     dec=(--raw "$RAW")
     if (( LISTMODE )); then
         [[ -n "$LISTS" ]] || die "--listmode needs --lists <petLists directory>"
@@ -483,7 +366,6 @@ exam)
     echo "done.  next:  d710 osem --case $CASE"
     ;;
 
-# ------------------------------------------------------------------ osem
 osem)
     need_case; need_sirf
     O="$(resolve_out)"
@@ -492,24 +374,15 @@ osem)
         ${BED:+--beds "$BED"} ${CT:+--ct "$CT"} "${REST[@]+"${REST[@]}"}"
     ;;
 
-# ------------------------------------------------------------------ attn
-# The one term SIRF has to build.  Split out of `osem` so a case can be prepared
-# for the list-mode path without ever running OSEM.
 attn)
     need_case; need_sirf
     O="$(resolve_out)"
-    # --force is eaten by the global parser above, so it has to be put back --
-    # without it `d710 attn --force` silently refuses to rebuild an old attn.hs.
     exec env D710_OUT="$O" PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}" \
         "$PY" -u -m utils.attn_main --case "$CASE" \
         ${BED:+--beds "$BED"} ${CT:+--ct "$CT"} $( ((FORCE)) && echo --force ) \
         "${REST[@]+"${REST[@]}"}"
     ;;
 
-# -------------------------------------------------------------------- lm
-# List-mode OSEM through PyTomography.  NO SIRF: the segment layout is parsed
-# from the header (lm/interfile.py) and every term is read with numpy, so this
-# runs in the PyTomography env while SIRF stays in the sirf-local image.
 lm)
     need_case; need_py "numpy, torch, pytomography" \
         "PyTomography is required (SIRF is NOT -- see lm/README.md):"
@@ -519,8 +392,6 @@ lm)
         ${BED:+--bed "$BED"} ${CT:+--ct "$CT"}
     ;;
 
-# --------------------------------------------------------------- lowdose
-# numpy only -- no SIRF, no torch.
 lowdose)
     need_case; need_py "numpy" "numpy is required:"
     O="$(resolve_out)"
@@ -528,7 +399,6 @@ lowdose)
         "$PY" -u -m lowdose --case "$CASE" "${REST[@]+"${REST[@]}"}"
     ;;
 
-# ---------------------------------------------------------------- export
 export)
     need_case; need_export_py
     O="$(resolve_out)"
@@ -537,7 +407,6 @@ export)
         ${FORMAT:+--format "$FORMAT"} "${REST[@]+"${REST[@]}"}"
     ;;
 
-# ------------------------------------------------------------------ read
 read)
     need_image
     [[ ${#REST[@]} -gt 0 ]] || die "a file is required, e.g.: d710 read \$D710_OUT/ped/vendor/bed6/scatter.f32"
@@ -547,7 +416,6 @@ read)
     exit $?
     ;;
 
-# ----------------------------------------------------------------- shell
 shell)
     need_image
     mounts=(-v "$HERE:/d710:ro" -v "$HERE/vendor:/vendor:ro")

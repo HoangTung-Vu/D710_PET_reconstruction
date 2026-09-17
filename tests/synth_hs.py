@@ -1,19 +1,4 @@
-"""A miniature D710 -- same michelogram rules, small enough to hold in RAM.
-
-The real bed is 553 x 288 x 381 int16 = 121 MB, which no test should carry
-around.  Every geometric rule this project depends on is a rule about *span 2*,
-not about 24 rings, so the tests scale the scanner down and keep the rules:
-
-* segment 0 spans ring difference -1..+1, so its odd axial positions gather
-  **two** ring pairs and its even ones gather one;
-* segment +k spans ``[2k, 2k+1]`` and -k spans ``[-(2k+1), -2k]``;
-* segments are stored ``0, +1, -1, +2, -2, ...`` with ``(2R-1) - 4|k|`` axial
-  positions each.
-
-With ``R`` rings that gives ``2R-1`` planes in segment 0 and a maximum ring
-difference of ``2K+1``.  The default ``R=6`` yields 31 planes total against the
-real scanner's 553.
-"""
+"""A miniature scanner obeying the same michelogram rules as the D710."""
 
 from __future__ import annotations
 
@@ -21,23 +6,15 @@ import os
 
 import numpy as np
 
-#: Values that are the thing under test elsewhere keep their real numbers.
 PLANE_MM = 3.2699997
 BIN_SIZE_CM = 0.21306
-#: Kept spelled out rather than imported, like the two above, so this module
-#: stays free of `utils`. Must equal `utils.scanner.VIEW_OFFSET_DEG`
-#: = -(transaxial_crystal_0_offset + 360/NDET) = -(-5.021 + 0.625).
 VIEW_OFFSET_DEG = 4.3960
 
-#: Likewise `utils.scanner.DOI_MM / 10`. `test_fov_radius_is_the_widest_chord_
-#: the_sinogram_holds` compares STIR's own `s` off THIS header against
-#: `scanner.fov_radius_mm`, so the two DOIs have to agree or the test fails on
-#: the mismatch rather than on the formula it is meant to pin.
 AVG_DOI_CM = 0.84
 
 
 def segments(num_rings: int) -> list[tuple[int, int, int, int]]:
-    """``(segment, min_rd, max_rd, num_axial_poss)`` in STIR storage order."""
+    """`(segment, min_rd, max_rd, num_axial_poss)` in STIR storage order."""
     n0 = 2 * num_rings - 1
     out = [(0, -1, 1, n0)]
     k = 1
@@ -105,11 +82,7 @@ def num_planes(num_rings: int = 6) -> int:
 
 def write(stem: str, num_rings: int = 6, num_det: int = 16, num_tang: int = 9,
           data: np.ndarray | None = None) -> str:
-    """Write ``<stem>.hs``/``<stem>.s``; returns the header path.
-
-    ``data`` is ``(1, planes, views, tang)`` -- STIR's own axis order.  Left
-    out, the sinogram is zeros.
-    """
+    """Write the `<stem>.hs` and `<stem>.s` pair; returns the header path."""
     stem = str(stem)
     base = os.path.basename(stem)
     shape = (1, num_planes(num_rings), num_det // 2, num_tang)

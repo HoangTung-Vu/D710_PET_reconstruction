@@ -1,14 +1,4 @@
-"""Read a STIR projdata header without STIR.
-
-`lm/` and `lowdose/` run in the PyTomography environment, which has no SIRF and
-no STIR -- those live in the `sirf-local` image (`d710_isolate_stir.sh`). The
-header states everything the bin map needs, so it is parsed here rather than
-imported.
-
-`tests/test_lm_geom.py` checks every number this returns against STIR's own
-`ProjDataInfo` whenever STIR happens to be importable, so the parser is verified
-rather than trusted.
-"""
+"""Reader for STIR projdata headers that does not require STIR."""
 
 from __future__ import annotations
 
@@ -53,12 +43,6 @@ class Header:
 
     @property
     def plane_major(self) -> bool:
-        """True when the file runs `(tof, plane, view, tang)` -- the decoded layout.
-
-        SIRF's own writer puts view before axial and stores segments ascending,
-        so `as_array()` hides the difference but `np.fromfile` does not. Files in
-        that layout cannot be read here.
-        """
         return self.axis3.startswith("axial")
 
     def require_plane_major(self) -> None:
@@ -76,12 +60,6 @@ class Header:
         return sum(self.axial)
 
     def segments(self):
-        """`(segment, min_rd, max_rd, n_axial)` in the order the file stores them.
-
-        The header lists them in storage order and the segment number is implied
-        by the sign of the ring difference, exactly as STIR writes it:
-        `0, +1, -1, +2, -2, ...`
-        """
         out = []
         for i, (lo, hi, n) in enumerate(zip(self.min_rd, self.max_rd, self.axial)):
             s = 0 if i == 0 else (i + 1) // 2 * (1 if i % 2 else -1)
@@ -89,13 +67,6 @@ class Header:
         return out
 
     def ring_pairs(self):
-        """The ring pairs summed into each plane, as `(ring of pos1, ring of pos2)`.
-
-        Same rule as `utils.geometry.plane_ring_pairs`, which derives it from
-        STIR: the pair is `(r + d, r)` because STIR's signed segment follows
-        `pos1 - pos2`, and segment 0 of span 2 merges two ring pairs into every
-        odd axial position.
-        """
         out = []
         for _s, lo, hi, n in self.segments():
             z0 = min(abs(d) for d in range(lo, hi + 1))

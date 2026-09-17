@@ -1,71 +1,102 @@
 # utils
 
-Mọi thứ **không** thuộc về một thuật toán tái tạo cụ thể. Thuật toán ở
-`osem/`; thuật toán sau (FBP, MLEM, deep prior…) tạo package riêng cùng cấp và
-dùng lại đúng những module này.
+Everything that does not belong to a specific reconstruction algorithm. The
+algorithm lives in `osem/`; a later algorithm (FBP, MLEM, a deep prior) belongs
+in its own package at the same level and reuses these modules.
 
-Luật một dòng: **nếu một hàm chỉ có nghĩa với OSEM thì chỗ của nó là `osem/`.**
+The governing rule is that a function meaningful only to OSEM belongs in
+`osem/`.
 
-| module | dùng ở đâu |
+| module | responsibility |
 |---|---|
-| `paths.py` | `$D710_OUT/<ca>/...`; **chỗ duy nhất** biết cây đầu ra |
-| `container.py` | **chỗ duy nhất** biết cách gọi `docker` từ Python |
-| `attenuation.py` | CT DICOM → mu-map (`load`, `hu_to_mu`, `mu_image`, `factors`) |
-| `geometry.py` | quy ước chỉ số bin D710→STIR (`PLANE_MM`, `crystal_to_det`, `plane_ring_pairs`) |
-| `terms.py` | nạp số hạng của một bed (+ bảng tóm tắt / bất biến, xem dưới) |
-| `attn.py` | `af` theo bed, cache vào `work/bed<n>/attn.hs` |
-| `sirf_env.py` | chdir vào scratch + giữ `MessageRedirector` sống |
-| `quant.py` | count/voxel → Bq/mL → SUV; hằng số `K` |
-| `export.py` | ghi NIfTI / DICOM (`python3 -m utils.export` là `d710 export`) |
-| `plots.py` | hình để xem sinogram/ảnh — **không có chỗ nào gọi**, xem dưới |
-| `scanner.py` | MỌI hằng số máy + lưới ảnh, một chỗ duy nhất |
+| `paths.py` | `$D710_OUT/<case>/...`; the only module that knows the output tree |
+| `container.py` | the only module that knows how to invoke `docker` from Python |
+| `attenuation.py` | CT DICOM to mu-map (`load`, `hu_to_mu`, `mu_image`, `factors`) |
+| `geometry.py` | the D710-to-STIR bin index conventions (`crystal_to_det`, `plane_ring_pairs`) |
+| `terms.py` | loading one bed's terms, plus the summary and invariant tables |
+| `attn.py` | per-bed `af`, cached in `work/bed<n>/attn.hs` |
+| `sirf_env.py` | changing into the scratch directory and keeping `MessageRedirector` alive |
+| `quant.py` | counts per voxel to Bq/mL to SUV, and the constant `K` |
+| `export.py` | writing NIfTI and DICOM (`python3 -m utils.export` is `d710 export`) |
+| `plots.py` | figures for inspecting sinograms and images; currently uncalled |
+| `scanner.py` | every machine constant and the image grid, in one place |
 
-## Mã còn đó nhưng hiện không ai gọi
+## Scanner constants
 
-Cây từng có `osem_pipeline.ipynb`; nó đã bị xoá, còn phần `utils/` phục vụ nó
-thì **giữ lại nguyên**. Liệt kê ở đây để không ai phải tra lại bằng grep, và để
-không nhầm là sót:
+`scanner.py` is the single source for every number describing the machine and
+the grid it is reconstructed on. Nothing in it is a tuning parameter: each value
+is measured, read from a vendor header, or derived from one that is.
 
-| ký hiệu | vốn để làm gì |
+| constant | value | provenance |
+|---|---|---|
+| `NRINGS`, `NDET` | 24, 576 | detector geometry |
+| `R_MM` | 405.10 | header `Inner ring diameter (cm) := 81.02`, halved |
+| `XTAL0_OFFSET_DEG` | −5.0210 | azimuth of GE crystal 0 in the gantry frame; `cmcfg.XR.xml` and every RDF |
+| `XTAL_PITCH_DEG` | 360/576 | GE's own `deltaAngle` |
+| `VIEW_OFFSET_DEG` | +4.3960 | STIR's `psi_offset`, a different quantity in a different frame from `XTAL0_OFFSET_DEG` |
+| `DOI_MM` | 8.4 | depth of interaction |
+| `PLANE_MM` | 3.2699997 | axial plane pitch |
+| `NSEG0` | 47 | axial positions in segment 0 |
+| `N_TOF_RAW`, `TOF_LSB_PS` | 55, 89.2459 | header `coincTimingPrecision` |
+| `BIN_MM`, `DR_MM` | 2.1306 | tangential bin size and transverse voxel pitch |
+| `XY` | 337 | the only matrix size giving 2.130600 mm in both SIRF builds |
+| `PSF_MM` | 6.4 | GE's resolution model |
+
+`VIEW_OFFSET_DEG` is provisional and is not the same quantity as
+`XTAL0_OFFSET_DEG`; copying one into the other costs 10.04° of image rotation on
+both reconstruction paths, since they share the header. Only a NEMA scan
+separates +4.396 from +5.021. The derivation and the open conflict are recorded
+in `GEOMETRY_AUDIT.md`.
+
+## Code that is retained but currently uncalled
+
+The tree once contained `osem_pipeline.ipynb`. The notebook has been removed and
+the parts of `utils/` that served it have been kept. They are listed here so
+that the state does not have to be rediscovered by grep, and so that they are
+not mistaken for an oversight.
+
+| symbol | original purpose |
 |---|---|
-| `plots.py` (cả module) | hình cho notebook; `slices` + `busiest_plane` chỉ `terms.collect` gọi |
-| `terms.collect`, `bed_table`, `invariant_table`, `invariants`, `summarise` | các ô bảng/bất biến của notebook — nay `tests/test_pipeline_data.py` làm việc đó |
-| `quant.suv_table`, `suv_bsa`, `bsa_m2`, `body_mask`, `voxel_ml` | nhánh SUV theo diện tích da, treo dưới `suv_table` |
-| `geometry.open_projdata` | chỉ `tests/test_geometry.py` dùng |
-| `geometry.ring_pair_multiplicity` | **không phải mã chết**: là oracle của `tests/test_lm_geom.py`, và đúng đắn của nó thể hiện bằng việc *không ai gọi* |
-| `osem.stitch.plane_index` | tra chỉ số plane, không còn nơi dùng |
+| `plots.py`, the whole module | notebook figures; `slices` and `busiest_plane` are called only by `terms.collect` |
+| `terms.collect`, `bed_table`, `invariant_table`, `invariants`, `summarise` | the notebook's table and invariant cells, now covered by `tests/test_pipeline_data.py` |
+| `quant.suv_table`, `suv_bsa`, `bsa_m2`, `body_mask`, `voxel_ml` | the body-surface-area SUV branch beneath `suv_table` |
+| `geometry.open_projdata` | used only by `tests/test_geometry.py` |
+| `geometry.ring_pair_multiplicity` | not dead code: it is the oracle of `tests/test_lm_geom.py`, and its correctness consists in nothing else calling it |
+| `osem.stitch.plane_index` | plane index lookup, with no remaining caller |
 
-Kiểm lại danh sách này bằng cách đếm tham chiếu qua AST trên toàn cây, không
-phải bằng grep tên hàm — nhiều tên ở đây (`collect`, `slices`) là từ thông
-dụng.
+Verify this list by counting references through the AST across the whole tree
+rather than by grepping function names: several of these names (`collect`,
+`slices`) are common words.
 
-Bốn số hạng hiệu chỉnh **không** dựng ở đây — lấy thẳng từ kernel của GE:
+The four correction terms are not built here. They are taken directly from GE's
+kernel:
 
 ```bash
-d710 estimate --raw <thư mục petRDFS> --ct <thư mục CT DICOM> --case <ca>
+d710 estimate --raw <petRDFS directory> --ct <CT DICOM directory> --case <case>
 ```
 
-## Hai cái bẫy ghi lại ở đây
+## Two conditions recorded here
 
-⚠ `geometry.ring_pair_multiplicity()` **không** dùng cho đường vendor:
-`normdt` của GE đã mang sẵn bội số span-2, nhân thêm là bình phương nó. Xem
-docstring của hàm và `tests/test_pipeline_data.py`.
+`geometry.ring_pair_multiplicity()` must not be applied on the vendor path.
+GE's `normdt` already carries the span-2 multiplicity, and multiplying by it
+again squares it. See the function's docstring and
+`tests/test_pipeline_data.py`.
 
-⚠ `attenuation.to_radiological()` **tự nghịch đảo**. `mu_image` gọi nó (STIR
-lật y so với DICOM), `export.to_dicom_order` gọi lại chính nó để hoàn tác. Đừng
-viết lại phép lật ở chỗ thứ ba.
+`attenuation.to_radiological()` is its own inverse. `mu_image` calls it, because
+STIR flips y relative to DICOM, and `export.to_dicom_order` calls it again to
+undo the flip. The flip must not be reimplemented in a third place.
 
-## Vì sao `container.py` tồn tại
+## Why `container.py` exists
 
-`D710/` từng đi ngược lên `../../custom_tool/` để lấy bộ giải mã và cây hiệu
-chuẩn. Cả hai đã có sẵn trong image:
+`D710/` once reached up into `../../custom_tool/` for the decoder and the
+calibration tree. Both are now present inside the image:
 
-| trước ở host | trong image |
+| formerly on the host | inside the image |
 |---|---|
 | `custom_tool/ge_rdf_tool.py` | `/opt/custom_tool/ge_rdf_tool.py` |
 | `custom_tool/petsw/.../cal/*.3dnorm` | `/usr/PET/systemConfig/cal/*.3dnorm` |
-| `.../cal/*.3dwcc` | cùng thư mục đó |
+| `.../cal/*.3dwcc` | the same directory |
 
-Nên `D710/` **không còn tham chiếu nào tới `custom_tool/`**, và bước decode /
-estimate / tostir chỉ cần bash + docker + python3 stdlib. Một cửa duy nhất
-cũng có nghĩa là test chỉ phải stub một chỗ.
+`D710/` therefore holds no reference to `custom_tool/`, and the decode, estimate
+and tostir steps require only bash, docker and the Python standard library. A
+single point of entry also means the tests have only one place to stub.

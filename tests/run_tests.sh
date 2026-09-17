@@ -1,26 +1,31 @@
 #!/usr/bin/env bash
-# Test driver for the D710 pipeline.
-#
-#   tests/run_tests.sh              everything that can run here
-#   tests/run_tests.sh --no-data    synthetic only, skip the decoded exams
-#   tests/run_tests.sh --case ped   only that exam's beds
-#
-# The normal environment is `petct_recon`, built from `environment.yml`:
-#
-#   conda activate petct_recon && tests/run_tests.sh
-#
-# It deliberately has no SIRF, so the STIR-backed tests skip and say so;
-# nothing fails.  To actually RUN those, use the environment SIRF was built
-# into from source -- and note a bare interpreter path is not enough there,
-# the loader needs that environment's LD_LIBRARY_PATH:
-#
-#   conda activate petct_reconstruction && tests/run_tests.sh
-#
-# The data-backed tests read `$D710_OUT/<exam>/decoded/` and
-# `$D710_OUT/<exam>/work/bed<n>/`, which are patient-derived and live outside
-# this tree.  They skip when $D710_OUT is unset or those are not built; build
-# them with `d710 exam`.
 set -uo pipefail
+
+usage() {
+    cat <<'USAGE'
+Test driver for the D710 pipeline.
+
+  tests/run_tests.sh              everything that can run here
+  tests/run_tests.sh --no-data    synthetic tests only; skip the decoded exams
+  tests/run_tests.sh --case ped   the beds of one exam only
+
+The normal environment is `petct_recon`, built from environment.yml:
+
+  conda activate petct_recon && tests/run_tests.sh
+
+It deliberately has no SIRF, so the STIR-backed tests skip and say so; nothing
+fails. To run those, use the environment SIRF was built into from source. Note
+that a bare interpreter path is not sufficient there: the loader needs that
+environment's LD_LIBRARY_PATH.
+
+  conda activate petct_reconstruction && tests/run_tests.sh
+
+The data-backed tests read $D710_OUT/<exam>/decoded/ and
+$D710_OUT/<exam>/work/bed<n>/, which are patient-derived and live outside this
+tree. They skip when $D710_OUT is unset or those directories are not built.
+Build them with `d710 exam`.
+USAGE
+}
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(dirname "$here")"
@@ -32,7 +37,7 @@ while [[ $# -gt 0 ]]; do
         --no-data)  args+=(--ignore="$here/test_pipeline_data.py"); shift ;;
         --case)     export D710_CASE="$2"; shift 2 ;;
         --case=*)   export D710_CASE="${1#--case=}"; shift ;;
-        -h|--help)  sed -n '2,20p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help)  usage; exit 0 ;;
         *)          args+=("$1"); shift ;;
     esac
 done

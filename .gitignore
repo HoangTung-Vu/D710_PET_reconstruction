@@ -1,8 +1,3 @@
-# Nothing generated at run time lands in this tree any more: it all goes to
-# $D710_OUT, which is somewhere else entirely (utils/paths.py, and there is
-# deliberately no default).  So this file is a backstop, not a load-bearing
-# part of the layout -- if one of these patterns ever fires, something wrote
-# where it should not have.
 *.f32
 *.u16
 *.i32
@@ -13,35 +8,18 @@
 *.hs
 *.s
 *.log
+*.bak
 
-# The old layout, in case an old script or an old shell history recreates it.
 out/
 work/
 raw_prompt/
 vendor/out/
+petsw/
 
-# This machine's settings, above all the image names, which are whatever
-# `docker load` / `apptainer build` happened to name them.  It was tracked
-# until 2026-09-08 and has been removed from the whole history: `d710` and
-# `d710_isolate_stir.sh` both document it as "copy `.env.example` and edit",
-# and a per-machine file cannot be both that and a committed one.
 .env
 
-# Python
 __pycache__/
 *.pyc
 .pytest_cache/
 .ipynb_checkpoints/
-
-# The console tree is 18 GB of GE software and lives outside this repo
-# (custom_tool/petsw).  Nothing here should ever pull it in.
-petsw/
-
-# The rerun script writes this before patching K_EXPORT_LM (../rerun_lm_ok.sh).
-*.bak
-
-# The environment is a conda env outside this tree (environment.yml, name
-# `petct_recon`), so nothing here should exist.  Kept as a backstop: the project
-# used uv until 2026-09-06 and a stale `.venv/` is 11,000 files of other
-# people's code.
 .venv/

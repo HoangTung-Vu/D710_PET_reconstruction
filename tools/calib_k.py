@@ -1,22 +1,5 @@
 #!/usr/bin/env python3
-"""Gộp các phép đo `K` của từng ca thành MỘT hằng số cho mỗi đường tái tạo.
-
-    python3 -m tools.calib_k                       # mọi ca có calib_*.json
-    python3 -m tools.calib_k --cases a b c         # chỉ mấy ca này
-
-Đọc `<case>/calib_sino.json` và `<case>/calib_lm.json` do
-`tools.compare_vendor --json` ghi ra, in bảng từng ca rồi kết luận hai dòng để
-dán vào `utils/scanner.py`.
-
-**Vì sao một hằng số cho cả nhóm chứ không phải mỗi ca một số.** `K` là tính
-chất của MÁY và của chuỗi hiệu chỉnh, không phải của bệnh nhân. Cho mỗi ca một
-`K` riêng thì ca nào cũng khớp GE hoàn hảo — và phép so sánh không còn đo được
-gì nữa. Cái đáng đọc ở đây là **độ tản giữa các ca**: đó chính là sai số thật
-của pipeline sau khi đã bỏ đi thang tuyệt đối.
-
-Trung vị chứ không phải trung bình: một ca lệch hình học sẽ kéo trung bình đi,
-còn trung vị thì không.
-"""
+"""Combine the per-case measurements of `K` into one constant per reconstruction path."""
 from __future__ import annotations
 
 import argparse
@@ -30,10 +13,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.paths import out_root
 
-#: Ca lệch quá ngần này so với trung vị thì nêu tên, không lặng lẽ gộp vào.
 OUTLIER_PCT = 15.0
 
-#: Dưới mức này thì lệch KHÔNG phải chuyện của `K` — là hình học.
 MIN_R = 0.90
 
 PATHS = (("sino", "K_EXPORT", "d710 osem (sinogram, non-TOF)"),
@@ -41,7 +22,7 @@ PATHS = (("sino", "K_EXPORT", "d710 osem (sinogram, non-TOF)"),
 
 
 def load(root, cases=None) -> dict:
-    """`{path: [record, ...]}` đọc từ các sidecar trên đĩa."""
+    """`{path: [record, ...]}`, read from the sidecars on disk."""
     got = {p: [] for p, _, _ in PATHS}
     names = cases or sorted(d.name for d in root.iterdir() if d.is_dir())
     for name in names:
@@ -54,7 +35,7 @@ def load(root, cases=None) -> dict:
 
 
 def summarise(recs, label, out=print) -> dict | None:
-    """In bảng một đường tái tạo, trả về `{K, spread_pct, n_cases, ...}`."""
+    """Print the table for one reconstruction path and return `{K, spread_pct, n_cases, ...}`."""
     out(f"\n=== {label}")
     if not recs:
         out("  (chưa có ca nào)")

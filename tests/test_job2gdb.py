@@ -1,9 +1,4 @@
-"""`vendor/job2gdb.py` -- GE's `.job` text -> `set var IgJobReq.<field>` lines.
-
-This is what turned the vendor's own `selftest_kh_3dir.job` into `job.gdb`.
-All 524 fields came through it, so a field silently dropped or mis-indexed
-means the recon runs with a default instead of GE's value.
-"""
+"""`vendor/job2gdb.py`: GE job text to `set var IgJobReq.<field>` lines."""
 
 from __future__ import annotations
 
@@ -37,7 +32,6 @@ def test_a_string_field_is_marked_as_one(tmp_path):
 
 
 def test_an_empty_string_field_is_kept_but_an_empty_scalar_is_not(tmp_path):
-    """An unset filename is meaningful; an unset number would poke a garbage value."""
     got = job2gdb.parse(write(tmp_path, " #breakPointFile", " #reconType"))
     assert got == [("str", "breakPointFile", "")]
 
@@ -48,7 +42,6 @@ def test_lines_without_a_field_name_are_ignored(tmp_path):
 
 
 def test_packet_members_are_regrouped_onto_cmp_packets(tmp_path):
-    """The `.job` lists packet members flat; each ID starts the next packet."""
     got = job2gdb.parse(write(
         tmp_path,
         "0 #cmpProcessingPacketID", "47 #sliceNumber",
@@ -90,7 +83,6 @@ def test_main_escapes_quotes_and_backslashes(tmp_path, monkeypatch, capsys):
 
 
 def test_overlap_paths_are_redirected_off_console(tmp_path, monkeypatch, capsys):
-    """`/petRDFS/OVLFILES/` cannot be created inside the mount namespace."""
     job = write(tmp_path, "0 #cmpProcessingPacketID",
                 "/petRDFS/OVLFILES/ovl_0 #fileWrite3dOverlap")
     monkeypatch.setattr("sys.argv", ["job2gdb.py", job, "/out/ovl/"])

@@ -1,10 +1,4 @@
-"""`vendor/to_stir.py` -- GE's flat `.f32` arrays -> Interfile STIR.
-
-The converter hard-codes the real bed shape (288 x 553 x 381 = 243 MB per
-float32 term), so the tests run it against the miniature scanner by pointing
-`GE_SHAPE` at that instead.  Nothing else is patched: the mapping, the header
-clone and the refusals are the shipped code.
-"""
+"""`vendor/to_stir.py`: GE's flat `.f32` arrays to STIR Interfile."""
 
 from __future__ import annotations
 
@@ -19,7 +13,7 @@ import to_stir
 
 VIEWS, TANG, RINGS = 8, 9, 6
 PLANES = synth_hs.num_planes(RINGS)
-MINI_SHAPE = (VIEWS, PLANES, TANG)                 # view x plane x u, GE order
+MINI_SHAPE = (VIEWS, PLANES, TANG)
 
 
 @pytest.fixture(autouse=True)
@@ -34,7 +28,7 @@ def ge_array(seed, dtype="<f4", scale=100.0):
 
 
 def make_case(tmp_path, prompts=None, template_data=None):
-    """A vendor output directory + the matching decoded template."""
+    """A vendor output directory and the matching decoded template."""
     vendor = tmp_path / "vendor"
     vendor.mkdir()
     prompts = ge_array(0, "<u2", 300.0) if prompts is None else prompts
@@ -52,10 +46,7 @@ def make_case(tmp_path, prompts=None, template_data=None):
     return str(vendor), str(decoded / "bed1.hs")
 
 
-# ------------------------------------------------------------- the mapping
-
 def test_ge_to_stir_is_the_documented_index_formula():
-    """`stir[0, plane, 287 - ge_view, u] = ge[ge_view, plane, u]`, and only that."""
     ge = ge_array(7)
     st = to_stir.ge_to_stir(ge)
     assert st.shape == (1, PLANES, VIEWS, TANG)
@@ -65,7 +56,6 @@ def test_ge_to_stir_is_the_documented_index_formula():
 
 
 def test_the_plane_axis_is_untouched():
-    """No interpolation anywhere: the two michelograms are the same one."""
     ge = ge_array(8)
     st = to_stir.ge_to_stir(ge)
     assert (st[0].sum(axis=(1, 2)) == pytest.approx(ge.sum(axis=(0, 2)), rel=1e-6))
@@ -77,11 +67,8 @@ def test_ge_to_stir_preserves_every_count():
 
 
 def test_ge_to_stir_output_is_contiguous():
-    """`.tofile` on a view would silently write the wrong byte order out."""
     assert to_stir.ge_to_stir(ge_array(10)).flags["C_CONTIGUOUS"]
 
-
-# -------------------------------------------------------------- read_ge
 
 def test_read_ge_refuses_the_wrong_element_count(tmp_path):
     p = tmp_path / "short.f32"
@@ -97,8 +84,6 @@ def test_read_ge_returns_ge_order(tmp_path):
     assert to_stir.read_ge(str(p), "<f4").shape == MINI_SHAPE
 
 
-# ------------------------------------------------------- template_data_file
-
 def test_template_data_file_resolves_beside_the_header(tmp_path):
     _vendor, template = make_case(tmp_path)
     got = to_stir.template_data_file(template)
@@ -112,8 +97,6 @@ def test_template_data_file_refuses_a_header_without_the_key(tmp_path):
         to_stir.template_data_file(str(p))
 
 
-# --------------------------------------------------------------- verify
-
 def test_verify_passes_when_the_two_paths_agree(tmp_path):
     vendor, template = make_case(tmp_path)
     checks = to_stir.verify(vendor, template)
@@ -122,7 +105,6 @@ def test_verify_passes_when_the_two_paths_agree(tmp_path):
 
 
 def test_verify_refuses_a_bin_mapping_that_does_not_reproduce(tmp_path):
-    """One flipped bin must stop the run; a wrong bin order is unrecoverable."""
     prompts = ge_array(0, "<u2", 300.0)
     wrong = to_stir.ge_to_stir(prompts).astype("<i2").copy()
     wrong[0, 0, 0, 0] += 1
@@ -132,7 +114,6 @@ def test_verify_refuses_a_bin_mapping_that_does_not_reproduce(tmp_path):
 
 
 def test_verify_refuses_a_view_axis_written_straight_through(tmp_path):
-    """The whole point of the check: a mirrored reconstruction is caught here."""
     prompts = ge_array(0, "<u2", 300.0)
     straight = np.ascontiguousarray(prompts.transpose(1, 0, 2))[None].astype("<i2")
     vendor, template = make_case(tmp_path, prompts=prompts, template_data=straight)
@@ -156,10 +137,7 @@ def test_verify_refuses_when_prompts_are_missing(tmp_path):
         to_stir.verify(vendor, template)
 
 
-# ------------------------------------------------------------- write_term
-
 def test_write_term_clones_the_template_header(tmp_path):
-    """Same ExamInfo by construction: the header is cloned, not generated."""
     _vendor, template = make_case(tmp_path)
     out = tmp_path / "work"
     out.mkdir()
@@ -189,7 +167,6 @@ def test_write_term_writes_float32_in_stir_order(tmp_path):
 
 
 def test_the_written_terms_read_back_through_stir(tmp_path, sirf):
-    """The header clone has to survive STIR's own parser, not just a regex."""
     _vendor, template = make_case(tmp_path)
     out = tmp_path / "work"
     out.mkdir()
@@ -199,8 +176,6 @@ def test_the_written_terms_read_back_through_stir(tmp_path, sirf):
     assert ad.as_array().shape == (1, PLANES, VIEWS, TANG)
     assert ad.as_array().sum() == pytest.approx(ge.sum(), rel=1e-4)
 
-
-# ------------------------------------------------------------------ main
 
 def test_main_writes_five_terms_and_a_sidecar(tmp_path, monkeypatch, capsys):
     vendor, template = make_case(tmp_path)
@@ -222,7 +197,6 @@ def test_main_writes_five_terms_and_a_sidecar(tmp_path, monkeypatch, capsys):
 
 
 def test_background_is_exactly_randoms_plus_scatter(tmp_path, monkeypatch, capsys):
-    """`b` has to exist as one file; the notebook must not re-add the two."""
     vendor, template = make_case(tmp_path)
     out = tmp_path / "work"
     monkeypatch.setattr("sys.argv",
@@ -251,12 +225,6 @@ def test_main_writes_nothing_when_the_mapping_is_unproven(tmp_path, monkeypatch)
 
 
 def test_a_missing_term_is_reported_as_a_failure(tmp_path, monkeypatch, capsys):
-    """No scatter means no `b`, and the caller has to hear about it.
-
-    Writing randoms alone under the name `background` would be a silent
-    under-subtraction, so the term is skipped -- but exiting 0 would let
-    `d710 exam` mark the bed finished while `work/bed<n>/` has no `b` in it.
-    """
     vendor, template = make_case(tmp_path)
     os.remove(os.path.join(vendor, "scatter.f32"))
     out = tmp_path / "work"

@@ -1,14 +1,4 @@
-"""`d710 attn` — build `work/bed<n>/attn.hs` for a case. SIRF runtime only.
-
-Attenuation is the one term of the model SIRF has to compute, and it is the only
-reason the list-mode path would otherwise need SIRF. Splitting it out means:
-
-    SIRF runtime (sirf-local image)   decode -> estimate -> tostir -> attn -> osem
-    PyTomography env                  lm, lowdose      (numpy + torch, no SIRF)
-
-`d710 osem` still builds it on the fly when it is missing, so this command is for
-preparing a case that only the list-mode path will read.
-"""
+"""Command-line entry point for `d710 attn`."""
 
 from __future__ import annotations
 

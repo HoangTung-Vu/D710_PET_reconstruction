@@ -1,26 +1,4 @@
-# apptainer_shim/setup.sh -- sourced by d710_apptainer and by
-# d710_isolate_stir_apptainer.sh.  Everything the two wrappers share lives here
-# so they cannot drift apart, which is the same reason `d710` itself is not
-# forked: there is ONE pipeline, and apptainer is only a different way to start
-# the containers it already knows how to drive.
-#
-# It does exactly four things:
-#   1. reads D710/.env, with the same parser `d710` uses;
-#   2. finds the two .sif files;
-#   3. exports them as D710_IMAGE / D710_SIRF_IMAGE -- every caller in the tree
-#      already reads the image out of those, so under apptainer "the image name"
-#      simply IS the .sif path;
-#   4. puts apptainer_shim/ first on $PATH, so `docker` means this shim -- not
-#      only for the wrapper, but for vendor/run.sh and utils/container.py, which
-#      shell out to docker on their own and are never reached by rewriting an
-#      entry script.
-#
-# Requires $HERE (the D710/ directory) to be set by the caller.
 
-# ------------------------------------------------------------------ .env
-# Copied from `d710` rather than shared with it: `d710` sources .env AFTER this
-# runs, so the two parsers have to agree, and `d710`'s is the reference.  Every
-# key here loses to one already in the environment ([[ -v ]]), same as there.
 _apt_read_env() {
     local f="$1" k v
     [[ -f "$f" ]] || return 0
@@ -41,15 +19,11 @@ _apt_read_env() {
 }
 _apt_read_env "${D710_ENV_FILE:-$HERE/.env}"
 
-# ------------------------------------------------------------------- .sif
-# Where to look, in order.  D710_SIF / D710_SIRF_SIF given outright skip all of
-# it -- put them in .env once and this never guesses again.
 _apt_sif_dirs() {
     printf '%s\n' "${D710_SIF_DIR:-}" "$HERE/sif" "$HERE" \
                   "${D710_OUT:-}/sif" "$HOME/sif" "$HOME"
 }
 
-#: first file matching any of the globs, searched over _apt_sif_dirs
 _apt_find_sif() {
     local d g p
     while IFS= read -r d; do
@@ -67,12 +41,10 @@ _apt_find_sif() {
 
 _apt_abs() { printf '%s/%s\n' "$(cd "$(dirname "$1")" && pwd)" "$(basename "$1")"; }
 
-# `d710:full` -- decode, estimate, tostir, read, shell, and the WCC cal files.
 if [[ -z "${D710_SIF:-}" ]]; then
     D710_SIF="$(_apt_find_sif 'd710_full.sif' 'd710-full.sif' 'd710.sif' \
                               'd710*full*.sif' 'd710*.sif' || true)"
 fi
-# `sirf-local:0.1` -- attn, osem, export.
 if [[ -z "${D710_SIRF_SIF:-}" ]]; then
     D710_SIRF_SIF="$(_apt_find_sif 'sirf_local.sif' 'sirf-local.sif' \
                                    'sirf*local*.sif' 'sirf*.sif' || true)"
@@ -80,9 +52,6 @@ fi
 
 if [[ -n "${D710_SIF:-}" && -f "$D710_SIF" ]]; then
     D710_SIF="$(_apt_abs "$D710_SIF")"; export D710_SIF
-    # THE IMAGE NAME IS THE PATH.  `d710`, `vendor/run.sh` and
-    # `utils/container.py` all read D710_IMAGE and hand it to `docker run`;
-    # the shim resolves it as a file, so nothing else has to change.
     export D710_IMAGE="$D710_SIF"
 fi
 if [[ -n "${D710_SIRF_SIF:-}" && -f "$D710_SIRF_SIF" ]]; then
@@ -90,8 +59,6 @@ if [[ -n "${D710_SIRF_SIF:-}" && -f "$D710_SIRF_SIF" ]]; then
     export D710_SIRF_IMAGE="$D710_SIRF_SIF"
 fi
 
-# ------------------------------------------------------------------- PATH
-# First, so it beats a real docker if one is also installed.
 export PATH="$HERE/apptainer_shim:$PATH"
 [[ -x "$HERE/apptainer_shim/docker" ]] || chmod +x "$HERE/apptainer_shim/docker" 2>/dev/null || true
 
@@ -124,9 +91,6 @@ EOF
     exit 2
 }
 
-# --------------------------------------------------------------- `doctor`
-# Everything this port depends on, checked in one place -- because each of them
-# fails much later and much less legibly than it does here.
 _apt_doctor() {
     local bin rc=0
     echo "== apptainer"
@@ -161,10 +125,6 @@ _apt_doctor() {
     if [[ -n "${bin:-}" && -f "${D710_SIRF_SIF:-}" ]]; then
         echo "== sirf-local: gói Python attn/osem/export cần"
         local miss
-        # Sourced through apptainer_shim/sirf_env.sh and with $D710_OUT bound,
-        # i.e. EXACTLY the way d710_isolate_stir.sh starts python -- otherwise
-        # this reports pydicom missing for ever, even after $D710_OUT/.pylibs
-        # has fixed it, and the check would be worse than none.
         local -a probe=(exec --cleanenv --writable-tmpfs --bind "$HERE:$HERE:ro")
         [[ -n "${D710_OUT:-}" && -d "${D710_OUT}" ]] && \
             probe+=(--bind "$D710_OUT:$D710_OUT" --env "D710_OUT=$D710_OUT")
@@ -173,11 +133,6 @@ _apt_doctor() {
             for m in numpy sirf.STIR pydicom nibabel; do
                 python3 -c "import $m" 2>/dev/null || printf "%s " "$m"
             done' "$HERE/apptainer_shim/sirf_env.sh" 2>/dev/null)"
-        # Split into two very different diagnoses, and keep ONLY names we asked
-        # about -- anything else on that stream is noise (an apptainer warning,
-        # a shell diagnostic) and must never be echoed back as "pip install this".
-        #   numpy / sirf.STIR   the image itself is wrong; pip cannot fix that
-        #   pydicom / nibabel   pure Python, fixable from outside the image
         local m broken="" fixable=""
         for m in numpy sirf.STIR; do
             [[ " $miss " == *" $m "* ]] && broken="$broken $m"

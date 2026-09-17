@@ -1,19 +1,4 @@
-"""`d710` must find a usable interpreter on any machine, with or without conda.
-
-`python3` is not a safe default and never was. On this machine `/usr/bin` comes
-before conda on `PATH`, so `python3` is the SYSTEM interpreter even inside an
-activated `petct_reconstruction` -- while `python` is conda's. A script that
-tries only one of the two picks the wrong interpreter about half the time, and
-the failure lands deep inside an import rather than at the front door.
-
-So `d710` tries a list: an explicit `$D710_PYTHON` first and alone, then
-`python3`, `python`, the active venv's, the active conda env's, and the usual
-absolute paths. The steps that need only the standard library (decode, estimate,
-tostir, exam) must work on any of them; the rest report what they tried.
-
-Tested by running the real functions out of the real script, so this cannot pass
-against a copy that has drifted.
-"""
+"""`d710` must resolve a usable interpreter with or without conda."""
 
 from __future__ import annotations
 
@@ -45,12 +30,11 @@ def bash(snippet: str, env=None, path=None) -> subprocess.CompletedProcess:
 
 @pytest.fixture(scope="module")
 def bare_env():
-    """A PATH with no conda and no venv -- the machine `d710` has to work on."""
+    """A PATH with neither conda nor a virtual environment."""
     return {"PATH": "/usr/bin:/bin", "HOME": "/tmp"}
 
 
 def test_an_interpreter_is_found_without_conda(bare_env):
-    """The stdlib-only steps must run on a machine that has only /usr/bin/python3."""
     if not shutil.which("python3", path="/usr/bin:/bin"):
         pytest.skip("no /usr/bin/python3 on this machine")
     r = bash("resolve_py", env=bare_env)
@@ -65,7 +49,6 @@ def test_the_resolved_interpreter_actually_runs_python_3(bare_env):
 
 
 def test_an_explicit_choice_is_used_alone_and_never_replaced(bare_env):
-    """`D710_PYTHON` is a decision, so a wrong one must fail loudly, not fall back."""
     env = dict(bare_env, D710_PYTHON="/nonexistent/python")
     r = bash("py_candidates", env=env)
     assert r.stdout.split() == ["/nonexistent/python"], r.stdout
@@ -83,7 +66,6 @@ def test_the_candidate_list_has_no_duplicates_and_no_empties():
 
 
 def test_the_running_interpreter_would_be_found_for_the_modules_it_has():
-    """Whatever is running this test can import numpy, so `need_py` must find it."""
     r = bash('PY=x; need_py "numpy" "x"; echo "PY=$PY"',
              env={"PATH": f"{sys.prefix}/bin:/usr/bin:/bin"})
     assert r.returncode == 0, r.stderr

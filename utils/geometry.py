@@ -1,24 +1,14 @@
-"""D710 sinogram geometry — read from the STIR header, never copied into a table.
-
-The three constants here have been checked **bit-exact** against a sinogram the
-scanner decoded itself (histogramming NEMA bed 2 list-mode reproduces every bin,
-corr 1.000000). They are proven results, not architectural choices, so they are
-carried over unchanged:
-
-* `crystal_to_det` — GE numbers crystals opposite to STIR: `stir = (287 - ge) mod 576`
-* `plane_ring_pairs` — the sign of the ring difference follows `pos1 - pos2`
-* segment 0 of span-2 merges two ring pairs into one odd plane
-"""
+"""D710 sinogram geometry, read from the STIR header rather than tabulated."""
 
 from __future__ import annotations
 
 import numpy as np
 
-from .scanner import CRYSTAL_OFFSET, CRYSTAL_REVERSE, PLANE_MM  # noqa: F401
+from .scanner import CRYSTAL_OFFSET, CRYSTAL_REVERSE, PLANE_MM
 
 
 def open_projdata(hs: str):
-    """``(proj_data, info)`` — proj_data must be kept alive; info is a borrowed pointer."""
+    """`(proj_data, info)`; proj_data must be kept alive, info is a borrowed pointer."""
     import stir
 
     pd = stir.ProjData.read_from_file(hs)
@@ -26,7 +16,7 @@ def open_projdata(hs: str):
 
 
 def segment_order(info) -> list[int]:
-    """The order in which STIR stores segments: 0, +1, -1, +2, -2, ..."""
+    """The order in which STIR stores segments: 0, +1, -1, +2, -2, and so on."""
     out = [0]
     for k in range(1, info.get_max_segment_num() + 1):
         out += [k, -k]
@@ -34,17 +24,7 @@ def segment_order(info) -> list[int]:
 
 
 def plane_ring_pairs(info, num_rings: int) -> list[list[tuple[int, int]]]:
-    """The ring pairs summed into each plane, as ``(ring of pos1, ring of pos2)``.
-
-    The plane at axial position ``a`` of a segment covering ring differences
-    ``[lo, hi]`` contains every pair whose ring sum is ``z`` and whose difference
-    falls in that range. Segment 0 of span-2 covers -1..+1, so odd ``z`` holds
-    **two** pairs — the merge that the background term has to sum itself, since
-    it does not go through the sensitivity model.
-
-    The pair emitted is ``(r + d, r)``, not ``(r, r + d)``: STIR's signed segment
-    follows ``pos1 - pos2``, the opposite of the obvious reading.
-    """
+    """The ring pairs summed into each plane, as `(ring of pos1, ring of pos2)`."""
     out = []
     for s in segment_order(info):
         lo, hi = info.get_min_ring_difference(s), info.get_max_ring_difference(s)
@@ -71,38 +51,7 @@ def check_ring_pairs(info, pairs: list[list[tuple[int, int]]]) -> None:
 
 
 def ring_pair_multiplicity(info) -> np.ndarray:
-    """Number of ring pairs merged into each plane, along STIR's flattened axial axis.
-
-    ⚠ **DO NOT apply this to the vendor path (`vendor/to_stir.py` + `normdt`).**
-    Measured 2026-08-22 on ped bed 4, the odd/even ratio within segment 0:
-
-        prompts 1.985   randoms 1.981   scatter 2.007   background 1.986
-        normdt  1.992   norm_only 1.993
-
-    GE's `normdt` **already carries** this multiplicity — it is the sensitivity
-    of the whole *bin*, folding in how many ring pairs that bin receives, not the
-    bare efficiency of a single LOR. Multiplying by `ring_pair_multiplicity` on
-    top **squares** it (4x at odd bins). The chain `y = S(Gx) + b` is
-    self-consistent: y, b and S are all 2x at odd bins, the projector fires one
-    LOR, so `S·(Gx)` comes out exactly 2x. Checked on the image: the power at the
-    Nyquist frequency of the axial profile is down to 0.00-0.49 % (in the
-    sinogram it is 68.9 %).
-
-    **Nothing in the pipeline calls this, and that is the point**: the
-    sensitivity/normalisation term already carries the multiplicity -- `normdt`,
-    and with it `randoms` and `scatter` -- so applying it again squares it.
-    `tests/test_pipeline_data.py::test_span_2_doubles_the_odd_planes_of_every_term`
-    measures that on real data. It stays as the STIR-backed oracle
-    `tests/test_lm_geom.py` checks `lm.geom.BinMap.mult` against.
-
-    **This is geometry, not detector normalisation.** Segment 0 of span-2 merges
-    ring differences +1 and -1 into its odd axial positions, so those bins collect
-    **two** LORs while STIR's projector fires **one**.
-
-    Ignoring it *when the multiplicative term does not already carry it* settles
-    into a period-2 stripe along the axis — sitting exactly at the axial Nyquist
-    frequency.
-    """
+    """Ring pairs merged into each plane, along STIR's flattened axial axis."""
     return np.concatenate([
         np.array([info.get_num_ring_pairs_for_segment_axial_pos_num(s, a)
                   for a in range(info.get_num_axial_poss(s))], dtype=np.float32)
@@ -110,7 +59,7 @@ def ring_pair_multiplicity(info) -> np.ndarray:
 
 
 def det_pair_map(num_views: int, num_tang: int, num_det: int):
-    """``(view, tangential) -> (det1, det2)``, two ``(num_views, num_tang)`` arrays."""
+    """`(view, tangential)` to `(det1, det2)`, as two `(num_views, num_tang)` arrays."""
     v = np.arange(num_views)[:, None]
     t = (np.arange(num_tang) - num_tang // 2)[None, :]
     d1 = (v + np.floor_divide(t, 2)) % num_det
@@ -120,19 +69,13 @@ def det_pair_map(num_views: int, num_tang: int, num_det: int):
 
 def crystal_to_det(num_det: int, offset: int = CRYSTAL_OFFSET,
                    reverse: bool = CRYSTAL_REVERSE) -> np.ndarray:
-    """Lookup table: GE transverse crystal index -> STIR detector number."""
+    """Lookup table from GE transverse crystal index to STIR detector number."""
     d = np.arange(num_det)
     return np.roll(d[::-1] if reverse else d, offset)
 
 
 def tangential_s_mm(hs: str) -> np.ndarray:
-    """Radial offset ``s`` of each tangential bin, in mm, taken from the header.
-
-    Not arc-corrected, so the bins are **not** evenly spaced: on this scanner
-    they run -356.7 .. +356.7 mm over 381 bins, 2.261 mm at the centre and
-    tightening towards the edges. Anything needing a distance in mm must ask this
-    function rather than multiplying by a nominal bin width.
-    """
+    """Radial offset `s` of each tangential bin in mm, taken from the header."""
     import stir
 
     pd = stir.ProjData.read_from_file(hs)

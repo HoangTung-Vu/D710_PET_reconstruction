@@ -1,11 +1,4 @@
-"""The list-mode path on real data. Skips cleanly when `$D710_OUT` has none.
-
-The check that matters is the first one: histogramming the decoded events back
-through `lm.geom.BinMap` has to reproduce `decoded/bed<n>.s` **bit for bit**.
-The vendor decoder produced that file by a completely separate path, so this is
-an independent proof of the bin map, not a self-check -- the same standard
-`vendor/to_stir.py` holds itself to.
-"""
+"""The list-mode path on real data."""
 
 from __future__ import annotations
 
@@ -19,8 +12,6 @@ from cases import decoded_beds
 from lm import events as ev
 from lm import geom
 
-#: Reading every term of a bed costs ~1 GB and a few seconds, so the per-event
-#: lookups are checked on one bed rather than all of them.
 LOOKUP_BEDS = 1
 
 
@@ -55,7 +46,6 @@ def _binmap(cache, hs):
 
 @pytest.mark.parametrize("bed", LM_BEDS)
 def test_histogram_reproduces_the_decoded_sinogram(bed, _binmaps):
-    """Verification 6: the per-event bin map round-trips, bit-exactly."""
     binmap = _binmap(_binmaps, bed["hs"])
     e = ev.load(bed["npy"])
     ref = np.fromfile(bed["hs"].replace(".hs", ".s"), "<i2")
@@ -69,20 +59,12 @@ def test_histogram_reproduces_the_decoded_sinogram(bed, _binmaps):
 
 
 def _lm_sidecar(bed) -> dict | None:
-    """The `.lm.json` written beside the event table, or None if it predates it."""
     p = Path(bed["npy"]).with_suffix(".json")
     return json.loads(p.read_text()) if p.exists() else None
 
 
 @pytest.mark.parametrize("bed", LM_BEDS)
 def test_event_count_matches_the_header(bed):
-    """The table must count exactly what the header counts, pre-roll included.
-
-    Every correction term is a per-bin quantity of `bed<n>.s`, so an event table
-    holding a different set of coincidences is not a description of the same
-    acquisition. The only way to be short is the pre-roll, so name it when that
-    is what happened -- the failure is then a decode to redo, not a mystery.
-    """
     e = ev.load(bed["npy"])
     want = bed["hdr"]["prompts"]
     if len(e) == want:
@@ -105,11 +87,6 @@ def test_event_count_matches_the_header(bed):
 
 @pytest.mark.parametrize("bed", LM_BEDS)
 def test_the_preroll_policy_the_sidecar_records_is_the_one_it_applied(bed):
-    """`keep_preroll` in the sidecar has to explain the table's own length.
-
-    Cheap, and it is the one check that still works when the header scalar is
-    unavailable -- it compares the decoder's decision against its own output.
-    """
     side = _lm_sidecar(bed)
     if side is None:
         pytest.skip("event table predates the .lm.json sidecar")
@@ -124,7 +101,6 @@ def test_the_preroll_policy_the_sidecar_records_is_the_one_it_applied(bed):
 
 @pytest.mark.parametrize("bed", LM_BEDS[:LOOKUP_BEDS])
 def test_per_event_terms_are_usable(bed, _binmaps):
-    """Weights positive, additive non-negative, both finite -- OSEM divides by them."""
     from lm import terms
     from utils.paths import case as get_case
 
@@ -140,10 +116,6 @@ def test_per_event_terms_are_usable(bed, _binmaps):
     assert np.isfinite(w).all() and (w > 0).all()
     assert np.isfinite(add).all() and (add >= 0).all()
 
-    # The identity the additive term is defined by: PyTomography's model is
-    # `y = Hx + a` with the weight only in the sensitivity image, so `a` is the
-    # background DIVIDED by the weight. Multiply it back and the per-LOR
-    # background of that event's bin has to come out.
     b = ev.bins(e, binmap)[keep]
     bg = (terms.read(C, bed["bed"], "randoms", binmap)
           + terms.read(C, bed["bed"], "scatter", binmap))[b]
@@ -152,7 +124,6 @@ def test_per_event_terms_are_usable(bed, _binmaps):
 
 @pytest.mark.parametrize("bed", LM_BEDS[:LOOKUP_BEDS])
 def test_sensitivity_matches_the_sinogram_it_came_from(bed, _binmaps):
-    """Summed over LORs, the per-LOR weights give back the per-bin sinogram."""
     from lm import terms
     from utils.paths import case as get_case
 

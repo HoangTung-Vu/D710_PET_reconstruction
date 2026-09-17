@@ -1,40 +1,49 @@
 # tools
 
-Công cụ chạy tay, **không** nằm trên đường `d710 exam → osem → export`. Không có
-gì ở đây được pipeline import; xoá một file ở đây không làm hỏng tái tạo.
+Manually invoked utilities. None lies on the `d710 exam` → `osem` → `export`
+path, and nothing here is imported by the pipeline; removing a file in this
+directory does not affect reconstruction.
 
-## Đang dùng
+## In use
 
-| file | dùng khi nào |
+| file | purpose |
 |---|---|
-| `compare_vendor.py` | so ảnh của ta với bản BQML của GE trên cùng ca; `--json` ghi `calib_<đường>.json` |
-| `calib_k.py` | gộp các `calib_*.json` thành **hai** hằng số `K` để dán vào `utils/scanner.py` |
-| `dicom_suv.py` | thư mục PET DICOM bất kỳ → NIfTI SUV |
-| `compare_suv.py` | so hai khối SUV |
-| `ct_nifti.py` | CT DICOM → NIfTI HU, trên đúng affine của `export` |
-| `migrate_out.sh` | chuyển cây đầu ra cũ sang `$D710_OUT` (dry-run mặc định) |
+| `compare_vendor.py` | compares a reconstruction with GE's BQML series for the same case; `--json` writes `calib_<path>.json` |
+| `calib_k.py` | combines the `calib_*.json` files into the two `K` constants recorded in `utils/scanner.py` |
+| `dicom_suv.py` | any PET DICOM directory to a SUV NIfTI |
+| `compare_suv.py` | compares two SUV volumes |
+| `ct_nifti.py` | CT DICOM to a Hounsfield-unit NIfTI, on the affine `export` uses |
+| `migrate_out.sh` | migrates an earlier output tree into `$D710_OUT`; performs a dry run by default |
 
-`../run_all_ok.sh`, `../export_all_ok.sh`, `../rerun_lm_ok.sh` gọi bốn cái đầu.
+`../run_all_ok.sh`, `../export_all_ok.sh` and `../rerun_lm_ok.sh` invoke the
+first four.
 
-## Chẩn đoán — giữ lại vì có chỗ trỏ tới
+## Diagnostics, retained because they are referenced
 
-| file | vì sao còn |
+| file | reason for retention |
 |---|---|
-| `tof_direction.py` | đo chiều trục TOF; `utils/terms.py` nhắc tên nó trong thông báo lỗi |
-| `tof_profile.py` | đo profile TOF của scatter; `utils/terms.py` in đúng lệnh này khi cần |
-| `lm_frame.py` | đo hệ quy chiếu list-mode; `tests/test_lm_geom.py` dẫn nó làm nguồn của khung đã chốt. **Mù với sai số góc dùng chung** — 10,04° từng lọt qua nó |
+| `tof_direction.py` | measures the direction of the TOF axis; `utils/terms.py` names it in an error message |
+| `tof_profile.py` | measures the scatter's TOF profile; `utils/terms.py` prints this exact command when needed |
+| `lm_frame.py` | measures the list-mode reference frame; `tests/test_lm_geom.py` cites it as the source of the established frame. It is blind to a shared angular error: a 10.04° offset once passed through it |
 
-## Phép đo một lần, giữ làm bằng chứng
+## One-off measurements, retained as evidence
 
-Không ai gọi, và **cố ý giữ**: chúng là số liệu đằng sau hai quyết định kiến
-trúc, chứ không phải mã chết cần dọn.
+Neither is called, and both are kept deliberately: they are the measurements
+behind two architectural decisions rather than dead code awaiting removal.
 
-| file | đã chứng minh điều gì |
+| file | what it established |
 |---|---|
-| `projector_bench.py` | chi phí projector — vì sao subset không mua được gì với parallelproj |
-| `pytomo_lm_probe.py` | PyTomography chạy được list-mode D710 → cơ sở để chọn nó |
+| `projector_bench.py` | the cost of the projector, and hence why subsets buy nothing with parallelproj |
+| `pytomo_lm_probe.py` | that PyTomography accepts D710 list-mode data, which is the basis for choosing it |
 
-⚠ `pytomo_lm_probe.py` dựng hình học **riêng** và đã lệch khỏi `lm/geom.py`:
-`(cos, sin)` thay vì `(sin, −cos)`, `R_MM` trần thay vì `R_EFF_MM`, và không đảo
-trục TOF. Docstring của nó nói lấy hằng số từ `utils/scanner.py` — chỉ đúng với
-*hằng số*, không đúng với hình học. Đừng đọc nó như bản tham chiếu.
+`pytomo_lm_probe.py` builds its own geometry and has diverged from `lm/geom.py`:
+it uses `(cos, sin)` rather than `(sin, −cos)`, bare `R_MM` rather than
+`R_EFF_MM`, and does not reverse the TOF axis. Its docstring states that the
+constants come from `utils/scanner.py`, which is true of the *constants* but not
+of the geometry. It must not be read as a reference implementation.
+
+## Stubs
+
+`stubs/kornia_rs.py` is an inert replacement for the `kornia_rs` extension, for
+CPUs without AVX2. It is not on the default `PYTHONPATH` and is enabled per
+machine; see the top-level `README.md`.

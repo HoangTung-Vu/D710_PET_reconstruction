@@ -1,33 +1,38 @@
 #!/usr/bin/env bash
-# Run a gdb script against GE's pet_recon in the d710:full container.
-#
-#   ./run.sh --out <dir>                    -> interactive shell
-#   ./run.sh --out <dir> extract.gdb        -> gdb -batch -x /vendor/extract.gdb
-#
-# d710:full already CONTAINS the vendor tree (/usr/PET, /usr/g, /vendorlib) and
-# the decoder -- see ../Dockerfile.  Nothing from petsw/ is mounted, and
-# /usr/PET/systemConfig is writable in the image layer, which the config
-# manager requires.
-#
-# Only two things are mounted, both small:
-#   /vendor  this directory, read-only, so gdb scripts are picked up live
-#   /out     whatever --out names, writable, where dumps and logs land
-#
-# --out IS REQUIRED and has no default.  It used to be a fixed ./out beside
-# this script, which meant every run staged through one global directory: two
-# beds estimated at the same time overwrote each other's dumps, and 7.5 GB of
-# results grew inside the source tree.  Now the caller mounts the bed's own
-# directory straight onto /out and gdb writes the final files in place -- no
-# staging, no move, and two runs in parallel cannot collide.
-#
-# `OUT = "/out"` in lib.gdb stays exactly as it is: that is the path INSIDE the
-# container, and it is correct.
-#
-# --mount switches to the base-image fallback: bind petsw/ from the host onto
-# the `d710` stage instead of using the baked tree.  It needs a writable copy of
-# systemConfig (~1.4 GB), kept in --cache so it survives between beds; d710:full
-# exists precisely to avoid all of this, and is what you should normally have.
 set -euo pipefail
+
+usage() {
+    cat <<'USAGE'
+Run a gdb script against GE's pet_recon in the d710:full container.
+
+  ./run.sh --out <dir>                    an interactive shell
+  ./run.sh --out <dir> extract.gdb        gdb -batch -x /vendor/extract.gdb
+
+d710:full already contains the vendor tree (/usr/PET, /usr/g, /vendorlib) and
+the decoder; see ../Dockerfile. Nothing from petsw/ is mounted, and
+/usr/PET/systemConfig is writable in the image layer, which the configuration
+manager requires.
+
+Only two small mounts are made:
+  /vendor  this directory, read-only, so gdb scripts are picked up live
+  /out     whatever --out names, writable, where dumps and logs are written
+
+--out is required and has no default. It was formerly a fixed ./out beside this
+script, which meant every run staged through one global directory: two beds
+estimated concurrently overwrote each other's dumps, and 7.5 GB of results
+accumulated inside the source tree. The caller now mounts the bed's own
+directory directly onto /out and gdb writes the final files in place, so there
+is no staging, no move, and two runs in parallel cannot collide.
+
+`OUT = "/out"` in lib.gdb is correct as it stands: that is the path inside the
+container.
+
+--mount selects the base-image fallback, binding petsw/ from the host onto the
+`d710` stage instead of using the baked tree. It needs a writable copy of
+systemConfig (about 1.4 GB), kept in --cache so that it survives between beds.
+d710:full exists precisely to avoid this, and is what you should normally have.
+USAGE
+}
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(dirname "$here")"
@@ -44,7 +49,7 @@ while [[ $# -gt 0 ]]; do
     --data)    DATA="$2"; shift 2 ;;
     --cache)   CACHE="$2"; shift 2 ;;
     --mount)   mount_fallback=1; image=d710; shift ;;
-    -h|--help) sed -n '2,30p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
     *) break ;;
   esac
 done
@@ -58,7 +63,6 @@ done
 
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
-# job.gdb streams the 3D-recon axial-overlap packets through /out/ovl.
 mkdir -p "$OUT/ovl"
 CACHE="${CACHE:-${D710_OUT:+$D710_OUT/.cache}}"
 CACHE="${CACHE:-$OUT/.cache}"
@@ -90,27 +94,13 @@ docker image inspect "$image" >/dev/null 2>&1 || {
     echo "(../Dockerfile records what is inside it.)" >&2
     exit 1; }
 
-# estimate.py drives this: --data mounts a data directory at /data, D710_JOB
-# tells extract.gdb which job to source instead of /vendor/job.gdb, and D710_TOF
-# selects reconMethod 3 vs 2 (TOF scatter on or off).
 extra=()
 [[ -n "$DATA" ]] && extra+=(-v "$(cd "$DATA" && pwd):/data:ro")
 [[ -n "${D710_JOB:-}" ]] && extra+=(-e "D710_JOB=$D710_JOB")
 [[ -n "${D710_TOF:-}" ]] && extra+=(-e "D710_TOF=$D710_TOF")
 
 args=(--rm -i
-      # NO --user here, unlike every other container this project starts.
-      # pet_recon writes /usr/PET/systemConfig (the config manager opens
-      # cmcfg.xml read-write), /usr/g/service/log and /petRDFS/OVLFILES, and
-      # all three are root-owned and root-writable only in the image.  The
-      # image is shipped as an image and is not rebuilt here, so its modes are
-      # a given: run this one as root or it dies before reading a sinogram.
-      # The .f32 dumps therefore land root-owned -- removable, since the
-      # directory holding them is created host-side by the caller, but not
-      # hard-linkable while fs.protected_hardlinks is on.
       --cap-add=SYS_PTRACE --security-opt seccomp=unconfined
-      # /etc/hosts is generated by the daemon at run time and cannot be baked
-      # into the image, so the console's own names are injected here.
       --add-host CT85_OC0:127.0.0.1 --add-host CT85_OC1:127.0.0.1
       --add-host loghost:127.0.0.1  --add-host bay85ct:127.0.0.1
       --add-host bay87ct:127.0.0.1  --add-host trec:127.0.0.1

@@ -1,54 +1,5 @@
 #!/usr/bin/env python3
-"""Which way round is our TOF axis? The one TOF check nothing else performs.
-
-    conda activate petct_reconstruction
-    PYTHONPATH=<D710> python3 tools/tof_direction.py \\
-        --nontof-case ped --tof-case pedtof5 --bed 1
-
-STIR numbers timing positions **signed and centred**, and `ProjDataInfo::get_k`
-turns a timing position into a signed displacement along the LOR — measured on
-this scanner, `timing_pos -2 -> -294.31 mm` and `+2 -> +294.31 mm`. So the TOF
-axis decides *which half of the LOR* an event came from. The decoder writes GE's
-bins straight through in file order, and nothing in the RDF header states which
-end GE starts from.
-
-**Why no other check catches this.** Prompts and scatter travel down the same
-axis, so they stay consistent with each other whichever way it points. Counts
-are conserved, `Sum(p) >= Sum(r)` holds, no TOF bin goes negative, and every
-test in `tests/test_pipeline_data.py` passes. Only the image is wrong — and it
-is wrong in the specific way that makes TOF worse than no TOF at all.
-
-**The method.** Reconstruct the bed WITHOUT TOF, so the reference image cannot
-be biased by the very axis under test. Forward project it through STIR's own TOF
-model, and see which orientation of the measured data it matches:
-
-    corr( G_tof . x_nonTOF ,  y_tof )   vs   corr( G_tof . x_nonTOF , flip(y_tof) )
-
-STIR supplies both the geometry and the TOF binning, so agreement means the
-whole chain agrees. One forward projection, not one reconstruction.
-
-Two statistics, because the raw one is weak on its own: the sinogram runs at
-~0.06 counts/bin, so per-bin correlation is dominated by Poisson noise. The
-sharp statistic is the **TOF centroid per (view, tangential)** — a signed
-number that is precisely what the axis direction controls, and summing over the
-axial axis first removes most of the noise. The analysis is also repeated on the
-highest-count LORs alone, where trues dominate scatter, so that the scatter's
-own TOF distribution cannot be what is driving the answer.
-
-Result on ped bed 1, 2026-08-27 — the axis was **mirrored**:
-
-    top 10 % of LORs   corr(sinogram)  corr(centroid)  mean |d centroid|
-    as written             +0.734          -0.977          0.541 bins
-    flipped                +0.983          +0.977          0.055 bins
-
-Fixed 2026-08-29 by reversing the axis where it is written, in
-`gerdf.cli._tof_to_stir` (prompts) and `vendor/to_stir.py` (the scatter
-weights). On data decoded since, the two columns are swapped and "AS WRITTEN"
-must win — that is what this tool is for now: a regression check, run on any
-case before trusting a TOF image, and after any change to the axis convention.
-Data decoded BEFORE that date is refused outright by `utils.terms.load`, which
-is why this script cannot be pointed at it any more.
-"""
+"""Determine which way the TOF axis runs."""
 from __future__ import annotations
 
 import argparse
@@ -68,11 +19,7 @@ def corr(a, b) -> float:
 
 
 def centroid(v: np.ndarray, mask: np.ndarray) -> np.ndarray:
-    """TOF centroid per (view, tangential), over one SHARED mask.
-
-    The mask has to be shared between the two arrays being compared, or the two
-    centroid maps cover different LORs and cannot be correlated at all.
-    """
+    """TOF centroid per (view, tangential), over one shared mask."""
     w = np.clip(v, 0, None)[:, mask]
     tot = w.sum(axis=0)
     c = np.arange(v.shape[0])[:, None]
@@ -82,11 +29,7 @@ def centroid(v: np.ndarray, mask: np.ndarray) -> np.ndarray:
 
 
 def project(nontof_case, tof_case, bed: int, xy: int):
-    """`(pred, meas, n_tof)` reduced over the axial axis -> `(tof, view, tang)`.
-
-    The axial axis carries no information about the TOF direction, and dropping
-    it turns two 1.2 GB arrays into two 2 MB ones.
-    """
+    """`(pred, meas, n_tof)` reduced over the axial axis to `(tof, view, tang)`."""
     sirf_env.setup(nontof_case)
 
     print("== reconstructing bed %d WITHOUT TOF (the reference object)" % bed,
@@ -121,8 +64,6 @@ def project(nontof_case, tof_case, bed: int, xy: int):
 
     print("== forward projecting (%d TOF bins)" % n_tof, flush=True)
     bg = objs["background"].as_array()
-    # forward() returns S.(Gx) + b; subtracting b leaves the model's TRUES, which
-    # is what the measured prompts minus background is.
     pred = am.forward(x).as_array() - bg
     meas = objs["prompts"].as_array().astype(np.float32) - bg
     return (pred.sum(axis=1, dtype=np.float64),
@@ -130,7 +71,7 @@ def project(nontof_case, tof_case, bed: int, xy: int):
 
 
 def report(P, M, n_tof, out=print) -> bool:
-    """Print both orientations at several count thresholds. True if flipped wins."""
+    """Print both orientations at several count thresholds."""
     tot = np.clip(M, 0, None).sum(axis=0)
     live = tot > 0
 
@@ -142,7 +83,6 @@ def report(P, M, n_tof, out=print) -> bool:
             % ("%s by counts (n=%d)" % (label, m.sum()),
                corr(P[:, m], M[:, m]), corr(P[:, m], M[::-1][:, m])))
 
-    # The sharp statistic, on the LORs where trues dominate scatter.
     m = tot >= np.percentile(tot[live], 90)
     cp, cm = centroid(P, m), centroid(M, m)
     ok = np.isfinite(cp) & np.isfinite(cm)
@@ -163,7 +103,7 @@ def report(P, M, n_tof, out=print) -> bool:
         out("        host file (docker build -t d710:full -f D710/Dockerfile .)")
         out("     2. vendor/to_stir.py:convert_scatter_tof -- the scatter")
         out("        weights, which must stay aligned with the prompts")
-        out("   See D710/tests/audit_decode.md, the TOF axis section.")
+        out("   See D710/RECONSTRUCTION_MATH.md, the TOF section.")
     else:
         out("=> AS WRITTEN wins: the TOF axis is correct.")
     out("   margin in centroid: %.3f bins (a small margin means inconclusive)"

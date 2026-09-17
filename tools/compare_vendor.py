@@ -1,23 +1,5 @@
 #!/usr/bin/env python3
-"""So sánh `recon.npz` / `recon_lm.npz` với ảnh PET BQML của chính GE, và đo `K`.
-
-    python3 -m tools.compare_vendor --case chuong [--lm] \
-        --vendor ~/UET/Handson_PET_CT_Reconstruction/data/cases/20260806_FDG26080604_ok/dicom/PT_s012_PET_WB_3D_AC
-
-`K` là (Bq/mL) trên (count/voxel) — đúng đơn vị mà `d710 export --K` cần.
-
-Cách đo: lấy mẫu thể tích của pipeline lên ĐÚNG lưới của vendor (cùng hệ toạ
-độ LPS máy quét), rồi khớp một hệ số duy nhất qua gốc toạ độ. Không căn ảnh,
-không xoay — nếu hai ảnh lệch nhau về hình học thì tương quan sẽ tụt và đó
-chính là tín hiệu cần thấy, chứ không phải thứ nên "sửa" bằng cách căn lại.
-
-**Mốc thời gian phải quy về một.** `recon*.npz` quy về lúc TIÊM, ảnh của GE quy
-về lúc BẮT ĐẦU quét (`DecayCorrection = START`). Chênh nhau đúng một hệ số
-`exp(-λ·Δt)`, 1,41–1,64 trên các ca ở đây — không khử thì `K` đo ra sẽ mang theo
-thời gian hấp thu của từng ca và không còn là hằng số của máy. Dùng chính
-`utils.quant.scan_start_factor` mà `d710 export` dùng, để hai bên không thể lệch
-nhau.
-"""
+"""Compare a reconstruction with GE's own BQML series, and measure `K`."""
 from __future__ import annotations
 
 import argparse
@@ -36,7 +18,7 @@ from utils.paths import case as get_case
 
 
 def read_vendor(d):
-    """Đọc một series PET DICOM -> (vol Bq/mL [z,y,x], z[], x0, y0, px, py, meta)."""
+    """Read a PET DICOM series as `(volume Bq/mL [z, y, x], z, x0, y0, px, py, meta)`."""
     import pydicom
 
     sl = []
@@ -67,15 +49,14 @@ def read_vendor(d):
 
 
 def resample_to(vol, z0, vox, zt, x0t, y0t, pxt, pyt, nzt, nyt, nxt):
-    """Lấy mẫu vol (STIR order, count/voxel) lên lưới đích, trả về DICOM order."""
+    """Resample a STIR-order volume of counts per voxel onto the target grid, in DICOM order."""
     from scipy.ndimage import map_coordinates
 
-    d = np.ascontiguousarray(to_radiological(vol))          # (z, y, x) DICOM order
+    d = np.ascontiguousarray(to_radiological(vol))
     nz, ny, nx = d.shape
-    vz, vy, vx = vox                                        # mm
+    vz, vy, vx = vox
     x0s, y0s = grid_origin(nx, ny, vx, vy)
 
-    # toạ độ đích (mm, LPS) -> chỉ số nguồn (voxel)
     zt_ = (zt - z0) / vz
     yt_ = ((y0t + np.arange(nyt) * pyt) - y0s) / vy
     xt_ = ((x0t + np.arange(nxt) * pxt) - x0s) / vx
@@ -116,8 +97,6 @@ def main(argv=None) -> int:
     print(f"pipeline : {src.name}  {vol.shape} (z,y,x)  voxel {vox} mm  "
           f"z0 {z0:.2f}  beds {beds}")
 
-    # Quy về mốc thời gian của GE TRƯỚC khi khớp -- nếu không, `K` đo ra sẽ nhân
-    # thêm thời gian hấp thu của riêng ca này.
     decay, ref_bed, hdr = quant.scan_start_factor(C, beds)
     uptake_min = -np.log(decay) * hdr["half_life_s"] / np.log(2) / 60
     vol = vol * decay
@@ -133,8 +112,6 @@ def main(argv=None) -> int:
 
     ov = inside.mean()
     print(f"\nchồng lấn hình học: {ov*100:.1f} % voxel của vendor nằm trong FOV pipeline")
-    # Chạy một phần bed thì chồng lấn thấp là ĐÚNG, không phải lỗi -- nên mốc
-    # cảnh báo phải tính theo số bed đã dựng, chứ không phải theo toàn ảnh.
     span_ours = vol.shape[0] * vox[0]
     span_ven = float(zt[-1] - zt[0]) + 1e-9
     if ov < 0.5 * min(1.0, span_ours / span_ven) * 0.8:
@@ -151,9 +128,9 @@ def main(argv=None) -> int:
         raise SystemExit(f"error: chỉ {n} voxel qua ngưỡng — hạ --thresh")
     v, o = ven[m].astype(np.float64), ours[m].astype(np.float64)
 
-    k_ls = float((v * o).sum() / (o * o).sum())     # bình phương tối thiểu qua gốc
-    k_med = float(np.median(v / o))                 # trung vị tỉ số, chịu nhiễu tốt
-    k_tot = float(v.sum() / o.sum())                # tỉ số tổng hoạt độ
+    k_ls = float((v * o).sum() / (o * o).sum())
+    k_med = float(np.median(v / o))
+    k_tot = float(v.sum() / o.sum())
     r = float(np.corrcoef(v, o)[0, 1])
 
     print(f"\nvoxel dùng để khớp: {n:,} (Bq/mL > {args.thresh:g})")

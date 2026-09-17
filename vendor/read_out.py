@@ -1,16 +1,5 @@
 #!/usr/bin/env python3
-"""Read what extract.gdb wrote.
-
-    python3 read_out.py out/normdt.f32              # summary
-    python3 read_out.py out/normdt.f32 --view 0     # one view's stats
-    python3 read_out.py out/normdt.f32 --npy        # -> out/normdt.npy
-
-Every dump is a flat little-endian array plus a .json sidecar carrying the
-shape and the provenance, so nothing here has to hard-code geometry.  numpy is
-used when available and the stdlib `array` module otherwise -- the container
-that produces these files has no numpy, and neither does every environment
-that reads them.
-"""
+"""Summarise the arrays that `extract.gdb` wrote."""
 import argparse
 import json
 import os
@@ -25,7 +14,7 @@ def sidecar(path):
 
 
 def shape_of(meta):
-    """(view, v, u) when the sidecar describes a sinogram, else None."""
+    """`(view, v, u)` when the sidecar describes a sinogram, otherwise `None`."""
     if all(k in meta for k in ("number_phi", "number_v_theta", "number_u")):
         return (meta["number_phi"], meta["number_v_theta"], meta["number_u"])
     return None

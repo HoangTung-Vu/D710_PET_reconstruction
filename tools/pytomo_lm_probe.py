@@ -1,42 +1,5 @@
 #!/usr/bin/env python3
-"""Does PyTomography's list-mode TOF path accept D710 data? And how fast is it?
-
-    conda activate petct_recon
-    python3 tools/pytomo_lm_probe.py                 # synthetic events, D710 geometry
-    python3 tools/pytomo_lm_probe.py --events ev.npy # a real decoded event table
-
-No SIRF: it talks to PyTomography only. The scalar CONSTANTS come from
-`utils/scanner.py`, the one place every machine constant lives.
-
-⚠ The GEOMETRY does not, and has drifted from `lm/geom.py`: the LUT here is
-`(cos, sin)` where `lm.geom.scanner_lut` is `(sin, -cos)`, it places crystals at
-the bare `R_MM` rather than `R_EFF_MM`, and it does not reverse the TOF axis.
-That was fine for a timing probe and is wrong for anything else -- `lm/` is the
-implementation, this is only the measurement that chose it. Do not read it as a
-reference for how a D710 LOR is built.
-
-WHAT IT PROVES (measured 2026-08-30, this CPU, 16 threads, 14,809,731 events):
-
-    PETLMProjMeta built                                   info=None accepted
-    sensitivity image over 60.7 M valid LORs        13 s  (0.22 s per million)
-    OSEM 2 iters x 24 subsets, PSF 6.4 mm         12.4 s
-    total                                        ~ 25 s/bed   (vs ~2.2 h in STIR)
-
-WHY IT WORKS -- three facts, each checked in the installed source:
-
-* `PETLMProjMeta` takes `scanner_LUT` directly, and `info` is read NOWHERE in
-  `PETLMSystemMatrix`. So D710 does not have to be squeezed into
-  `pet_scanner_info.txt`'s GATE-style crystal/submodule/module/rsector model.
-* Our detector id convention ALREADY matches: `EVENT_DTYPE.xtal_a` is
-  `ring * detectors_per_ring + trans`, which is exactly what
-  `clinical.get_detector_ids_hdf5` builds as `NrCrystalsPerRing*ring + crystal`.
-* `norm_BP`, the sensitivity image over all valid LORs, is built inside
-  `PETLMSystemMatrix.__init__` -- so constructor time IS the sensitivity cost.
-
-WHAT IT DOES NOT PROVE: nothing here is checked for correctness, only for API
-and speed, and `weights` / `additive_term` are not wired up. `lm/` is the
-working implementation; this stays only as the measurement behind choosing it.
-"""
+"""Probe whether PyTomography's list-mode TOF path accepts D710 data."""
 
 from __future__ import annotations
 
@@ -52,12 +15,11 @@ from utils.scanner import (C_MM_PS as C_MM_PER_PS,
 from utils.scanner import NDET as NDET_RING
 from utils.scanner import NRINGS
 from utils.scanner import N_TOF_RAW as N_TOF
-#: The non-TOF sinogram bin count, i.e. how many LORs the sensitivity runs over.
 N_VALID_LORS = 60_679_584
 
 
 def d710_scanner_lut() -> torch.Tensor:
-    """`(13824, 3)` crystal coordinates. This is what replaces `info`."""
+    """`(13824, 3)` crystal coordinates."""
     pitch = RING_PITCH_MM
     i = torch.arange(NXTAL)
     ring, trans = i // NDET_RING, i % NDET_RING
@@ -76,12 +38,7 @@ def d710_tof_meta(n_sigmas: float = 3.0):
 
 
 def load_events(path: str | None, n: int, seed: int = 0) -> torch.Tensor:
-    """`(N, 3)` int32 `[xtal_a, xtal_b, tof_idx]`, tof_idx 0-based.
-
-    From a real `EVENT_DTYPE` table if given -- note the **+ N_TOF // 2**, which
-    is the same signed -> 0-based shift `gerdf/petsird_out.py` already applies.
-    Otherwise synthetic pairs with the right count and the wrong distribution.
-    """
+    """`(N, 3)` int32 `[xtal_a, xtal_b, tof_idx]`, with `tof_idx` 0-based."""
     if path:
         e = np.load(path)
         return torch.from_numpy(np.stack([
@@ -148,7 +105,6 @@ def main(argv=None) -> int:
     tr = [GaussianFilter(args.psf)] if args.psf > 0 else []
     object_meta = ObjectMeta(dr=(2.13, 2.13, pitch / 2),
                              shape=(args.xy, args.xy, 47))
-    # norm_BP -- the sensitivity image -- is built here, so this IS its cost.
     t = time.time()
     sm = PETLMSystemMatrix(object_meta, proj_meta, obj2obj_transforms=tr, N_splits=8)
     t_sens = time.time() - t

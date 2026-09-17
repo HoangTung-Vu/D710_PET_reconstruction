@@ -1,26 +1,31 @@
 #!/usr/bin/env bash
-# Move the old flat output layout out of the source tree and into $D710_OUT.
-#
-#   tools/migrate_out.sh --from ../D710_reconstruction --to ~/UET/d710_out
-#   tools/migrate_out.sh --from ../D710_reconstruction --to ~/UET/d710_out --apply
-#
-# Dry run by default; nothing moves until --apply.
-#
-# Every step is `mv`, never `cp`.  Source and destination have to be on the
-# same filesystem, which makes each move a rename: instant, and no moment where
-# 19 GB exists twice.  A cross-device --apply is refused rather than silently
-# turning into a multi-hour copy.
-#
-#   raw_prompt/<ca>             ->  <out>/<ca>/decoded
-#   vendor/out/<ca>_bed<n>      ->  <out>/<ca>/vendor/bed<n>
-#   work/<ca>_bed<n>            ->  <out>/<ca>/work/bed<n>
-#   out/<ca>_bqml.nii.gz  &c    ->  <out>/<ca>/export/
-#   out/<ca>_dicom/             ->  <out>/<ca>/export/dicom
-#
-# The case name is whatever `raw_prompt/` holds, so `<ca>_bed<n>` is split on
-# the LAST `_bed`.  Anything that does not match a rule is left where it is and
-# listed at the end -- this script never deletes and never guesses.
 set -euo pipefail
+
+usage() {
+    cat <<'USAGE'
+Move the old flat output layout out of the source tree and into $D710_OUT.
+
+  tools/migrate_out.sh --from ../D710_reconstruction --to ~/UET/d710_out
+  tools/migrate_out.sh --from ../D710_reconstruction --to ~/UET/d710_out --apply
+
+A dry run by default; nothing moves until --apply.
+
+Every step is `mv`, never `cp`. Source and destination must be on the same
+filesystem, which makes each move a rename: instantaneous, and with no moment
+at which 19 GB exists twice. A cross-device --apply is refused rather than
+turning silently into a multi-hour copy.
+
+  raw_prompt/<case>           ->  <out>/<case>/decoded
+  vendor/out/<case>_bed<n>    ->  <out>/<case>/vendor/bed<n>
+  work/<case>_bed<n>          ->  <out>/<case>/work/bed<n>
+  out/<case>_bqml.nii.gz etc  ->  <out>/<case>/export/
+  out/<case>_dicom/           ->  <out>/<case>/export/dicom
+
+The case name is whatever raw_prompt/ holds, so `<case>_bed<n>` is split on the
+last `_bed`. Anything that matches no rule is left where it is and listed at
+the end; this script never deletes and never guesses.
+USAGE
+}
 
 FROM=""; TO=""; APPLY=0
 while [[ $# -gt 0 ]]; do
@@ -29,7 +34,7 @@ while [[ $# -gt 0 ]]; do
     --to)      TO="$2"; shift 2 ;;
     --apply)   APPLY=1; shift ;;
     --dry-run) APPLY=0; shift ;;
-    -h|--help) sed -n '2,25p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -54,7 +59,7 @@ echo
 
 moved=0
 claimed=()
-move() {           # move <src> <dst>
+move() {
   local src="$1" dst="$2"
   [[ -e "$src" ]] || return 0
   claimed+=("$src")
@@ -72,27 +77,23 @@ move() {           # move <src> <dst>
 
 shopt -s nullglob
 
-# ---------------------------------------------------------------- decoded
 for d in "$FROM"/raw_prompt/*/; do
   ca="$(basename "$d")"
   move "${d%/}" "$TO/$ca/decoded"
 done
 
-# ------------------------------------------------- vendor terms, per bed
 for d in "$FROM"/vendor/out/*_bed*/; do
   b="$(basename "$d")"
   ca="${b%_bed*}"; n="${b##*_bed}"
   move "${d%/}" "$TO/$ca/vendor/bed$n"
 done
 
-# -------------------------------------------------- STIR terms, per bed
 for d in "$FROM"/work/*_bed*/; do
   b="$(basename "$d")"
   ca="${b%_bed*}"; n="${b##*_bed}"
   move "${d%/}" "$TO/$ca/work/bed$n"
 done
 
-# ---------------------------------------------------------------- export
 for f in "$FROM"/out/*_bqml.nii.gz "$FROM"/out/*_suvbw.nii.gz; do
   b="$(basename "$f")"
   move "$f" "$TO/${b%%_*}/export/$b"
@@ -105,7 +106,6 @@ done
 echo
 echo "== $moved move(s)$( (( APPLY )) || echo ' would be made')"
 
-# --------------------------------------------------------------- leftovers
 echo
 echo "== not claimed by any rule (left exactly where it is):"
 left=0

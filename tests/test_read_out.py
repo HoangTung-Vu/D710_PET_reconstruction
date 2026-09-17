@@ -1,9 +1,4 @@
-"""`vendor/read_out.py` -- summarise what `extract.gdb` dumped.
-
-Its one hard constraint is that it must run **inside the container**, which has
-no numpy, so the stdlib fallback is not decoration.  These tests exercise both
-paths.
-"""
+"""`vendor/read_out.py`: summarising what `extract.gdb` dumped."""
 
 from __future__ import annotations
 
@@ -15,7 +10,7 @@ import pytest
 
 import read_out
 
-SHAPE = (4, 6, 5)          # view x v x u, the sidecar's own axis names
+SHAPE = (4, 6, 5)
 
 
 def dump(tmp_path, name="normdt.f32", dtype="<f4", meta=None, data=None):
@@ -80,7 +75,6 @@ def test_npy_export_round_trips(tmp_path, monkeypatch, capsys):
 
 
 def test_an_int_dump_is_read_with_its_own_dtype(tmp_path, monkeypatch, capsys):
-    """`singles.i32` is 576 x 24 int32, not a sinogram; the sidecar says so."""
     data = np.arange(24, dtype=np.int64).reshape(4, 6)
     p = dump(tmp_path, name="singles.i32", dtype="<i4", data=data,
              meta={"number_phi": 4, "number_v_theta": 6, "number_u": 1})
@@ -92,7 +86,6 @@ def test_an_int_dump_is_read_with_its_own_dtype(tmp_path, monkeypatch, capsys):
 
 
 def test_it_works_without_numpy(tmp_path, monkeypatch, capsys):
-    """The container that produces these files has no numpy."""
     p = dump(tmp_path)
     monkeypatch.setitem(sys.modules, "numpy", None)
     monkeypatch.setattr("sys.argv", ["read_out.py", p])
@@ -100,7 +93,7 @@ def test_it_works_without_numpy(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "extract.gdb" in out
     assert "nonzero" in out
-    assert "shape" not in out          # the fallback stays 1-D on purpose
+    assert "shape" not in out
 
 
 def test_npy_without_numpy_fails_loudly(tmp_path, monkeypatch, capsys):

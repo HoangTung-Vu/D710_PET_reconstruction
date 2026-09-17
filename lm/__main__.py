@@ -1,14 +1,4 @@
-"""`d710 lm` — list-mode reconstruction, and the two checks it must pass first.
-
-    d710 lm check    --case ped --bed 1
-    d710 lm tofcheck --case ped --bed 1
-    d710 lm recon    --case ped [--beds 1 2 3] [--tof-bins 55]
-
-`check` histograms the events back through the bin map and demands the result be
-**bit-identical** to `decoded/bed<n>.s`, which the vendor decoder produced by a
-completely separate path. `tofcheck` measures which way parallelproj wants the
-TOF axis — the one thing about this path that no invariant can catch.
-"""
+"""Command-line entry point for `d710 lm`."""
 
 from __future__ import annotations
 
@@ -35,17 +25,12 @@ def _events_path(C, bed: int):
 
 
 def _template_counts(C, bed: int):
-    """`(array, n_tof)` of the decoded prompts, in file order."""
     h = interfile.Header(C.prompt(bed))
     return np.fromfile(h.data_file(), "<i2"), h.n_tof
 
 
 def cmd_check(C, args) -> int:
-    """Histogram the events back and demand `decoded/bed<n>.s` bit for bit.
-
-    The TOF mashing comes from the prompts header, never from a flag: the file
-    being compared against is the only thing that can decide it.
-    """
+    """Histogram the events back and require `decoded/bed<n>.s` bit for bit."""
     binmap = geom.BinMap(C.prompt(args.bed))
     e = ev.load(_events_path(C, args.bed))
     ref, n_tof = _template_counts(C, args.bed)
@@ -65,13 +50,7 @@ def cmd_check(C, args) -> int:
 
 
 def cmd_tofcheck(C, args) -> int:
-    """Which TOF sign parallelproj wants, measured against a non-TOF image.
-
-    Same idea as `tools/tof_direction.py`: reconstruct without TOF, so the
-    reference cannot be biased by the axis under test, then score both signs by
-    the Poisson log-likelihood of the events. The right sign puts the activity on
-    the half of the LOR the events say it is on.
-    """
+    """Measure which TOF sign parallelproj expects, against a non-TOF image."""
     import torch
     from pytomography.algorithms import OSEM
     from pytomography.likelihoods import PoissonLogLikelihood
@@ -93,8 +72,6 @@ def cmd_tofcheck(C, args) -> int:
         n_iters=args.iters, n_subsets=args.subsets)
     sm.TOF = True
 
-    # Events far from the centre of the TOF axis are where the sign actually
-    # bites; the middle bin is the same either way, so it only dilutes.
     far = np.abs(np.asarray(e["tof_bin"])[keep]) >= args.tof_far
 
     t = sm.proj_meta.detector_ids[:, 2].clone()
@@ -120,8 +97,6 @@ def cmd_tofcheck(C, args) -> int:
 
 
 def _bed_key(C, n: int, args, tof_scatter) -> str:
-    """Fingerprint of everything that changes bed `n`. A resume that reuses a bed
-    made with different settings is worse than no cache: nothing would flag it."""
     import hashlib
 
     parts = []
@@ -146,16 +121,12 @@ def cmd_recon(C, args) -> int:
     if not beds:
         raise SystemExit(f"error: no bed of {C.name!r} has both a list-mode "
                          f"bed<n>.lm.npy and the correction terms")
-    # Attenuation is the one term SIRF has to build, and SIRF lives in the other
-    # runtime. It is required here, never built here.
     missing = [n for n in beds if not (C.work_bed(n) / "attn.hs").exists()]
     if missing:
         raise SystemExit(
             f"error: bed {missing} has no work/bed<n>/attn.hs.\n"
             f"  build it in the SIRF runtime first:\n"
             f"    ./d710_isolate_stir.sh attn --case {C.name}")
-    # Before anything runs, so an explicit --beds with no event table fails now
-    # and with the message that says how to make one.
     npy = {n: _events_path(C, n) for n in beds}
     ct_dir = args.ct or terms.ct_dir(C, beds[0])
     print(f"case {C.name!r}: {len(beds)} beds  ->  {beds}\n")
@@ -166,8 +137,6 @@ def cmd_recon(C, args) -> int:
         p, key = C.work_bed(n) / "lm.npz", _bed_key(C, n, args, tof_scatter)
         if args.resume and p.exists():
             z = np.load(p, allow_pickle=False)
-            # An npz from before the key existed has no settings to match, so it
-            # is a mismatch -- not a KeyError.
             if "key" in z.files and str(z["key"]) == key:
                 img[n], sens[n] = z["img"], z["sens"]
                 print(f"\n=== bed {n}: reused {p.name}")
@@ -186,7 +155,7 @@ def cmd_recon(C, args) -> int:
 
     vol, z0, factors = stitch.stitch(C, beds, img, sens)
     stitch.overlap_report(C, beds, img, factors)
-    vox = [PLANE_MM, DR_MM, DR_MM]      # (z, y, x) mm
+    vox = [PLANE_MM, DR_MM, DR_MM]
     vol = stitch.post_filter(vol, vox, args.post_filter, args.z_ratio)
 
     out = C.root / "recon_lm.npz"

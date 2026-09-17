@@ -1,17 +1,4 @@
-"""What `osem/` assumes about SIRF, checked against SIRF.
-
-Every assumption here is a place where being wrong produces a plausible-looking
-image rather than an error: the direction of the sensitivity, whether the
-background is inside or outside it, the plane order `as_array()` returns, and
-when `S` has to be attached to count.  They run on the miniature scanner, where
-a whole acquisition model fits in a second.
-
-The last two tests are a different contract: **a notebook in this tree may hold
-no code of its own.**  This project has already been bitten once by a copy of
-`utils/` living inside a notebook and the two drifting apart.  There is no
-notebook today, so they skip; they stay because the rule is about any notebook
-anyone adds, not about the one that was removed.
-"""
+"""The assumptions `osem/` makes about SIRF, checked against SIRF."""
 
 from __future__ import annotations
 
@@ -24,21 +11,13 @@ import pytest
 import interfile
 from conftest import ROOT
 
-#: A cell that is longer than this is doing work that belongs in a module.
 MAX_STATEMENTS = 15
 
 NOTEBOOK = ROOT / "osem_pipeline.ipynb"
 
 
 def code_cells():
-    """`(index, source, parsed module)` for every code cell, skipping magics.
-
-    A cell starting with `%` or `!` is IPython syntax, not Python; there are
-    none today and the notebook is better off without them, but they should
-    make this test skip that cell rather than error.
-    """
-    # The contract is "if a notebook exists it holds no code", not "a notebook
-    # must exist".
+    """`(index, source, parsed module)` for every code cell, skipping magics."""
     if not NOTEBOOK.exists():
         pytest.skip(f"no {NOTEBOOK.name}; nothing to hold to the contract")
     with open(NOTEBOOK) as f:
@@ -55,12 +34,6 @@ def code_cells():
 
 
 def test_the_notebook_defines_no_functions_or_classes():
-    """Anything worth a `def` is worth a module, where it can be tested.
-
-    The drift this prevents is not hypothetical: `utils/` was once copied into
-    a notebook and the two copies diverged, so the notebook and the pipeline
-    stopped computing the same thing while both kept running.
-    """
     offenders = []
     for i, _src, tree in code_cells():
         for node in ast.walk(tree):
@@ -74,12 +47,6 @@ def test_the_notebook_defines_no_functions_or_classes():
 
 
 def test_no_notebook_cell_runs_long():
-    """A long cell is a module that has not been written yet.
-
-    Counted as top-level statements, so a `for` loop over the beds is one
-    statement no matter how many beds there are -- what this catches is a cell
-    that has quietly grown into a script.
-    """
     long_cells = [(i, len(tree.body)) for i, _s, tree in code_cells()
                   if len(tree.body) > MAX_STATEMENTS]
     assert not long_cells, (
@@ -112,12 +79,6 @@ def uniform(ad, value):
 
 
 def test_the_forward_model_is_s_times_gx_plus_b(model):
-    """`y = S(Gx) + b`, with `b` outside `S`.
-
-    Randoms and scatter are already in the measured count domain, so they must
-    NOT be scaled by the sensitivity.  If SIRF ever put the background inside
-    `S`, every reconstruction here would under-subtract by the norm.
-    """
     ad, img, make = model
     x = img.get_uniform_copy(1.0)
 
@@ -130,12 +91,6 @@ def test_the_forward_model_is_s_times_gx_plus_b(model):
 
 
 def test_the_sensitivity_multiplies_rather_than_divides(model):
-    """`AcquisitionSensitivityModel` treats its input as **bin efficiencies**.
-
-    This is the direction that decides whether `normdt` is divided out or
-    multiplied in.  A sensitivity < 1 has to make the forward projection
-    smaller.
-    """
     ad, img, make = model
     x = img.get_uniform_copy(1.0)
     plain = make().forward(x).as_array()
@@ -145,18 +100,6 @@ def test_the_sensitivity_multiplies_rather_than_divides(model):
 
 
 def test_the_sensitivity_deadline_is_the_reconstructors_set_up(sirf, bed24):
-    """`S` counts if it is attached before `rec.set_up`, not before `am.set_up`.
-
-    `osem/recon.py` attaches it before `am.set_up` and says so, which invites the
-    reading that `am.set_up` is the deadline.  It is not: `am.set_up` only stores
-    parameters, and STIR computes the sensitivity image later, inside the
-    reconstructor.  Measured here rather than assumed, because someone reordering
-    these two calls on the strength of a comment would see no error either way.
-
-    Measured 2026-09-06 on the 24-ring miniature, SIRF 3.10.1: attaching before
-    and after `am.set_up` give sensitivity sums equal to 1 part in 1e-7 (float32
-    rounding), both exactly half the unweighted sum for `S = 0.5`.
-    """
     ad, img = bed24
     half = uniform(ad, 0.5)
 
@@ -187,16 +130,6 @@ def test_the_sensitivity_deadline_is_the_reconstructors_set_up(sirf, bed24):
 
 
 def test_stir_canonicalises_the_plane_order_on_read(sirf, bed24, tmp_path):
-    """A SIRF-written term and a decoded one line up in `as_array()`.
-
-    They do **not** line up on disk: `to_stir.py` clones the decoder's
-    `segment, axial, view, tangential` header with segments in `0, +1, -1, ...`
-    order, while `AcquisitionData.write` emits `segment, view, axial,
-    tangential` with segments ascending `-11 .. +11`.  The notebook multiplies
-    `normdt` by the cached `attn` as plain numpy arrays, so if `as_array()`
-    followed the file instead of STIR's own order the two would be silently
-    mismatched by a segment permutation.
-    """
     ad, _img = bed24
     n_planes = ad.as_array().shape[1]
     stamp = np.zeros(ad.as_array().shape, dtype=np.float32)
@@ -209,8 +142,6 @@ def test_stir_canonicalises_the_plane_order_on_read(sirf, bed24, tmp_path):
 
     assert (sirf.AcquisitionData(out).as_array() == stamp).all()
 
-    # ... and the file really is in the other order, so the check above is not
-    # a tautology.
     written = interfile.keys(out)
     assert written["matrix axis label [3]"].lower() == "view"
     ascending = [int(n) for n in
@@ -222,54 +153,29 @@ def test_stir_canonicalises_the_plane_order_on_read(sirf, bed24, tmp_path):
 
 def test_a_uniform_copy_lands_in_the_current_directory(sirf, bed24, tmp_path,
                                                        monkeypatch):
-    """The 231 MB-a-time trap the notebook chdir's around.
-
-    `get_uniform_copy` writes a `tmp_*.hs`/`.s` pair into the **process's**
-    working directory -- not next to the source file -- and keeps it for as
-    long as the returned object lives.  A notebook that holds six beds' worth
-    of terms therefore holds six beds' worth of scratch files, which is where
-    the first run's 926 MB beside the notebook came from.
-    """
     ad, _img = bed24
     monkeypatch.chdir(tmp_path)
     keep = ad.get_uniform_copy(0)
     assert list(tmp_path.glob("tmp_*.s")), "SIRF stopped writing scratch files"
-    del keep                                    # released only on collection
+    del keep
 
 
 def test_decay_to_injection_uses_the_frame_average(model):
-    """The factor the notebook applies before stitching beds.
-
-    `f = exp(-lambda*dt) * (1 - exp(-lambda*T)) / (lambda*T)`.  The second
-    factor is the mean activity **during** the frame; dropping it (using the
-    instantaneous activity at frame start) biases every bed by ~0.5 % here and
-    much more on a long frame, and the bias differs per bed, so it survives as
-    an axial gradient rather than cancelling into `K`.
-    """
     half_life, duration = 6586.2002, 90.0
     lam = np.log(2) / half_life
 
     def factor(dt_s, T):
         return 1.0 / (np.exp(-lam * dt_s) * (1 - np.exp(-lam * T)) / (lam * T))
 
-    # Two beds 91 s apart differ by exactly one decay step, and the later bed
-    # needs the LARGER factor because less activity is left.
     assert factor(3600.0, duration) / factor(3600.0 - 91.0, duration) == \
         pytest.approx(np.exp(lam * 91.0), rel=1e-9)
     assert factor(3600.0, duration) > factor(3509.0, duration)
-    # The frame-average term is a pure function of T, and always > 1.
     assert factor(0.0, duration) == pytest.approx(
         lam * duration / (1 - np.exp(-lam * duration)), rel=1e-12)
     assert factor(0.0, duration) > 1.0
 
 
 def test_bed_stitching_indices_are_exact_plane_offsets():
-    """124.26 mm of table travel is exactly 38 planes, so 9 planes overlap.
-
-    The stitch rounds `(z - z0) / PLANE_MM` to an integer.  That is only safe
-    because the step really is an integer number of planes; a half-plane offset
-    would put two beds' voxels in the same slot with a 1.6 mm axial error.
-    """
     from utils import geometry
 
     step_mm = 124.26

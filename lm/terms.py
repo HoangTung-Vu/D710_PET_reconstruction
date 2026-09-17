@@ -1,21 +1,4 @@
-"""Per-event weights and additive term, looked up from the bed's own sinograms.
-
-The list-mode model PyTomography implements is, per event,
-
-    y_i = (H x)_i + a_i          with the sensitivity image  H~^T w
-
-so the weight `w` does **not** divide the forward projection: the background has
-to arrive already divided by it. That is the `additive_term / weights` in
-`PyTomo/t_GE_HDF5.ipynb`, and it makes this the same model as `y = S(Gx) + b` on
-the sinogram side.
-
-Everything on disk is per **bin**, and a bin at an odd axial position of segment
-0 collects two ring pairs. `normdt`, `randoms` and `scatter` all carry that
-factor of two (`utils.geometry.ring_pair_multiplicity`); an event is one LOR, so
-those three are divided by it here -- the exact inverse of the mistake that
-docstring warns about. `attn` does **not** carry it: it is a survival
-probability of one LOR, not a count or a bin sensitivity.
-"""
+"""Per-event sensitivity weights and additive term, from the bed's own sinograms."""
 
 from __future__ import annotations
 
@@ -23,20 +6,13 @@ import numpy as np
 
 from utils import terms as sino
 
-#: What has to be on disk before a bed can be reconstructed in list mode.
 NEEDED = ("normdt", "attn", "randoms", "scatter")
 
-#: Terms that are per-bin sums over ring pairs, so an event gets `1 / mult` of them.
 PER_BIN = ("normdt", "norm_only", "randoms", "scatter", "background")
 
 
 def read(case, bed: int, name: str, binmap, per_lor: bool = True):
-    """One term as a flat `(plane*view*tang,)` float32 array, read with numpy.
-
-    Every file in `work/bed<n>/` is a header cloned from the decoded prompts with
-    the array in `(1, plane, view, tang)` order, so `np.fromfile` is enough and
-    no SIRF is needed -- see `lm.interfile.Header.require_plane_major`.
-    """
+    """One term as a flat `(plane*view*tang,)` float32 array."""
     from . import interfile
 
     p = case.work_bed(bed) / f"{name}.hs"
@@ -59,21 +35,12 @@ def read(case, bed: int, name: str, binmap, per_lor: bool = True):
 
 
 def lor_sensitivity(case, bed: int, binmap):
-    """`w` per LOR, flat over the non-TOF bins: norm x dead time x attenuation."""
+    """Per-LOR weight, flat over the non-TOF bins: norm times dead time times attenuation."""
     return read(case, bed, "normdt", binmap) * read(case, bed, "attn", binmap)
 
 
 def scatter_tof_weights(case, bed: int, binmap, n_tof: int, e=None):
-    """`(w, note)`: the scatter's TOF shape, summing to 1 over TOF.
-
-    Three sources, in order of preference: GE's own (`scatter_tof.npy`) when the
-    bed was estimated with `reconMethod 3`; a profile measured at full count and
-    left on disk (`scatter_tof_profile.npy` -- what `d710 lowdose` writes, because
-    a thinned bed's tails are too sparse to measure from); otherwise measured from
-    this bed's own tail ring, exactly the way `utils.terms.scatter_tof_profile`
-    does it for the sinogram path -- fed the events' own `(tof, tangential)`
-    histogram in place of a TOF sinogram.
-    """
+    """`(w, note)`: the scatter's TOF shape, summing to 1 over TOF."""
     got = (sino.vendor_tof_weights(case, bed, n_tof, binmap.n_view, binmap.n_tang)
            or sino.measured_tof_weights(case, bed, n_tof))
     if got:
@@ -88,8 +55,6 @@ def scatter_tof_weights(case, bed: int, binmap, n_tof: int, e=None):
 
     b, swap = ev.bins(e, binmap, with_swap=True)
     ok = b >= 0
-    # The profile is applied to the SCATTER SINOGRAM, so it has to be measured on
-    # the sinogram bin's TOF axis -- `tof_index`, not the event's own frame.
     t = ev.tof_index(e, binmap, n_tof, swap)[ok].astype(np.int64)
     u = (b[ok] % binmap.n_tang).astype(np.int64)
     P = np.bincount(t * binmap.n_tang + u,
@@ -105,7 +70,7 @@ def scatter_tof_weights(case, bed: int, binmap, n_tof: int, e=None):
 
 
 def event_terms(case, bed: int, e, binmap, n_tof: int, tof_scatter=None):
-    """`(keep, weights, additive)`; the last two only for the events kept."""
+    """`(keep, weights, additive)`, the last two given only for the events kept."""
     from . import events as ev
 
     b, swap = ev.bins(e, binmap, with_swap=True)
@@ -113,7 +78,7 @@ def event_terms(case, bed: int, e, binmap, n_tof: int, tof_scatter=None):
     b = b[keep].astype(np.int64)
 
     w = lor_sensitivity(case, bed, binmap)[b]
-    rnd = read(case, bed, "randoms", binmap)[b] / n_tof   # randoms are flat in TOF
+    rnd = read(case, bed, "randoms", binmap)[b] / n_tof
     sct = read(case, bed, "scatter", binmap)[b]
 
     if n_tof > 1:
@@ -122,11 +87,6 @@ def event_terms(case, bed: int, e, binmap, n_tof: int, tof_scatter=None):
             tof_scatter, note = scatter_tof_weights(case, bed, binmap, n_tof, e)
         print(f"  TOF scatter: {note}")
         wt = np.asarray(tof_scatter, np.float32)
-        # `wt` indexes the SCATTER SINOGRAM's TOF axis, so the event needs its
-        # index in the sinogram bin's frame -- `tof_index`, which mirrors the
-        # events recorded against the bin's direction. Using the event's own
-        # frame here reads ~9 % of events off the mirrored TOF bin, and nothing
-        # downstream can tell: counts and every invariant are identical.
         t = ev.tof_index(e, binmap, n_tof, swap)[keep].astype(np.int64)
         if wt.ndim == 1:
             sct = sct * wt[t]
@@ -138,6 +98,6 @@ def event_terms(case, bed: int, e, binmap, n_tof: int, tof_scatter=None):
 
 
 def sensitivity(case, bed: int, binmap):
-    """`(ids (M,2) int32, weights (M,) float32)` over every valid LOR."""
+    """`(ids (M, 2) int32, weights (M,) float32)` over every valid LOR."""
     ids, b = binmap.lor_table()
     return ids, lor_sensitivity(case, bed, binmap)[b.astype(np.int64)]

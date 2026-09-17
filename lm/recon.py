@@ -1,9 +1,4 @@
-"""LM-OSEM / BSREM for one bed, through PyTomography + parallelproj.
-
-Output is `(47, xy, xy)` count/voxel -- the same array shape and the same
-`work/bed<n>/osem.npz` layout `osem/recon.py` writes, so `osem.stitch` and
-`utils.export` take it unchanged.
-"""
+"""List-mode OSEM and BSREM for one bed, via PyTomography and parallelproj."""
 
 from __future__ import annotations
 
@@ -12,7 +7,7 @@ import time
 import numpy as np
 
 from utils import scanner
-from utils.scanner import (DR_MM, N_ITERATIONS, N_SUBSETS,  # noqa: F401
+from utils.scanner import (DR_MM, N_ITERATIONS, N_SUBSETS,
                            NSEG0, PLANE_MM, PSF_MM, XY)
 
 from . import events as ev
@@ -20,46 +15,12 @@ from . import geom, terms
 
 
 def axial_mask(nz: int, dz: float, z_ring):
-    """`(nz,)` bool — which image planes are inside the ring extent.
-
-    A plane is in the axial FOV when its **centre** is within half a plane of
-    the outermost ring, so the cut is a round, not a floor and a ceil. That is
-    the whole difference from `PETLMSystemMatrix._get_object_initial`, and it
-    matters because this grid is laid exactly on the ring extent: 47 planes of
-    `PLANE_MM` against 24 rings of `2*PLANE_MM`, so `zmax` is 46.0 to within a
-    float32 ulp — and `object_initial[:, :, int(floor(46.0)):] = 0` takes plane
-    46 **out of the object**.
-
-    It always does. Tuning `RING_PITCH_MM` (see `utils.scanner`) only moves the
-    trap between the two ends: `ceil(zmin)` spares plane 0 when `zmin` lands on
-    0.0, while `floor(zmax)` kills plane 46 when `zmax` lands on 46.0.
-
-    What that costs, measured on `fdg26081901`: OSEM's update is multiplicative,
-    so a plane that starts at zero stays zero for every subiteration, and image
-    plane 46 of every bed came back **identically zero** (`recon_lm.npz` plane
-    274 deconvolves to exactly 0 through the axial post-filter; the sinogram
-    volume does not). `osem.stitch` then averaged that hard zero into the seam
-    with the weight `norm_BP` really gives it — 4.3 % of a mid-bed plane on the
-    axis, the axial sensitivity being a symmetric triangle — for a −10 % notch
-    at the top plane of every bed, and a **+14 %** ridge on plane 45 beside it
-    from the counts the model could not place. Smeared over three planes by the
-    `[1, 4, 1]` post-filter, that pair is the bright line at every bed junction
-    in the coronal and sagittal views. The sinogram path, which truncates
-    nothing, is flat to ±2 % across the same nine planes.
-    """
+    """`(nz,)` bool: which image planes lie inside the ring extent."""
     z = (np.arange(nz) - (nz - 1) / 2.0) * dz
     return (z >= float(z_ring.min()) - dz / 2) & (z <= float(z_ring.max()) + dz / 2)
 
 
 def _initial(sm, n_tang):
-    """The initial estimate: ones inside the FOV, zero outside, both axes.
-
-    Replaces `sm._get_object_initial()` outright rather than masking it further
-    — see `axial_mask` for why its axial cut cannot be used, and
-    `scanner.fov_mask` for what the unmasked transaxial corners do to the
-    result. Zero at the start is permanent under a multiplicative update, so
-    this array is the object's support for the whole reconstruction.
-    """
     import torch
 
     nz = sm.object_meta.shape[-1]
@@ -138,15 +99,9 @@ def reconstruct(case, bed: int, npy, n_tof: int = geom.N_TOF_RAW, xy: int = XY,
     print(f"  {'BSREM' if beta > 0 else 'OSEM'} {n_it}x{n_sub}: "
           f"{time.time() - t0:.0f} s", flush=True)
 
-    # PyTomography is (x, y, z); STIR and everything downstream is (z, y, x).
     img = np.ascontiguousarray(x.cpu().numpy().transpose(2, 1, 0), np.float32)
-    # PETLMSystemMatrix parks 1e7 in the voxels its sensitivity never reaches, to
-    # keep its own division finite. As a bed-stitching weight that is exactly
-    # backwards, so it goes back to zero here.
     sens = sm.norm_BP.cpu().numpy().transpose(2, 1, 0)
     sens = np.where(sens >= 1e7 - 1, 0.0, sens)
-    # Same mask on the stitching weight: outside the FOV it is noise, not a
-    # small sensitivity, and stitch() would weight two beds by it.
     sens = np.ascontiguousarray(
         sens * scanner.fov_mask(xy, binmap.n_tang), np.float32)
     return img, sens

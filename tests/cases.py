@@ -1,13 +1,4 @@
-"""Finding the decoded exams on disk.
-
-The decoded beds and the vendor terms are patient-derived and live outside the
-source tree entirely, under `$D710_OUT`.  So the data-backed tests discover
-what exists instead of assuming it -- and skip cleanly when `$D710_OUT` is
-unset, which is what happens on any machine that has the code but not the data.
-
-Kept out of `conftest.py` so the test modules can import it by name without
-depending on how pytest happens to have loaded the conftest.
-"""
+"""Discovery of the decoded exams present on disk."""
 
 from __future__ import annotations
 
@@ -17,16 +8,11 @@ import pytest
 
 from utils.paths import NoOutputRoot, cases
 
-#: Terms `to_stir.py` writes.  `attn` is added later by `utils.attn`.
 VENDOR_TERMS = ("randoms", "scatter", "background", "normdt", "norm_only")
 
 
 def decoded_beds() -> list[dict]:
-    """Every bed with a decoded prompt **and** a full set of vendor terms.
-
-    `$D710_CASE` narrows to one exam; without it every exam under `$D710_OUT`
-    is collected.
-    """
+    """Every bed with a decoded prompt and a full set of vendor terms."""
     want = os.environ.get("D710_CASE")
     try:
         found = cases()
@@ -47,7 +33,7 @@ def decoded_beds() -> list[dict]:
 
 
 def bed_params():
-    """`decoded_beds()` as pytest params, with a visible skip when empty."""
+    """`decoded_beds()` as pytest parameters, with a visible skip when empty."""
     beds = decoded_beds()
     if not beds:
         return [pytest.param(None, marks=pytest.mark.skip(

@@ -1,9 +1,4 @@
-"""The checks a thinned case has to pass before anything is reconstructed from it.
-
-All of them aggregate **per plane**. The raw sinogram runs at ~0.06 count/bin, so
-`p < r` is true at ~82 % of bins from Poisson noise alone and a per-bin assertion
-says nothing.
-"""
+"""Checks a thinned case must pass before anything is reconstructed from it."""
 
 from __future__ import annotations
 
@@ -20,12 +15,7 @@ def plane_sums(path, n_plane: int, n_vt: int, dtype="<f4"):
 
 
 def plane_tang_sums(path, n_plane: int, n_tang: int, n_vt: int, dtype="<f4"):
-    """`(n_plane, n_tang)` float64 sums, collapsing TOF and **view**.
-
-    The resolution `rho` is estimated at in low-dose mode, and therefore the
-    resolution the binomial expectation has to be computed at: `q` is constant
-    within a `(plane, u)` cell but not within a plane.
-    """
+    """`(n_plane, n_tang)` float64 sums, collapsing TOF and view."""
     a = np.fromfile(path, dtype)
     if a.size % (n_plane * n_vt) or n_vt % n_tang:
         raise SystemExit(f"error: {path} holds {a.size:,} samples, which is not "
@@ -35,17 +25,7 @@ def plane_tang_sums(path, n_plane: int, n_tang: int, n_vt: int, dtype="<f4"):
 
 
 def lm_matches_sinogram(src, beds, out=print) -> list:
-    """Does the event table reproduce the decoded sinogram? Returns the bad beds.
-
-    Run **before** any thinning, because the default `derived` sinogram is the
-    histogram of the thinned events: if the two disagree at full count, the
-    thinned sinogram is a thinning of the wrong parent and the sinogram path
-    silently reconstructs something the list-mode path never saw.
-
-    `decode_in.sh` enforces this at decode time from the `.lm.json` sidecar, but
-    a thinned case has no sidecar, so it is measured here instead. Measured on
-    fdg26081008: exact on every bed, with no event falling outside the sinogram.
-    """
+    """Check that the event table reproduces the decoded sinogram."""
     bad = []
     out(f"{'bed':>4} {'sum bed<n>.s':>16} {'events':>16} {'diff':>12}")
     for n in beds:
@@ -63,32 +43,13 @@ def lm_matches_sinogram(src, beds, out=print) -> list:
 
 
 def binomial(src, dst, beds, q, n_plane: int, n_vt: int, out=print) -> int:
-    """Per plane, `sum(y')` must sit within 3 sd of `Binomial(sum(y), q)`.
-
-    `q` is the keep probability, per bed (`{bed: ...}`) or shared:
-
-    * a **scalar** `f` -- low-count thinning;
-    * `(n_plane,)` -- low-dose with `rho` per plane;
-    * `(n_plane, n_tang)` -- low-dose with `rho` per `(plane, u)`, the default;
-    * a **`(mu, var)` pair** of `(n_plane,)` **absolute counts** -- the exact mean
-      and variance of the draw, summed per event by `thin.expectation`. Used as
-      given, with no `y` weighting, and it is what a TOF-resolved draw needs:
-      modelling that expectation instead biased it, see `thin.expectation`.
-
-    For the probability forms the expectation must be computed at whatever
-    resolution `q` has, because `sum(q_b y_b) != f sum(y_b)` the moment `q` varies
-    inside the plane. Passing a scalar `f` for a low-dose run fails 553/553 planes
-    by construction.
-
-    Returns the number of planes outside the band; ~0.3 % is expected by chance.
-    """
+    """Per plane, require `sum(y')` within three standard deviations of `Binomial(sum(y), q)`."""
     bad = 0
     out(f"{'bed':>4} {'sum y':>14} {'sum y_thin':>14} {'expected':>14} "
         f"{'planes > 3 sd':>16}")
     for n in beds:
         p = q[n] if isinstance(q, dict) else q
         if isinstance(p, tuple):
-            # Already absolute: mean and variance of the draw itself.
             mu, var = (np.asarray(x, np.float64) for x in p)
             y = plane_sums(src.decoded / f"bed{n}.s", n_plane, n_vt, "<i2")
             t = plane_sums(dst.decoded / f"bed{n}.s", n_plane, n_vt, "<i2")
@@ -119,7 +80,7 @@ def binomial(src, dst, beds, q, n_plane: int, n_vt: int, out=print) -> int:
 
 
 def invariants(case, beds, n_plane: int, n_vt: int, out=print) -> int:
-    """`sum(p) >= sum(r)` and `sum(s) <= sum(p - r)`, per plane. Both must be 0."""
+    """Require `sum(p) >= sum(r)` and `sum(s) <= sum(p - r)` per plane."""
     bad = 0
     out(f"{'bed':>4} {'planes p<r':>14} {'planes s>p-r':>16}")
     for n in beds:

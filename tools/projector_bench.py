@@ -1,36 +1,5 @@
 #!/usr/bin/env python3
-"""Where do the hours in a TOF bed go? Ray tracing vs parallelproj, head to head.
-
-    conda activate petct_reconstruction
-    python3 tools/projector_bench.py --case ped2 --bed 1
-
-⚠ Do NOT set `PYTHONPATH=<D710>` for this: the env's activate hook puts SIRF on
-PYTHONPATH, and overwriting it makes `import sirf.STIR` fail. The script adds its
-own parent to `sys.path` instead.
-
-Answers one question the timings alone cannot: is parallelproj *slow*, or is it
-being *asked to do too much*? It times a full projection and a one-subset
-projection for each projector. If the two are equal, that projector is ignoring
-the subset.
-
-Measured 2026-08-30 on ped2 bed 1 (non-TOF, 60.7 M bins, 16 threads, warm):
-
-    projector              fwd FULL   fwd 1of24   back FULL   back 1of24
-    parallelproj              10.7       10.7         5.7        0.3
-    ray lors=5 cache=off      10.1        0.7         7.3        0.3
-    ray lors=5 cache=on        8.1        0.5         4.2        0.2
-    ray lors=1 cache=on        5.8        0.4         3.2        0.1
-
-Read it this way: on a FULL sinogram the two are the same speed -- parallelproj
-is even the faster of the two backwards. The entire gap in an OSEM subiteration
-(0.7 s vs 11.0 s) is that `ForwardProjectorByBinParallelproj::set_input()`
-projects every LOR and `actual_forward_project()` then just memcpy's viewgrams
-out of the result, once per subset (`distributable.cxx:409`). Hence a TOF bed's
-cost is ∝ n_subsets × n_iters and OSEM subsets buy nothing.
-
-The matrix cache is worth only 1.25x here, and `--lors` 5→1 only 1.9x -- both
-much less than `osem/recon.py`'s docstrings claim.
-"""
+"""Timing breakdown of a TOF bed, projector by projector."""
 
 from __future__ import annotations
 
@@ -45,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 def bench(pet, name, make, y, x0, x1, n_sub, out):
-    """One projector: set_up, full forward twice, subset forward, backwards."""
+    """One projector: set-up, two full forward projections, a subset forward and the backwards."""
     am = make()
 
     def t(f, *a):
@@ -54,9 +23,9 @@ def bench(pet, name, make, y, x0, x1, n_sub, out):
         return time.time() - s
 
     t_setup = t(am.set_up, y, x0)
-    t_f1 = t(am.forward, x1)               # cold: builds any cache
-    t_f2 = t(am.forward, x1)               # warm: the number that matters
-    t_fs = t(am.forward, x1, 0, n_sub)     # one subset -- equal to full = ignored
+    t_f1 = t(am.forward, x1)
+    t_f2 = t(am.forward, x1)
+    t_fs = t(am.forward, x1, 0, n_sub)
     t_b1 = t(am.backward, y)
     t_bs = t(am.backward, y, 0, n_sub)
     sub = t_fs + t_bs

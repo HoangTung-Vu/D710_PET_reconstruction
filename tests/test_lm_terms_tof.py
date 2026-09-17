@@ -1,17 +1,4 @@
-"""The TOF frame `lm.terms` looks scatter up in.
-
-There are two TOF frames and they differ for exactly the events recorded against
-their bin's direction (`lm/events.py`). The scatter sinogram and GE's TOF weights
-live in the **sinogram bin's** frame, so an event has to be mirrored into that
-frame before it can index them -- `events.tof_index`, not `geom.tof_to_stir`.
-
-Using the event's own frame here was wrong for ~9 % of a real bed's events and
-completely invisible: the counts, the file sizes and every invariant in
-`test_pipeline_data.py` are identical either way. Only the image differs.
-
-Built on the miniature scanner, so this runs without SIRF, without PyTomography
-and without a decoded exam.
-"""
+"""The TOF frame in which `lm.terms` looks scatter up."""
 
 from __future__ import annotations
 
@@ -29,7 +16,7 @@ def binmap(mini_hs):
 
 
 class FakeCase:
-    """The two attributes `lm.terms.read` uses, pointing at a tmp directory."""
+    """The two attributes `lm.terms.read` uses, pointing at a temporary directory."""
 
     def __init__(self, work):
         self.name = "synthetic"
@@ -60,11 +47,7 @@ def write_terms(work, binmap, hs, **arrays):
 
 
 def swap_split(binmap, n_xtal):
-    """Two crystal pairs on one bin: one recorded with the bin's direction, one against.
-
-    `BinMap.flat(..., with_swap=True)` reports which; the test needs one of each
-    or it cannot tell the two frames apart.
-    """
+    """Two crystal pairs on one bin, one recorded with the bin's direction and one against it."""
     a = np.arange(n_xtal, dtype=np.uint16)
     b = (a + n_xtal // 2) % n_xtal
     flat, swap = binmap.flat(a, b, with_swap=True)
@@ -77,7 +60,6 @@ def swap_split(binmap, n_xtal):
 
 
 def test_the_two_frames_disagree_for_events_recorded_against_the_bin(binmap):
-    """The premise. Without this the rest of the file proves nothing."""
     n_tof, n_xtal = 11, binmap.vt.shape[0]
     i, j = swap_split(binmap, n_xtal)
     a = np.arange(n_xtal, dtype=np.uint16)
@@ -85,7 +67,7 @@ def test_the_two_frames_disagree_for_events_recorded_against_the_bin(binmap):
     e = np.zeros(n_xtal, dtype=[("xtal_a", "<u2"), ("xtal_b", "<u2"),
                                 ("tof_bin", "i1"), ("t_ms", "<u4")])
     e["xtal_a"], e["xtal_b"] = a, b
-    e["tof_bin"] = 7                       # any bin off the centre
+    e["tof_bin"] = 7
 
     own = geom.tof_to_stir(np.asarray(e["tof_bin"]), n_tof)
     sino = ev.tof_index(e, binmap, n_tof)
@@ -95,19 +77,12 @@ def test_the_two_frames_disagree_for_events_recorded_against_the_bin(binmap):
 
 
 def test_event_terms_reads_scatter_in_the_sinogram_frame(binmap, mini_hs, tmp_path):
-    """A delta TOF profile must land on the events whose SINOGRAM index matches.
-
-    The profile is all of the scatter in one TOF bin and none in any other, so
-    an event picks up scatter if and only if its index into that profile is the
-    delta's. Indexed in the wrong frame, the against-direction events pick up
-    scatter at the mirrored bin instead -- which is the bug this pins.
-    """
     n_tof, n_xtal = 11, binmap.vt.shape[0]
     work = tmp_path / "bed1"
     write_terms(work, binmap, mini_hs,
                 normdt=np.ones(binmap.n_bin),
                 attn=np.ones(binmap.n_bin),
-                randoms=np.zeros(binmap.n_bin),      # isolate scatter
+                randoms=np.zeros(binmap.n_bin),
                 scatter=np.ones(binmap.n_bin))
     case = FakeCase(work)
 
@@ -125,7 +100,7 @@ def test_event_terms_reads_scatter_in_the_sinogram_frame(binmap, mini_hs, tmp_pa
 
     keep, w, add = terms.event_terms(case, 1, e, binmap, n_tof,
                                      tof_scatter=profile)
-    got_scatter = add > 0                       # randoms are zero, so add == scatter
+    got_scatter = add > 0
 
     want = sino_t[keep] == delta_bin
     assert np.array_equal(got_scatter, want), (
@@ -133,7 +108,5 @@ def test_event_terms_reads_scatter_in_the_sinogram_frame(binmap, mini_hs, tmp_pa
         "delta, not the sinogram-frame one -- lm/terms.py is indexing the "
         "vendor weights in the wrong frame")
 
-    # And prove the wrong frame really would have given a different answer here,
-    # so this test cannot quietly stop discriminating.
     own_t = geom.tof_to_stir(np.asarray(e["tof_bin"]), n_tof)[keep]
     assert not np.array_equal(own_t == delta_bin, want)

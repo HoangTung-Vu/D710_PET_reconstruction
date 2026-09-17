@@ -1,34 +1,4 @@
-"""count/voxel -> Bq/mL -> SUV. All the quantification, and the constant `K`.
-
-The image coming out of `osem/` is **count/voxel decay-corrected back to the
-injection time**. Converting to Bq/mL takes exactly two scalars:
-
-    Bq/mL = K · exp(-λ·Δt) · x_(count/voxel)
-
-`K` is the scanner constant. `exp(-λ·Δt)` moves the image from our reference
-time (injection) to **GE's** (the start of the series), so that the exported
-Bq/mL is the same physical quantity the vendor's own `PT_s012` carries and the
-two can be compared voxel for voxel. See `scan_start_factor`.
-
-⚠ **`K` is only valid for THE EXACT correction chain that measured it and for
-ONE voxel size.** The projector accumulates along the voxel step rather than by
-volume, so a constant measured at 2.1306 mm and reused at 1.3672 mm reads 1.56×
-high.
-
-Two reference points, neither of which is the final answer:
-
-* **The exam's own WCC.** The exam names its WCC file in the header
-  (`wcc_cal_uid`) and that file really exists in
-  `/usr/PET/systemConfig/cal/<uid>.3dwcc`, tag `(0019,100B)` =
-  `hrActivityFactor`. The `1e4` multiplier is a **GUESS** about GE's unit
-  convention, not yet derived.
-* **A dose-based upper bound.** The image is decay-corrected to injection time,
-  so Σ(activity) ≤ the injected dose; forcing equality gives an upper bound,
-  since in reality some of the dose lies outside the FOV.
-
-Both are linear in SUV, so every SUV number below is wrong by exactly the factor
-`K` is wrong by.
-"""
+"""Conversion from counts per voxel to Bq/mL and SUV."""
 
 from __future__ import annotations
 
@@ -36,16 +6,11 @@ import os
 
 import numpy as np
 
-from .scanner import K_EXPORT, K_EXPORT_LM, WCC_UNIT_SCALE  # noqa: F401
+from .scanner import K_EXPORT, K_EXPORT_LM, WCC_UNIT_SCALE
 
 
 def k_export(lm: bool = False):
-    """Export's own `K`: the env var > the `scanner.py` constant > `None`.
-
-    Two constants, not one: the sinogram and the list-mode path put a different
-    number of counts into the same voxel (different sensitivity model, and TOF
-    against non-TOF), so one `K` cannot serve both. `lm` picks the pair.
-    """
+    """Export's own `K`: the environment variable, then the `scanner.py` constant, then `None`."""
     var, const = (("D710_K_LM", K_EXPORT_LM) if lm else ("D710_K", K_EXPORT))
     raw = os.environ.get(var)
     if raw:
@@ -54,12 +19,7 @@ def k_export(lm: bool = False):
 
 
 def lowdose_k_scale(case) -> float:
-    """`1/f` for a case built by `d710 lowdose`, else 1.
-
-    Thinning keeps a fraction `f` of the events, so the reconstruction comes out
-    `f` times as bright and its `K` has to be `1/f` times as large. One scalar --
-    which is also why the simulator does not touch the sensitivity model.
-    """
+    """`1/f` for a case built by `d710 lowdose`, otherwise 1."""
     import json
 
     p = case.root / "lowdose.json"
@@ -70,37 +30,17 @@ def lowdose_k_scale(case) -> float:
 
 
 def dose_bq(hdr) -> float:
-    """Dose that actually entered the patient: injected minus syringe residual, Bq."""
+    """Dose that entered the patient: injected minus syringe residual, in Bq."""
     return (hdr["dose_mbq"] - hdr.get("residual_dose_mbq", 0.0)) * 1e6
 
 
 def voxel_ml(vox) -> float:
-    """`(z, y, x)` mm -> mL."""
+    """`(z, y, x)` in mm to a volume in mL."""
     return float(vox[0] * vox[1] * vox[2]) / 1000.0
 
 
 def scan_start_factor(case, beds) -> tuple[float, int, dict]:
-    """`(exp(-λ·Δt), reference bed, its header)` — our time reference -> GE's.
-
-    `osem/stitch.py` refers every bed back to the **injection**; GE's own
-    `PT_s012` is `DecayCorrection = START`, referred to the **start of the
-    series** (`FrameReferenceTime` 0 on the first bed, and a per-bed
-    `DecayFactor` bringing the rest back to it). The two differ by one scalar,
-    `exp(-λ·Δt)` with `Δt` the uptake time — 1.41 to 1.64 across the FDG cases
-    here, so it is not a detail.
-
-    The frame-duration term of `stitch.decay_factor` does NOT appear: GE applies
-    the same mean-activity-over-the-frame correction, so it cancels. What is
-    left is exactly the decay across the uptake.
-
-    The reference bed is the **earliest-started** one, not bed 1: that is what
-    "series start" means, and it stays right whatever order the table moved in
-    and whichever subset of beds was reconstructed.
-
-    Applied by `d710 export`, and by `tools/compare_vendor.py` before it fits
-    `K` — one function so the two can never drift apart. Without it `K` would
-    absorb the uptake time and stop being a property of the scanner.
-    """
+    """`(exp(-lambda*dt), reference bed, its header)`: our time reference to GE's."""
     from osem.stitch import injection_epoch
 
     hdrs = {n: case.header(n) for n in beds}
@@ -112,12 +52,7 @@ def scan_start_factor(case, beds) -> tuple[float, int, dict]:
 
 
 def wcc_activity_factor(case, bed: int, verbose: bool = True):
-    """This scanner's own `hrActivityFactor`, or `None`.
-
-    Read from the `estimate.json` sidecar first — `d710 estimate` writes it while
-    it still has the container at hand. Only when the sidecar lacks it (a bed
-    built by an older version) is the container queried again.
-    """
+    """This scanner's own `hrActivityFactor`, or `None`."""
     from . import container, terms
 
     try:
@@ -148,72 +83,46 @@ def wcc_activity_factor(case, bed: int, verbose: bool = True):
 
 
 def k_from_wcc(factor):
-    """`hrActivityFactor` -> `K`, via the ASSUMED unit convention.
-
-    `None` in gives `None` out rather than a `TypeError`: callers usually write
-    `k_from_wcc(wcc_activity_factor(...))` and the inner call **may** fail to
-    find anything (a case without a current sidecar, or a header that does not
-    name a `wcc_cal_uid`). The fallback is then the dose-based reference point,
-    and that is the caller's decision.
-    """
+    """`hrActivityFactor` to `K`, via the assumed unit convention."""
     return None if factor is None else float(factor) * WCC_UNIT_SCALE
 
 
 def k_from_dose(vol, vox, dose: float) -> float:
-    """An **upper bound** on `K`: assumes 100 % of the dose is inside the FOV.
-
-    In reality it is < 100 % (the scan does not cover the whole patient), so the
-    true `K` is smaller than this.
-    """
+    """An upper bound on `K`, assuming the whole dose is inside the FOV."""
     total = float(np.asarray(vol).sum(dtype=np.float64))
     return dose / (total * voxel_ml(vox))
 
 
 def body_mask(vol, frac: float = 0.02, pct: float = 99.9):
-    """Rough body mask: threshold by percentile, not by absolute value.
-
-    An absolute threshold is meaningless here because the scale is uncalibrated
-    (and shifts with `K`).
-    """
+    """Body mask obtained by percentile threshold rather than an absolute value."""
     v = np.asarray(vol)
     return v > frac * np.percentile(v, pct)
 
 
 def suv_bw(bqml, dose: float, weight_kg: float):
-    """Body-weight SUV. Assumes tissue at 1 g/mL."""
+    """Body-weight SUV."""
     return np.asarray(bqml) / (dose / (weight_kg * 1000.0))
 
 
 def bsa_m2(weight_kg: float, height_m: float) -> float:
-    """Du Bois: BSA(m²) = 0.007184 · W(kg)^0.425 · H(cm)^0.725."""
+    """Du Bois body-surface area: 0.007184 * W(kg)^0.425 * H(cm)^0.725."""
     return 0.007184 * weight_kg ** 0.425 * (height_m * 100) ** 0.725
 
 
 def suv_bsa(bqml, dose: float, weight_kg: float, height_m: float):
-    """Body-surface-area SUV. Less biased than body weight for paediatric cases.
-
-    No SUVlbm: the Janmahasatian formula needs sex, which the RDF header lacks.
-    """
+    """Body-surface-area SUV."""
     return np.asarray(bqml) * (bsa_m2(weight_kg, height_m) * 1e4) / dose
 
 
 def suv_table(bqml, mask, hdr, out=print) -> dict:
-    """SUVbw and (if height is known) SUVbsa: median, p90, p99, max inside the body.
-
-    ⚠ SUV is **linear in `K`**, and `K` is currently a guess — every number below
-    is wrong by exactly the factor `K` is wrong by. Switching to the dose-based
-    reference multiplies SUV by ~1.46× straight away. Not yet usable for clinical
-    conclusions.
-    """
+    """SUVbw, and SUVbsa where height is known: median, p90, p99 and maximum inside the body."""
     dose = dose_bq(hdr)
     w = hdr["patient_weight_kg"]
     h = hdr.get("patient_height_m") or 0.0
 
     got = {"SUVbw": suv_bw(bqml, dose, w)}
     if h > 0:
-        # Paediatric case: weight normalisation is more biased than in adults.
         got["SUVbsa"] = suv_bsa(bqml, dose, w, h)
-    # No SUVlbm: the Janmahasatian formula needs sex, which the RDF header lacks.
 
     out(f"{w} kg   {h} m   actual dose {dose / 1e6:.1f} MBq")
     out(f"SUVbw denominator = {dose / (w * 1000):,.1f} Bq/mL"
@@ -229,13 +138,7 @@ def suv_table(bqml, mask, hdr, out=print) -> dict:
 
 
 def report(vol, K: float, hdr, vox, dose: float | None = None, out=print) -> dict:
-    """Apply `K`, print the numbers to check before trusting it, return `{bqml, suv, ...}`.
-
-    `dose` defaults to the whole injected dose, which is right when `vol` is
-    referred to the injection. Hand in the decayed dose when `vol` has been moved
-    to a later reference (`scan_start_factor`) — volume and dose must name the
-    same instant or SUV comes out wrong by the ratio between them.
-    """
+    """Apply `K`, print the numbers it depends on, and return `{bqml, suv, ...}`."""
     dose = dose_bq(hdr) if dose is None else float(dose)
     vml = voxel_ml(vox)
     bqml = np.asarray(vol) * K

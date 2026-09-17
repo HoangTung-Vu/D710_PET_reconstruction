@@ -1,126 +1,131 @@
 # tests
 
 ```bash
-conda activate petct_recon                 # runtime host (environment.yml)
-export D710_OUT=~/UET/d710_out             # để phần test dữ liệu thật tìm ra bed
+conda activate petct_recon                 # the host runtime (environment.yml)
+export D710_OUT=~/UET/d710_out             # so the data-backed tests find the beds
 cd D710
 
-python -m pytest -q                        # tất cả
-tests/run_tests.sh                         # + bảng môi trường và bed đang có
-tests/run_tests.sh --no-data               # chỉ phần tổng hợp
-tests/run_tests.sh --case nema             # chỉ bed của một ca
+python -m pytest -q                        # everything
+tests/run_tests.sh                         # with an environment and bed inventory
+tests/run_tests.sh --no-data               # the synthetic tests only
+tests/run_tests.sh --case nema             # the beds of one case only
 ```
 
-Không activate env thì `stir` / `sirf.STIR` không nạp được và các test cần
-chúng **skip** kèm lý do — không có test nào hỏng vì thiếu môi trường.
+Without the environment activated, `stir` and `sirf.STIR` cannot be imported and
+the tests that require them skip with a stated reason. No test fails for want of
+an environment.
 
-Có **hai** env và chúng cho hai số skip khác nhau; cả hai đều 0 lỗi:
+There are two environments and they give two different skip counts; both report
+zero failures:
 
-| env | là gì | phần SIRF/STIR |
+| environment | description | the SIRF/STIR tests |
 |---|---|---|
-| `petct_recon` | runtime host, dựng từ `environment.yml` | **skip** — env này cố ý không có SIRF |
-| `petct_reconstruction` | env dựng SIRF từ nguồn, có `dlevel/` | chạy thật |
+| `petct_recon` | the host runtime, built from `environment.yml` | skipped; this environment deliberately has no SIRF |
+| `petct_reconstruction` | the environment SIRF was built from source in, holding `dlevel/` | executed |
 
-Tên gần giống nhau nên dễ gõ nhầm; xem cảnh báo trong `README.md` gốc.
+The names are similar enough to be confused; see the note in the top-level
+`README.md`.
 
-## Ba bản rà soát
+## The miniature scanner
 
-Ba tài liệu ghi lại đợt kiểm 2026-09-06: **kiểm cái gì, đối chiếu với cái gì,
-và test nào chốt kết quả đó**. Đọc khi cần biết *vì sao* một test tồn tại.
+A real bed is `553 × 288 × 381`: the prompts occupy 121 MB and each correction
+term 231 MB. No test should carry that. Every geometric rule involved is a rule
+of **span 2** rather than of 24 rings, so `synth_hs.py` shrinks the scanner while
+preserving the rules:
 
-| file | nội dung |
-|---|---|
-| `audit_petsw.md` | mọi hằng số khai nguồn từ cây console GE, đối chiếu với chính file đó |
-| `audit_decode.md` | chín quy ước giải mã: cài ở đâu, test ở đâu, chỗ nào chưa có |
-| `audit_frameworks.md` | mọi lời gọi SIRF/STIR và PyTomography, đối chiếu với API đã cài |
-
-## Máy quét thu nhỏ
-
-Một bed thật là `553 × 288 × 381`: prompt 121 MB, mỗi số hạng hiệu chỉnh
-231 MB. Không test nào nên vác chừng đó. Mọi quy tắc hình học ở đây là quy tắc
-của **span 2**, không phải của 24 ring, nên `synth_hs.py` thu nhỏ máy mà giữ
-nguyên quy tắc:
-
-| | ring | đầu dò/ring | view | tang | plane |
+| | rings | detectors per ring | views | tangential | planes |
 |---|---|---|---|---|---|
-| D710 thật | 24 | 576 | 288 | 381 | 553 |
+| the real D710 | 24 | 576 | 288 | 381 | 553 |
 | `mini_hs` | 6 | 16 | 8 | 9 | 31 |
 | `bed24` | 24 | 48 | 24 | 9 | 553 |
 
-`bed24` giữ đủ 24 ring vì `utils.attenuation.mu_image` đòi đúng lưới ảnh 47 plane
-của một bed; nó chỉ thu nhỏ hai trục mà lưới đó không quan tâm.
+`bed24` retains all 24 rings because `utils.attenuation.mu_image` requires a
+bed's exact 47-plane image grid; it shrinks only the two axes that grid does not
+depend on.
 
-`synth_ct.py` dựng series CT giả: hình trụ nước trong không khí, kèm một khối
-đặc **lệch về +y**. Chỗ lệch đó là điều kiện cần — phantom đối xứng thì không
-phân biệt được phép lật y với phép đồng nhất, mà đúng một phép lật y là toàn bộ
-quy ước hướng của pipeline.
+`synth_ct.py` builds a synthetic CT series: a water cylinder in air with a dense
+insert displaced towards +y. That displacement is a necessary condition — a
+symmetric phantom cannot distinguish a y flip from the identity, and exactly one
+y flip constitutes the whole orientation convention of the pipeline.
 
-## Test cần dữ liệu thật
+## Tests that require real data
 
-`test_pipeline_data.py` chạy trên bed đã giải mã trong
-`$D710_OUT/<ca>/decoded/` và số hạng trong `$D710_OUT/<ca>/work/bed<n>/`. Cả
-hai đều sinh từ dữ liệu bệnh nhân và nằm **ngoài cây mã hoàn toàn**, nên khi
-chưa dựng — hoặc khi `$D710_OUT` chưa đặt — thì test **skip**. Dựng bằng:
+`test_pipeline_data.py` runs on decoded beds in `$D710_OUT/<case>/decoded/` and
+terms in `$D710_OUT/<case>/work/bed<n>/`. Both are derived from patient data and
+lie entirely outside the source tree, so the tests skip when they have not been
+built, and likewise when `$D710_OUT` is unset. Build them with:
 
 ```bash
 d710 exam --raw <petRDFS/.../DIR> --ct <CT series> --case ped
 ```
 
-Mỗi bed tìm thấy thành một tham số riêng (`ped-bed4`, `nema-bed2`, …). Đọc
-sinogram bằng `memmap` chứ không qua `sirf.AcquisitionData`, nên cả 7 bed hiện
-có chạy hết trong ~12 giây thay vì nuốt 8 GB RAM.
+Each bed found becomes a separate parameter (`ped-bed4`, `nema-bed2`, and so
+on). Sinograms are read by memory map rather than through
+`sirf.AcquisitionData`, so all seven beds currently available run in about
+12 seconds instead of consuming 8 GB of RAM.
 
-`D710_CASE=ped` thu hẹp về một ca. `D710_CT=<thư mục CT>` bật thêm phép kiểm
-`FrameOfReferenceUID` của CT bằng `sop_instance_uid` của bed.
+`D710_CASE=ped` narrows the run to one case. `D710_CT=<CT directory>` enables an
+additional check of the CT's `FrameOfReferenceUID` against the bed's
+`sop_instance_uid`.
 
-## Đường import
+## The import path
 
-Khai trong `pytest.ini` (`pythonpath = . vendor`), không phải bằng `sys.path`
-trong `conftest.py`:
+The import path is declared in `pytest.ini` (`pythonpath = . vendor`) rather
+than by `sys.path` manipulation in `conftest.py`. Both entries are relative to
+that file.
 
-* `.` — `utils` và `osem` là **package** thật: `from utils import attenuation`.
-* `vendor` — `estimate.py`, `to_stir.py`… là **script**, chạy bằng
-  `python3 vendor/x.py`, nên tự import lẫn nhau bằng tên trần. Test đặt chúng
-  lên path đúng như vậy thay vì bịa ra một layout package mà mã thật không có.
+* `.` — `utils` and `osem` are genuine packages: `from utils import
+  attenuation`.
+* `vendor` — `estimate.py`, `to_stir.py` and their neighbours are *scripts*, run
+  as `python3 vendor/x.py`, so their own directory is `sys.path[0]` and they
+  import one another by bare name. The tests place them on the path the same
+  way rather than inventing a package layout the shipped code does not have.
 
-`tests/` do pytest tự thêm — đó là cái làm `import interfile` chạy được.
+`tests/` itself is added by pytest under prepend import mode, which is what
+makes `import interfile`, `import synth_hs` and `from cases import ...` work.
 
-## Notebook không được chứa mã
+## Notebooks must not contain code
 
-`test_forward_model.py` **fail** nếu một code cell của một notebook trong cây
-định nghĩa `def`/`class`, hoặc dài quá 15 câu lệnh. Hiện không có notebook nào
-nên hai test đó **skip** kèm lý do; chúng ở lại vì luật áp cho notebook sẽ thêm
-vào sau, chứ không phải cho cái đã xoá. Đây
-là ràng buộc bằng máy cho một chuyện đã xảy ra thật: `utils/` từng bị chép vào
-notebook rồi hai bản lệch nhau, và cả hai vẫn chạy — chỉ là không còn tính cùng
-một thứ.
+`test_forward_model.py` fails if a code cell of any notebook in the tree defines
+a `def` or a `class`, or exceeds 15 statements. There is currently no notebook,
+so those two tests skip with a stated reason; they remain because the rule
+applies to notebooks added in future rather than to the one that was removed.
+This is a machine-enforced constraint on something that actually happened:
+`utils/` was once copied into a notebook, the two copies diverged, and both
+continued to run while no longer computing the same thing.
 
-## Những chỗ test nhắm vào
+## What the tests target
 
-Đều là chỗ mà **sai thì ra ảnh trông hợp lý**, không phải chỗ ném lỗi:
+Each is a place where an error produces a plausible-looking image rather than an
+exception:
 
-* **thứ tự bin GE→STIR** — `stir[0, plane, 287 − ge_view, u]`. Đảo view sai thì
-  ảnh bị soi gương ngang, nhìn không ra.
-* **span 2** — segment 0 gộp hai cặp ring vào plane lẻ. `normdt` đã gánh sẵn
-  bội số này (`test_span_2_doubles_the_odd_planes_of_every_term`), nên nhân
-  `ring_pair_multiplicity()` thêm lần nữa là bình phương nó.
-* **chiều của `normdt`** — nó là *độ nhạy*, chia mới đúng.
-  `test_the_sensitivity_multiplies_rather_than_divides` chốt chiều bằng chính
-  SIRF, `test_dead_time_is_a_livetime_fraction` chốt bằng dữ liệu.
-* **`b` đi vòng qua `S`** — `test_the_forward_model_is_s_times_gx_plus_b` dựng
-  cả `y = S·(Gx) + b` rồi so với `S` và `b` đã biết.
-* **thứ tự plane khi qua đĩa** — SIRF ghi header theo layout *khác hẳn* file
-  giải mã (segment tăng dần, trục view đứng trước trục axial) nhưng
-  `as_array()` vẫn trả về cùng một thứ tự. Notebook nhân `normdt` với `attn`
-  dạng mảng numpy nên điều này là bắt buộc, và nó không hiển nhiên.
-* **một phép lật y duy nhất** — CT vào qua `mu_image` (lật), ra qua
-  `write_dicom` (lật lại); `test_a_ct_feature_comes_back_at_the_same_patient_coordinate`
-  đi trọn vòng và so bằng mm.
-* **đơn vị mu** — STIR dùng 1/cm, PIFA dùng 1/mm. Nhầm là sai hệ số 10 mà không
-  có gì báo.
+* **GE-to-STIR bin order** — `stir[0, plane, 287 − ge_view, u]`. Reversing the
+  view axis incorrectly mirrors the image transversally, which is not visually
+  obvious.
+* **Span 2** — segment 0 merges two ring pairs into each odd plane. `normdt`
+  already carries that multiplicity
+  (`test_span_2_doubles_the_odd_planes_of_every_term`), so multiplying by
+  `ring_pair_multiplicity()` again squares it.
+* **The direction of `normdt`** — it is a *sensitivity*, so dividing is the
+  correction. `test_the_sensitivity_multiplies_rather_than_divides` fixes the
+  direction using SIRF itself, and `test_dead_time_is_a_livetime_fraction` fixes
+  it against data.
+* **`b` bypasses `S`** — `test_the_forward_model_is_s_times_gx_plus_b`
+  assembles `y = S·(Gx) + b` and compares it against known `S` and `b`.
+* **Plane order across a disk round trip** — SIRF writes headers in a different
+  layout from the decoded files (segments ascending, and the view axis before
+  the axial axis), yet `as_array()` returns the same order. Since the pipeline
+  multiplies `normdt` by `attn` as numpy arrays, this is required, and it is not
+  obvious.
+* **Exactly one y flip** — CT enters through `mu_image` (flipped) and leaves
+  through `write_dicom` (flipped back);
+  `test_a_ct_feature_comes_back_at_the_same_patient_coordinate` traverses the
+  whole round trip and compares in millimetres.
+* **The unit of mu** — STIR uses 1/cm and PIFA uses 1/mm. Confusing them is a
+  factor of ten with nothing to signal it.
 
-## Quy ước
+## Conventions
 
-Một test một hành vi, mỗi test ngắn. Không xfail. Con số nào đã *đo được* thì
-ghi kèm ngày đo trong docstring, để lần sau ai đọc còn biết nó là kết quả chứ
-không phải giá trị ai đó chọn cho vừa.
+One behaviour per test, and each test short. No xfail. Any figure that was
+*measured* is recorded with its date of measurement in the docstring, so that a
+later reader can tell a result from a value chosen to fit.

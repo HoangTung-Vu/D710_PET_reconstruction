@@ -1,11 +1,13 @@
-# decode — giải mã raw RDF của GE bằng chính mã của GE
+# decode
 
-Đọc raw của Discovery 710 ra sinogram Interfile + singles + PETSIRD list-mode.
-Không tự cài đặt lại codec nào: cả hai codec của GE đều **chưa đảo được**, và
-không cần đảo, vì binary của hãng chạy được ngoài console.
+Decoding GE raw RDF data with GE's own code.
+
+This stage reads Discovery 710 raw data into Interfile sinograms, singles and
+PETSIRD list-mode files. Neither codec is reimplemented: both of GE's codecs
+remain unreversed, and reversing them is unnecessary, because the vendor
+binaries run off the console.
 
 ```bash
-# một lần: image được bàn giao nguyên con, KHÔNG dựng lại
 docker load -i d710_full.tar
 export D710_OUT=~/UET/d710_out
 
@@ -13,115 +15,124 @@ d710 decode --raw <petRDFS/.../DIR> --case nema
 d710 decode --raw <petRDFS/.../DIR> --lists <petLists/.../DIR> --listmode --case nema
 ```
 
-Host chỉ cần **docker**. Không conda, không i386 multiarch, không cần checkout
-`petsw/` — tất cả nằm trong image.
+The host needs docker only: no conda, no i386 multiarch and no `petsw/`
+checkout, since everything required is inside the image.
 
-`decode_in.sh` ở đây là vòng lặp per-bed chạy **bên trong** container; `d710`
-lo phần mount. Nó là file riêng chứ không bake vào image, nên sửa vòng lặp
-không phải dựng lại 7 GB.
+`decode_in.sh` is the per-bed loop that runs *inside* the container; `d710`
+performs the mounting. It is a separate file rather than baked into the image,
+so that changing the loop does not require rebuilding 7 GB.
 
-Ra ở `$D710_OUT/<ca>/decoded/`.
+Output is written to `$D710_OUT/<case>/decoded/`.
 
-## Ra cái gì
+## Output
 
-| file | nội dung |
+| file | content |
 |---|---|
-| `bed<n>.hs` / `.s` | sinogram prompt, 288 view × 553 plane × 381 u |
-| `bed<n>.json` | header RDF đã parse (bed, table position, prompts, TOF, liều…) |
-| `bed<n>.singles.npy` | singles theo tinh thể, 576 × 24 |
-| `bed<n>.prd` | list-mode PETSIRD, chỉ với `--listmode` |
-| `bed<n>.convert.log` | log giải mã, **chứa dòng MATCH** |
+| `bed<n>.hs` / `.s` | prompt sinogram, 288 views × 553 planes × 381 tangential bins |
+| `bed<n>.json` | the parsed RDF header (bed, table position, prompts, TOF, dose) |
+| `bed<n>.singles.npy` | per-crystal singles, 576 × 24 |
+| `bed<n>.prd` | PETSIRD list mode, written only with `--listmode` |
+| `bed<n>.convert.log` | the decode log, which contains the MATCH line |
 
-Bước tiếp theo là `d710 estimate` (randoms, scatter, norm, dead time) rồi
-`d710 tostir`. `d710 exam` chạy cả ba.
+The next steps are `d710 estimate` (randoms, scatter, norm, dead time) and then
+`d710 tostir`. `d710 exam` runs all three.
 
-## Hai đường giải mã, hai cơ chế khác nhau
+## Two decode paths, two different mechanisms
 
-Cùng một image, nhưng bên trong là hai cách chạy mã của GE khác hẳn nhau.
+The same image contains two quite different ways of running GE's code.
 
-**Sinogram — `librdf.so.0`.** Codec entropy per-row (`RDF_RIVN_4BIT_V1`) chống
-được ba đợt tấn công thống kê. Nhưng `/usr/PET/lib/linux2/librdf.so.0` là ELF
-**32-bit x86 có đủ DWARF** và chạy nguyên xi. Python 64-bit không `dlopen` được
-.so 32-bit — hai ABI không ở chung một process — nên `native/rdfx.c` là một
-binary `-m32` nhỏ làm việc đó và ghi mảng thô ra file; `gerdf/vendor.py` chạy nó
-rồi `memmap` kết quả.
+**Sinograms, through `librdf.so.0`.** The per-row entropy codec
+(`RDF_RIVN_4BIT_V1`) withstood three rounds of statistical attack. However,
+`/usr/PET/lib/linux2/librdf.so.0` is a 32-bit x86 ELF with complete DWARF and
+runs unmodified. A 64-bit Python process cannot `dlopen` a 32-bit shared object,
+since the two ABIs cannot share a process, so `native/rdfx.c` is a small `-m32`
+binary that performs the call and writes the raw array to a file;
+`gerdf/vendor.py` runs it and then memory-maps the result.
 
-**List-mode — `unglepl`.** Codec GLEPL nén `LIST*.BLF` cũng không đảo, cũng
-không cần: `unglepl` của console chạy ở đây ~200 MB/s. Nó là binary i386 và cần
-sáu thư viện **chưa bao giờ được copy khỏi console** — nhưng đóng bao symbol cho
-thấy trong sáu cái đó chỉ đúng **một symbol** bị gọi thật: `getcfg`. Nên
-`native/stub/` có năm stub rỗng chỉ mang SONAME và một `libreadcfg.so` thật.
+**List mode, through `unglepl`.** The GLEPL codec that compresses `LIST*.BLF` is
+likewise unreversed and likewise need not be: the console's own `unglepl` runs
+here at roughly 200 MB/s. It is an i386 binary and requires six libraries that
+were never copied off the console; symbol closure shows that exactly one symbol
+among the six is actually called, `getcfg`. `native/stub/` therefore provides
+five empty stubs carrying only the correct SONAME, plus one real
+`libreadcfg.so`.
 
-## Vì sao trong container lại đơn giản hơn trên host
+## Why the container is simpler than the host
 
-Binary console mở file cấu hình bằng **đường dẫn tuyệt đối** `/usr/PET/…`,
-`/usr/g/…`. Trên host chúng không tồn tại, nên `native/petsw_run.sh` phải dựng
-overlay ghi được lên `/usr` rồi bind cây `petsw/` vào, trong một mount namespace
-không cần root.
+The console binaries open their configuration files by absolute path, under
+`/usr/PET/` and `/usr/g/`. On a host those paths do not exist, so
+`native/petsw_run.sh` has to construct a writable overlay over `/usr` and bind
+the `petsw/` tree into it, inside an unprivileged mount namespace.
 
-Trong image thì `Dockerfile` đã `COPY` cây đó vào **đúng hai đường dẫn ấy**, nên
-toàn bộ trò namespace là thừa — và không chỉ thừa: container không có
-`CAP_SYS_ADMIN`, `unshare` sẽ trả `Operation not permitted` và mọi binary console
-thành bất khả dụng. `PETSW_ROOT=/` trong image báo cho `petsw_run.sh` biết để
-`exec` thẳng, chỉ đặt `LD_LIBRARY_PATH`.
+Inside the image, the `Dockerfile` has already copied that tree to exactly those
+two paths, which makes the namespace construction unnecessary — and not merely
+unnecessary: a container has no `CAP_SYS_ADMIN`, `unshare` returns
+`Operation not permitted`, and every console binary becomes unusable. Setting
+`PETSW_ROOT=/` in the image tells `petsw_run.sh` to `exec` directly, setting
+only `LD_LIBRARY_PATH`.
 
-`stub/` phải đứng **trước** mọi thư mục có bản 64-bit trùng tên: `/vendorlib`
-mang `libmsghand`/`libcupipc`/`libeventmgr` cho `pet_recon` x86-64, và một loader
-32-bit chạm vào đó chỉ tốn công loại sai ELFCLASS.
+`stub/` must precede any directory holding a 64-bit library of the same name:
+`/vendorlib` carries `libmsghand`, `libcupipc` and `libeventmgr` for the x86-64
+`pet_recon`, and a 32-bit loader that encounters them only wastes time
+rejecting the wrong ELF class.
 
-## Dữ liệu KHÔNG được copy vào container
+## Data is not copied into the container
 
-`d710 decode` bind-mount:
+`d710 decode` uses bind mounts:
 
 ```
 <raw>    -> /raw    read-only
 <lists>  -> /lists  read-only
-<out>    -> /out    ghi được
-decode/  -> /decode read-only   (vòng lặp per-bed, sửa không cần build lại)
+<out>    -> /out    writable
+decode/  -> /decode read-only   (the per-bed loop, editable without a rebuild)
 ```
 
-Ba lý do, không phải một:
+There are three reasons rather than one:
 
-1. Một exam là hàng chục GB. Copy vào nghĩa là nhân đôi, và bản sao nằm trong
-   lớp ghi của container.
-2. Dữ liệu acquisition gốc **không tái tạo được**. `rdfx` mở file với
-   `accessMode 0` vì mode 1 và 2 đều `O_RDWR`; mount read-only là lớp chặn thứ
-   hai cho cùng một điều.
-3. Chạy với `--user $(id -u):$(id -g)`, nếu không mọi thứ dưới `--out` trở về
-   thuộc quyền root — container chỉ có mỗi user root và bind mount truyền thẳng
-   uid của host.
+1. An exam is tens of gigabytes. Copying it doubles the storage, and the copy
+   lands in the container's write layer.
+2. The original acquisition data cannot be regenerated. `rdfx` opens files with
+   `accessMode 0` because modes 1 and 2 both imply `O_RDWR`; a read-only mount
+   is a second barrier enforcing the same thing.
+3. The container runs with `--user $(id -u):$(id -g)`. Without it, everything
+   under `--out` would be owned by root, since the container has only a root
+   user and bind mounts pass the host uid through unchanged.
 
-Ngoại lệ duy nhất: GLEPL ghi bản giải nén **cạnh output**, không cạnh input
-(`/out/.gerdf_lm`, cỡ bằng file `.BLF`), rồi bị xoá sau mỗi bed.
+There is one exception: GLEPL writes its decompressed output beside the *output*
+rather than beside the input (`/out/.gerdf_lm`, the size of the `.BLF` file),
+and it is removed after each bed.
 
-## Kiểm đúng/sai bằng gì
+## How correctness is established
 
-`convert` **từ chối in MATCH** trừ khi tổng đếm giải mã bằng `totalPrompts` trong
-header, và `decode_in.sh` dừng nếu không thấy MATCH. Nên dòng giải mã cũng chính
-là dòng kiểm đếm — không có chuyện file cụt trông vẫn như dữ liệu đúng.
+`convert` refuses to print MATCH unless the decoded total equals `totalPrompts`
+in the header, and `decode_in.sh` aborts when MATCH is absent. The decode step is
+therefore also the count check, and a truncated file cannot pass as valid data.
 
-Đo thật trên exam 8 bed:
+Measured on an eight-bed exam:
 
 ```
 bed1  26,114,669  bed3  32,977,313  bed5  44,113,570  bed7  49,041,434
 bed2  30,764,762  bed4  41,057,162  bed6  41,568,323  bed8  72,059,155
-                                            8/8 MATCH, 38 giây cả exam
+                                            8/8 MATCH, 38 s for the whole exam
 ```
 
-List-mode bed 1: 93.3 MB `.BLF` → 162.8 MB sau `unglepl` → 26,114,944 event
-PETSIRD trong 59 giây. Lệch 275 event so với sinogram là pre-roll; bỏ bằng
-`--drop-preroll`.
+List mode, bed 1: a 93.3 MB `.BLF` expands to 162.8 MB under `unglepl` and
+yields 26,114,944 PETSIRD events in 59 seconds. The 275-event difference against
+the sinogram is the pre-roll, removed with `--drop-preroll`.
 
-## Bẫy đã gặp
+## Known pitfalls
 
-* **`-Wl,--export-dynamic` không phải tuỳ chọn.** `librdf.so.0` under-linked và
-  bind `ErrLog` ngược về nơi nạp nó (ta định nghĩa trong `rdfx.c` thay vì
-  `dlopen` cả `libErr.so.0`). Thiếu cờ đó thì `ErrLog` không vào `.dynsym` và
-  `dlopen(RTLD_NOW)` chết với `undefined symbol: ErrLog`. Nhánh multilib của
-  `build.sh` từng thiếu — không ai thấy vì host không có multilib, container thì
-  có. Dòng cuối của `Dockerfile` giờ là smoke test chặn đúng lỗi này.
-* **`fopen64`, không phải `fopen`.** `rdfx` là 32-bit nên `FILE*` mang offset
-  32-bit và chết câm ở 2 GiB. Một dump TOF đầy đủ là 3.34 GB: `fwrite` bắt đầu
-  fail nhưng biến đếm trong RAM vẫn khớp header.
-* **`SINO*` 2D không giải mã được ở đây.** Scan norm/cal là mảng 2D không nén
-  (`data_type` khác 7); `convert` báo lỗi rõ ràng thay vì đoán.
+* **`-Wl,--export-dynamic` is required, not optional.** `librdf.so.0` is
+  under-linked and binds `ErrLog` back to whatever loaded it, which here is the
+  definition in `rdfx.c` rather than a `dlopen` of `libErr.so.0`. Without the
+  flag, `ErrLog` does not enter `.dynsym` and `dlopen(RTLD_NOW)` fails with
+  `undefined symbol: ErrLog`. The multilib branch of `build.sh` once lacked it,
+  which went unnoticed because the host has no multilib while the container
+  does. The final line of the `Dockerfile` is now a smoke test for exactly this
+  failure.
+* **`fopen64`, not `fopen`.** `rdfx` is 32-bit, so `FILE*` carries a 32-bit
+  offset and fails silently at 2 GiB. A complete TOF dump is 3.34 GB: `fwrite`
+  begins to fail while the in-memory counters still agree with the header.
+* **Two-dimensional `SINO*` files cannot be decoded here.** Norm and calibration
+  scans are uncompressed 2D arrays (`data_type` other than 7); `convert` reports
+  a clear error rather than guessing.

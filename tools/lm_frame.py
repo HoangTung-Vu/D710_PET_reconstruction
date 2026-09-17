@@ -1,23 +1,5 @@
 #!/usr/bin/env python3
-"""Is the list-mode image in the same frame as the sinogram one?
-
-    python3 tools/lm_frame.py --case ped --bed 1
-
-Reads `work/bed<n>/{osem,lm}.npz` and reports, for the list-mode image and its
-transpose, the rotation that best lines its angular profile up with the sinogram
-image's. A correct `lm.geom.scanner_lut` gives **0 deg on the untransposed
-image**; a transpose winning means the crystal order is mirrored, and a non-zero
-rotation means the detector-0 position is wrong.
-
-⚠ **This compares the two paths to EACH OTHER, never to reality**, and only their
-rotation — so it is blind to a shared angle error (10.04 deg, found 2026-09-04)
-and to a scale error (list-mode is 2.3 % small). Use the vendor's own PT series
-or the CT for the absolute frame. See GEOMETRY_AUDIT.md.
-
-Angular profiles rather than voxel correlation: they are insensitive to the
-resolution and noise difference between the two reconstructions, which is what
-buries the signal in a plain voxel-wise comparison.
-"""
+"""Check whether the list-mode image shares the frame of the sinogram image."""
 
 from __future__ import annotations
 
@@ -29,7 +11,7 @@ from utils.paths import case as get_case
 
 
 def angular_profile(vol, n_bins: int = 360):
-    """Intensity against angle about the image centre, radius-weighted."""
+    """Intensity against angle about the image centre, weighted by radius."""
     s = vol.sum(0)
     n = s.shape[0]
     y, x = np.mgrid[0:n, 0:n] - (n - 1) / 2
@@ -40,7 +22,7 @@ def angular_profile(vol, n_bins: int = 360):
 
 
 def best_rotation(p, q):
-    """`(degrees, correlation)` -- how far `q` must turn to match `p`."""
+    """`(degrees, correlation)`: how far `q` must turn to match `p`."""
     z = lambda v: (v - v.mean()) / (v.std() + 1e-12)
     p, q = z(p), z(q)
     c = np.array([p @ np.roll(q, k) for k in range(len(q))]) / len(q)

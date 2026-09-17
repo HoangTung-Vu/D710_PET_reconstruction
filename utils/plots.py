@@ -1,13 +1,4 @@
-"""Figures for the notebook. No computation here — it only plots what was computed.
-
-It lives in `utils/` rather than `osem/` because nothing about it is
-OSEM-specific: a different reconstruction (FBP, MLEM) would want exactly these
-figures.
-
-One convention across every image: **clip at a percentile, not at the max**. A
-handful of outlier bins turn the whole image black under `vmax = max`, and that
-is the easiest way to look at a correct sinogram and think it is broken.
-"""
+"""Figures for the notebook."""
 
 from __future__ import annotations
 
@@ -17,29 +8,20 @@ from .terms import COUNT_TERMS, FACTOR_TERMS, NSEG0
 
 
 def slices(a, plane: int) -> dict:
-    """The four slices needed to look at one term, from a `(553, 288, 381)` array.
-
-    Keeping just these instead of the full array is why the notebook can run six
-    beds in ~2.5 GB instead of ~15 GB.
-    """
-    return {"sino": a[plane].copy(),                       # (view, tangential)
-            "axial": a.sum(axis=1, dtype=np.float64),      # (plane, tangential)
-            "prof": a[plane].mean(axis=0),                 # 1D transverse profile
+    """The four slices needed to inspect one term, from a `(553, 288, 381)` array."""
+    return {"sino": a[plane].copy(),
+            "axial": a.sum(axis=1, dtype=np.float64),
+            "prof": a[plane].mean(axis=0),
             "per_plane": a.sum(axis=(1, 2), dtype=np.float64)}
 
 
 def busiest_plane(prompts) -> int:
-    """The direct plane with the most counts — plotting an empty plane proves nothing."""
+    """The direct plane holding the most counts."""
     return int(np.argmax(prompts[0, :NSEG0].sum(axis=(1, 2))))
 
 
 def sinogram_grid(proj, plane, names, title, cmap, unit, subtitle=""):
-    """Two rows per term: the transverse sinogram at `plane`, and the view-summed image.
-
-    The bottom row spans all 553 planes; the dashed white line marks the end of
-    segment 0 (plane 47). That row shows the michelogram layout at a glance — and
-    equally shows a wrong plane mapping at a glance.
-    """
+    """Two rows per term: the transverse sinogram at `plane`, and the view-summed image."""
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(2, len(names), figsize=(3.5 * len(names), 7.4),
@@ -63,11 +45,7 @@ def sinogram_grid(proj, plane, names, title, cmap, unit, subtitle=""):
 
 
 def profiles(proj, planes, beds, case_name=""):
-    """2D images show shape; comparing MAGNITUDE requires the 1D profiles.
-
-    Row 1: one bed at a time, the count-domain terms overlaid.
-    Row 2: the factors for that same bed.
-    """
+    """One-dimensional profiles, for comparing magnitude rather than shape."""
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(2, len(beds), figsize=(3.2 * len(beds), 8), squeeze=False)
@@ -96,7 +74,7 @@ def profiles(proj, planes, beds, case_name=""):
 
 
 def per_plane(proj, beds):
-    """Per-plane totals, every bed on the same axes — an outlying bed shows up immediately."""
+    """Per-plane totals, every bed on the same axes."""
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(1, len(COUNT_TERMS),
@@ -117,7 +95,7 @@ def per_plane(proj, beds):
 
 
 def beds(img, headers, title=""):
-    """Per bed: the mid-bed transaxial slice plus that bed's own coronal view."""
+    """Per bed, the mid-bed transaxial slice and that bed's own coronal view."""
     import matplotlib.pyplot as plt
 
     ns = sorted(img)
@@ -139,12 +117,7 @@ def beds(img, headers, title=""):
 
 
 def whole_body(vol, vox, plane_mm, title=""):
-    """Coronal + sagittal MIPs plus the per-plane total of the stitched volume.
-
-    DICOM's z axis increases towards the head while `imshow` draws row 0 at the
-    top, so it is flipped to put the head up, the way such images are normally
-    read.
-    """
+    """Coronal and sagittal MIPs, with the per-plane total of the stitched volume."""
     import matplotlib.pyplot as plt
 
     hi = np.percentile(vol, 99.9)
@@ -166,7 +139,7 @@ def whole_body(vol, vox, plane_mm, title=""):
 
 
 def suv(suv_bw, mask, vox, plane_mm, K, case_name=""):
-    """A clinically windowed 0–5 MIP, a p99.9 MIP, and the SUV distribution inside the body."""
+    """A windowed 0-5 MIP, a p99.9 MIP, and the SUV distribution inside the body."""
     import matplotlib.pyplot as plt
 
     mip = suv_bw.max(axis=1)[::-1]

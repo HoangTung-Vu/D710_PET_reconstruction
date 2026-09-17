@@ -1,46 +1,4 @@
-"""Check the TOF axis from the DATA ITSELF, without calling any vendor function.
-
-    python3 tools/tof_profile.py view1.npy [view2.npy ...] [--save prof.npy]
-
-The input is the output of `gerdf decode <SINO> --view N -o v.npy` **without**
-`--collapse-tof`, i.e. `(radial, tof, plane)` uint8.  A few views are enough;
-one view of bed 1 has ~37 thousand counts, five views ~240 thousand.
-
-## The three questions it answers, and why it can
-
-All three rest on one geometric fact: **the further a LOR is from the centre,
-the less of the patient it passes through**.  So slicing the sinogram by radius
-is enough to separate three components without any model:
-
-* large `|u|` (beyond ~280 mm) — the LOR misses the body entirely.  The counts
-  there are almost purely **randoms**.  Randoms are accidental coincidences with
-  no time correlation, so their TOF profile **must be flat**.  Measuring a CoV
-  right at the Poisson floor confirms `randoms / n_tof`.  Measuring a clearly
-  higher CoV refutes it.
-* the tail ring in `|u|` (~140-210 mm) — outside the body but still reached by
-  scatter.  Subtract the flat randoms background measured above and what remains
-  **is the scatter TOF profile**, measured directly.  This is exactly the region
-  GE itself uses to scale scatter (`CalcSinoTails`,
-  `SCAT_TAILFIT_ANGLE_WINDOW`).
-* the whole view — the total profile must be **one continuous hump**.  If it
-  turns into a comb or into two peaks, the TOF axis is interleaved (STIR's own
-  order is interleaved), and then `gerdf --tof-mash` mashing adjacent bins is
-  mashing together time points that are not adjacent.
-
-None of the three needs `GetScatterViewDataTof`.  They are measurements, and
-they measure what that function is supposed to produce -- so they are also the
-yardstick to GRADE it against once it can be called.
-
-## Bin numbering
-
-Everything printed is in **GE's** bin order, because that is the order a raw
-decoded view is stored in and this tool reports on that file.  `--save` writes
-the profile **reversed**, into STIR's timing-position order, because its only
-consumer is `d710 osem --tof-scatter`, which applies it to prompts the decoder
-has already reversed (`gerdf.cli._tof_to_stir`).  So a peak bin printed here and
-a peak bin reported by `utils.terms` are mirror images of each other, and both
-are right.
-"""
+"""Check the TOF axis from the data alone, without calling a vendor function."""
 
 from __future__ import annotations
 
@@ -49,21 +7,16 @@ import sys
 
 import numpy as np
 
-from utils.scanner import BIN_MM                 # sinogram bin width, mm
-from utils.scanner import TOF_LSB_PS as BIN_PS   # coincTimingPrecision
+from utils.scanner import BIN_MM
+from utils.scanner import TOF_LSB_PS as BIN_PS
 
-#: Beyond this radius, treat the counts as randoms only. 280 mm is not a round
-#: number picked for looks: over 200-280 mm the measurement below still sees a
-#: CoV twice the Poisson floor, i.e. scatter still reaches that far.
 R_ONLY_MM = 280.0
 
-#: The ring the scatter profile is taken from: outside this child's body, but not
-#: yet out in the randoms-only region.
 TAIL_LO_MM, TAIL_HI_MM = 140.0, 210.0
 
 
 def load(paths: list[str]) -> np.ndarray:
-    """Sum several views. int64 because uint8 overflows on the second view already."""
+    """Sum several views of a term."""
     a = None
     for p in paths:
         v = np.load(p)
@@ -83,12 +36,11 @@ def radial_mm(nr: int) -> np.ndarray:
 def report(A: np.ndarray, out=print) -> dict:
     nr, nt, _ = A.shape
     u = np.abs(radial_mm(nr))
-    prof = lambda m: A[m].sum(axis=(0, 2)).astype(float)   # noqa: E731
+    prof = lambda m: A[m].sum(axis=(0, 2)).astype(float)
     res: dict = {}
 
     out(f"{A.sum():,} counts, {nt} TOF bins, bin width {BIN_PS:g} ps\n")
 
-    # -- 1. is the TOF axis monotonic in time ------------------------------
     p = prof(u < 200)
     sm = np.convolve(p, np.ones(9) / 9, mode="valid")
     turns = int((np.diff(np.sign(np.diff(sm))) != 0).sum())
@@ -102,7 +54,6 @@ def report(A: np.ndarray, out=print) -> dict:
         f"{(half[-1] - half[0] + 1) * BIN_PS:.0f} ps, contiguous {contiguous}")
     out(f"   -> {'MONOTONIC: mashing adjacent bins is correct' if res['monotonic'] else 'NOT single-peaked -- the axis may be INTERLEAVED, DO NOT use --tof-mash'}\n")
 
-    # -- 2. are the randoms flat -------------------------------------------
     out("2. RANDOMS (LORs missing the body)")
     res["randoms_flat"] = None
     for lo, hi in [(200.0, R_ONLY_MM), (R_ONLY_MM, 1e9)]:
@@ -120,11 +71,9 @@ def report(A: np.ndarray, out=print) -> dict:
             res["randoms_cov"], res["randoms_poisson"] = float(cov), float(poisson)
     out(f"   -> randoms/n_tof {'CONFIRMED by measurement' if res['randoms_flat'] else 'NOT confirmed'}\n")
 
-    # -- 3. the scatter TOF profile ----------------------------------------
     m_tail = (u >= TAIL_LO_MM) & (u < TAIL_HI_MM)
     m_far = u >= R_ONLY_MM
     q_tail, q_far = prof(m_tail), prof(m_far)
-    # Randoms are flat, so their level in the tail ring scales with the NUMBER of LORs.
     r_level = q_far.mean() / m_far.sum() * m_tail.sum()
     scat = np.clip(q_tail - r_level, 0, None)
     res["scatter_profile"] = scat / scat.sum() if scat.sum() else scat
@@ -135,7 +84,6 @@ def report(A: np.ndarray, out=print) -> dict:
     out(f"   peak bin {int(scat.argmax())}   max/mean {scat.max() / scat.mean():.2f}   "
         f"CoV {scat.std() / scat.mean():.3f}")
 
-    # -- 4. the cost of spreading it flat ----------------------------------
     b_flat = r_level + scat.sum() / nt
     neg = int((q_tail < b_flat).sum())
     res["flat_negative_bins"] = neg
@@ -157,13 +105,6 @@ def main(argv=None) -> int:
 
     res = report(load(args.views))
     if args.save:
-        # Everything above is in GE's own bin order, because that is what a raw
-        # decoded view holds and the numbers printed describe that file. What
-        # gets SAVED is consumed by `d710 osem --tof-scatter`, against prompts
-        # the decoder has already reversed into STIR's timing-position order
-        # (`gerdf.cli._tof_to_stir`), so the profile has to be reversed to match.
-        # Save it GE's way round and it would peak on the wrong side of the LOR,
-        # silently -- it is a smooth hump either way.
         prof = res["scatter_profile"][::-1]
         np.save(args.save, prof)
         print(f"\nwrote {args.save}  ({prof.size} bins, sum = 1, "

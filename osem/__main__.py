@@ -94,11 +94,20 @@ def main(argv=None) -> int:
               f"scatter {src}")
     print()
 
+    missing = [n for n in beds if not (C.work_bed(n) / "attn.hs").exists()]
+    if missing:
+        raise SystemExit(
+            "error: bed %s has no work/bed<n>/attn.hs.\n"
+            "  Attenuation is built on the host now, by projecting the CT\n"
+            "  mu-map with parallelproj rather than with SIRF, so it cannot be\n"
+            "  built from inside this image:\n"
+            "      d710 attn --case %s" % (missing, C.name))
+
     ct_dir = args.ct or terms.ct_dir(C, beds[0])
-    at = attn.Attenuation(C, ct_dir, x0, y0)
-    print(at.describe())
-    print("\nattenuation per bed (water at 511 keV ≈ 0.096 1/cm):")
-    af = at.all(beds)
+    print(f"attenuation: work/bed<n>/attn.hs, from `d710 attn` on\n  {ct_dir}")
+    af = {n: attn.read(C.work_bed(n) / "attn.hs") for n in beds}
+    for n in beds:
+        print(f"  bed {n}: af mean {af[n].mean():.4f}  min {af[n].min():.4f}")
 
     tof_scatter = np.load(args.tof_scatter) if args.tof_scatter else None
 

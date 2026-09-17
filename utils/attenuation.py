@@ -91,17 +91,12 @@ def load(path: str) -> CTAC:
                       "num_slices": len(ds)})
 
 
-def mu_image(ct: CTAC, table_position_mm: float, template, edge_tol_planes: float = 1.5):
-    """A SIRF `ImageData` holding the bed's mu-map, in 1/cm, on `template`'s grid."""
+def mu_map(ct: CTAC, table_position_mm: float, xy: int, dr_mm: float,
+           edge_tol_planes: float = 1.5) -> np.ndarray:
+    """The bed's mu-map in 1/cm, as `(47, xy, xy)` in the image's `(plane, y, x)` order."""
     from scipy.ndimage import map_coordinates
 
-    shape = tuple(int(s) for s in template.shape)
-    if shape[0] != PLANES_PER_BED or shape[1] != shape[2]:
-        raise SystemExit(f"error: image grid {shape} is not (47, xy, xy)")
-    vz, vy, vx = (float(v) for v in template.voxel_sizes())
-    if abs(vy - vx) > 1e-3:
-        raise SystemExit(f"error: transaxial voxels are not isotropic {vy} × {vx}")
-
+    vy = float(dr_mm)
     zc = table_position_mm + np.arange(PLANES_PER_BED) * PLANE_MM
     gz = (zc - ct.z[0]) / ct.dz
     out_mm = max(ct.z[0] - zc.min(), zc.max() - ct.z[-1], 0.0)
@@ -118,21 +113,10 @@ def mu_image(ct: CTAC, table_position_mm: float, template, edge_tol_planes: floa
               f"{out_mm:.1f} mm; clamping to the outermost CT slice")
         gz = np.clip(gz, 0.0, len(ct.z) - 1.0)
 
-    xy = shape[1]
     c = (np.arange(xy) - xy // 2) * vy
     g = np.meshgrid(gz, (c - ct.y0) / ct.pixel_mm, (c - ct.x0) / ct.pixel_mm,
                     indexing="ij")
     hu = map_coordinates(ct.hu, [x.ravel() for x in g], order=1,
                          mode="constant", cval=-1000.0).reshape(PLANES_PER_BED, xy, xy)
     mu = hu_to_mu(hu, ct.kvp) * 10.0
-
-    out = template.get_uniform_copy(0)
-    out.fill(np.ascontiguousarray(to_radiological(mu), dtype=np.float32))
-    return out
-
-
-def factors(ad, mu_img):
-    """`(af, acf)`: the survival probability and its inverse, as `AcquisitionData`."""
-    import sirf.STIR as pet
-
-    return pet.AcquisitionSensitivityModel.compute_attenuation_factors(ad, mu_img)
+    return np.ascontiguousarray(to_radiological(mu), dtype=np.float32)

@@ -13,7 +13,7 @@ PER_BIN = ("normdt", "norm_only", "randoms", "scatter", "background")
 
 def read(case, bed: int, name: str, binmap, per_lor: bool = True):
     """One term as a flat `(plane*view*tang,)` float32 array."""
-    from . import interfile
+    from utils import interfile
 
     p = case.work_bed(bed) / f"{name}.hs"
     if not p.exists():

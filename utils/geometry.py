@@ -1,61 +1,16 @@
-"""D710 sinogram geometry, read from the STIR header rather than tabulated."""
+"""D710 sinogram geometry: crystal numbering, detector pairs and crystal positions.
+
+Everything here is plain numpy. The STIR cross-checks that used to live in this
+module -- they only ever served as an oracle for the tests -- are in
+`tests/stir_oracle.py`.
+"""
 
 from __future__ import annotations
 
 import numpy as np
 
-from .scanner import CRYSTAL_OFFSET, CRYSTAL_REVERSE, PLANE_MM
-
-
-def open_projdata(hs: str):
-    """`(proj_data, info)`; proj_data must be kept alive, info is a borrowed pointer."""
-    import stir
-
-    pd = stir.ProjData.read_from_file(hs)
-    return pd, pd.get_proj_data_info()
-
-
-def segment_order(info) -> list[int]:
-    """The order in which STIR stores segments: 0, +1, -1, +2, -2, and so on."""
-    out = [0]
-    for k in range(1, info.get_max_segment_num() + 1):
-        out += [k, -k]
-    return out
-
-
-def plane_ring_pairs(info, num_rings: int) -> list[list[tuple[int, int]]]:
-    """The ring pairs summed into each plane, as `(ring of pos1, ring of pos2)`."""
-    out = []
-    for s in segment_order(info):
-        lo, hi = info.get_min_ring_difference(s), info.get_max_ring_difference(s)
-        z0 = min(abs(d) for d in range(lo, hi + 1))
-        for a in range(info.get_num_axial_poss(s)):
-            z = z0 + a
-            out.append([((z - d) // 2 + d, (z - d) // 2) for d in range(lo, hi + 1)
-                        if (z - d) % 2 == 0 and 0 <= (z - d) // 2 < num_rings
-                        and 0 <= (z - d) // 2 + d < num_rings])
-    return out
-
-
-def check_ring_pairs(info, pairs: list[list[tuple[int, int]]]) -> None:
-    """Raise if the derived ring pairs disagree with STIR's own count."""
-    p = 0
-    for s in segment_order(info):
-        for a in range(info.get_num_axial_poss(s)):
-            want = info.get_num_ring_pairs_for_segment_axial_pos_num(s, a)
-            if len(pairs[p]) != want:
-                raise ValueError(
-                    f"plane {p} (segment {s}, axial {a}): derived "
-                    f"{len(pairs[p])} ring pairs, STIR says {want}")
-            p += 1
-
-
-def ring_pair_multiplicity(info) -> np.ndarray:
-    """Ring pairs merged into each plane, along STIR's flattened axial axis."""
-    return np.concatenate([
-        np.array([info.get_num_ring_pairs_for_segment_axial_pos_num(s, a)
-                  for a in range(info.get_num_axial_poss(s))], dtype=np.float32)
-        for s in segment_order(info)])
+from .scanner import (CRYSTAL_OFFSET, CRYSTAL_REVERSE, NDET, NRINGS,
+                      RING_PITCH_MM, R_EFF_MM, VIEW_OFFSET_DEG)
 
 
 def det_pair_map(num_views: int, num_tang: int, num_det: int):
@@ -74,12 +29,33 @@ def crystal_to_det(num_det: int, offset: int = CRYSTAL_OFFSET,
     return np.roll(d[::-1] if reverse else d, offset)
 
 
-def tangential_s_mm(hs: str) -> np.ndarray:
-    """Radial offset `s` of each tangential bin in mm, taken from the header."""
-    import stir
+def ring_z_mm(nrings: int = NRINGS, pitch_mm: float = RING_PITCH_MM) -> np.ndarray:
+    """The axial centre of each ring, in mm, about the middle of the scanner."""
+    return ((np.arange(nrings) - (nrings - 1) / 2.0) * pitch_mm).astype(np.float32)
 
-    pd = stir.ProjData.read_from_file(hs)
-    info = pd.get_proj_data_info()
-    lo = info.get_min_tangential_pos_num()
-    return np.array([info.get_s(stir.Bin(0, 0, 0, lo + t))
-                     for t in range(info.get_num_tangential_poss())])
+
+def detector_xy_mm(num_det: int = NDET, r_mm: float = R_EFF_MM,
+                   offset_deg: float = VIEW_OFFSET_DEG) -> np.ndarray:
+    """`(num_det, 2)` transaxial centre of each STIR detector number, in mm."""
+    ang = 2.0 * np.pi * np.arange(num_det) / num_det + np.deg2rad(offset_deg)
+    return np.stack([r_mm * np.sin(ang), -r_mm * np.cos(ang)], 1).astype(np.float32)
+
+
+def crystal_positions(nrings: int = NRINGS, ndet: int = NDET, r_mm: float = R_EFF_MM,
+                      pitch_mm: float = RING_PITCH_MM,
+                      offset_deg: float = VIEW_OFFSET_DEG,
+                      stir_frame: bool = True) -> np.ndarray:
+    """`(nrings*ndet, 3)` crystal centres in mm, indexed by GE crystal id.
+
+    The GE crystal id is `ring * ndet + transverse`. `stir_frame` puts the
+    result in the frame STIR and the image grid share, which is also what
+    PyTomography wants as its `scanner_LUT`.
+    """
+    i = np.arange(nrings * ndet)
+    ring, trans = np.divmod(i, ndet)
+    d = crystal_to_det(ndet)[trans] if stir_frame else trans
+    ang = 2.0 * np.pi * d / ndet + np.deg2rad(offset_deg)
+    x, y = (r_mm * np.sin(ang), -r_mm * np.cos(ang)) if stir_frame else \
+        (r_mm * np.cos(ang), r_mm * np.sin(ang))
+    z = (ring - (nrings - 1) / 2.0) * pitch_mm
+    return np.stack([x, y, z], 1).astype(np.float32)

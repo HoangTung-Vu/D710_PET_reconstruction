@@ -40,8 +40,8 @@ def project(nontof_case, tof_case, bed: int, xy: int):
             "error: case %r has TOF prompts, so it cannot be the reference.\n"
             "  --nontof-case must name a case decoded with --no-tof."
             % nontof_case.name)
-    at = attn.Attenuation(nontof_case, terms.ct_dir(nontof_case, bed), x0, y0,
-                          verbose=False)
+    at = attn.Attenuation(nontof_case, terms.ct_dir(nontof_case, bed),
+                          xy=x0.as_array().shape[-1], verbose=False)
     af = at.af(bed)
     img, _ = recon.reconstruct(nontof_case, bed, af, x0, n_sub=12, n_it=1,
                                xy=xy, projector="ray")

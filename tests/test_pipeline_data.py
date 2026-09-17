@@ -8,7 +8,7 @@ import os
 import numpy as np
 import pytest
 
-import interfile
+import projdata
 from cases import VENDOR_TERMS, bed_params, decoded_beds
 
 CLONED_KEYS = ("name of data file", "number format", "number of bytes per pixel")
@@ -22,7 +22,7 @@ _cache: dict[str, np.ndarray] = {}
 def planes(hs):
     """Per-plane sums, computed once per file for the whole session."""
     if hs not in _cache:
-        _cache[hs] = interfile.per_plane(hs)
+        _cache[hs] = projdata.per_plane(hs)
     return _cache[hs]
 
 
@@ -72,15 +72,15 @@ def test_the_bin_mapping_was_proved_on_this_bed(bed):
 
 
 def test_every_term_shares_the_prompts_geometry(bed):
-    want = interfile.shape(bed["hs"])[1:]
+    want = projdata.shape(bed["hs"])[1:]
     for name in VENDOR_TERMS:
-        assert interfile.shape(term(bed, name))[1:] == want, name
+        assert projdata.shape(term(bed, name))[1:] == want, name
 
 
 def test_term_headers_are_clones_of_the_prompt_header(bed):
-    src = interfile.keys(bed["hs"])
+    src = projdata.keys(bed["hs"])
     for name in VENDOR_TERMS:
-        got = interfile.keys(term(bed, name))
+        got = projdata.keys(term(bed, name))
         assert set(src) - set(got) <= set(TOF_DATA_KEYS), name
         assert set(got) - set(src) == set(), name
         differing = {k for k in set(src) & set(got) if src[k] != got[k]}
@@ -90,7 +90,7 @@ def test_term_headers_are_clones_of_the_prompt_header(bed):
 
 def test_terms_are_non_tof_even_when_the_prompts_are_not(bed):
     for name in VENDOR_TERMS:
-        assert interfile.shape(term(bed, name))[0] == 1, \
+        assert projdata.shape(term(bed, name))[0] == 1, \
             f"{name} has a timing axis; every correction term must be per LOR"
 
 
@@ -104,9 +104,9 @@ def test_a_tof_estimate_leaves_the_scatter_time_axis_beside_the_terms(bed):
 
 
 def test_the_terms_are_float32_and_the_prompts_are_not(bed):
-    assert interfile.dtype(bed["hs"]) == "<i2"
+    assert projdata.dtype(bed["hs"]) == "<i2"
     for name in VENDOR_TERMS:
-        assert interfile.dtype(term(bed, name)) == "<f4", name
+        assert projdata.dtype(term(bed, name)) == "<f4", name
 
 
 def test_no_plane_has_more_randoms_than_prompts(bed):
@@ -122,7 +122,7 @@ def test_no_interior_plane_has_a_negative_true_rate(bed):
     p = planes(bed["hs"])
     r = planes(term(bed, "randoms"))
     s = planes(term(bed, "scatter"))
-    interior = interfile.edge_distance(bed["hs"]) >= EDGE_PLANES
+    interior = projdata.edge_distance(bed["hs"]) >= EDGE_PLANES
     bad = np.flatnonzero((s > p - r) & interior)
     assert bad.size == 0, (
         f"{bad.size}/{interior.sum()} interior planes with a negative true "
@@ -139,7 +139,7 @@ def test_edge_plane_scatter_overshoot_stays_negligible(bed):
         "of the bed's scatter -- that is a scale error, not an edge effect")
     over = np.flatnonzero(excess > 0)
     if over.size:
-        assert interfile.edge_distance(bed["hs"])[over].max() < EDGE_PLANES, \
+        assert projdata.edge_distance(bed["hs"])[over].max() < EDGE_PLANES, \
             "an interior plane overshoots; the fringe explanation does not hold"
 
 
@@ -164,8 +164,8 @@ def test_the_scatter_fraction_is_physical(bed):
 
 
 def test_dead_time_is_a_livetime_fraction(bed):
-    nd = interfile.load(term(bed, "normdt"))[0]
-    no = interfile.load(term(bed, "norm_only"))[0]
+    nd = projdata.load(term(bed, "normdt"))[0]
+    no = projdata.load(term(bed, "norm_only"))[0]
     mid = nd.shape[0] // 4
     a, b = np.asarray(nd[mid], np.float64), np.asarray(no[mid], np.float64)
     live = a[b > 0] / b[b > 0]
@@ -174,8 +174,8 @@ def test_dead_time_is_a_livetime_fraction(bed):
 
 
 def test_normalisation_is_positive_where_the_prompts_are(bed):
-    nd = interfile.load(term(bed, "normdt"))[0]
-    p = interfile.load(bed["hs"])[0]
+    nd = projdata.load(term(bed, "normdt"))[0]
+    p = projdata.load(bed["hs"])[0]
     mid = nd.shape[0] // 4
     hit = np.asarray(p[mid]) > 0
     assert hit.any()
@@ -183,7 +183,7 @@ def test_normalisation_is_positive_where_the_prompts_are(bed):
 
 
 def test_span_2_doubles_the_odd_planes_of_every_term(bed):
-    n0 = interfile.axial_sizes(bed["hs"])[0]
+    n0 = projdata.axial_sizes(bed["hs"])[0]
     for name in (None,) + VENDOR_TERMS:
         hs = bed["hs"] if name is None else term(bed, name)
         v = planes(hs)[:n0]
@@ -193,7 +193,7 @@ def test_span_2_doubles_the_odd_planes_of_every_term(bed):
 
 
 def test_oblique_segments_carry_one_ring_pair(bed):
-    sizes = interfile.axial_sizes(bed["hs"])
+    sizes = projdata.axial_sizes(bed["hs"])
     p = planes(bed["hs"])
     seg1 = p[sizes[0]:sizes[0] + sizes[1]]
     ratio = seg1[1::2].mean() / seg1[0::2].mean()
@@ -205,7 +205,7 @@ def test_cached_attenuation_factors_are_survival_probabilities(bed, sirf):
     if not os.path.exists(hs):
         pytest.skip("attn.hs not cached for this bed")
     a = sirf.AcquisitionData(hs).as_array()
-    assert a.shape == (1,) + interfile.shape(bed["hs"])[1:]
+    assert a.shape == (1,) + projdata.shape(bed["hs"])[1:]
     v = a[0, a.shape[1] // 4].astype(np.float64)
     assert v.min() > 0.0
     assert v.max() <= 1.0 + 1e-5

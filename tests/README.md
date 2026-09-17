@@ -82,7 +82,7 @@ that file.
   way rather than inventing a package layout the shipped code does not have.
 
 `tests/` itself is added by pytest under prepend import mode, which is what
-makes `import interfile`, `import synth_hs` and `from cases import ...` work.
+makes `import stir_oracle`, `import projdata`, `import synth_hs` and `from cases import ...` work.
 
 ## Notebooks must not contain code
 
@@ -98,6 +98,17 @@ continued to run while no longer computing the same thing.
 
 Each is a place where an error produces a plausible-looking image rather than an
 exception:
+
+* **The detector-to-ring pairing** — which ring of a plane's ring pair sits on
+  `det1`. GE and STIR disagree, by a mirror of the segment axis. No STIR API can
+  arbitrate it (every ordered-pair accessor refuses span-2 data), and every
+  count- or multiplicity-based check passes under both conventions, which is how
+  it went unnoticed. It is pinned against GE's own data by
+  `test_crossing_the_ring_pairing_breaks_the_histogram` and
+  `test_the_crossed_histogram_is_the_segment_mirror` in `tests/test_lm_data.py`
+  — the falsification matters as much as the check: a test that cannot fail is
+  not evidence. Those two need only a decoded bed with its events, not the
+  vendor terms, so they run after `d710 decode --listmode` alone.
 
 * **GE-to-STIR bin order** — `stir[0, plane, 287 − ge_view, u]`. Reversing the
   view axis incorrectly mirrors the image transversally, which is not visually

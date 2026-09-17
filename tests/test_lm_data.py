@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from cases import decoded_beds
+from cases import beds_without_vendor_terms, decoded_beds
 
 from lm import events as ev
 from lm import geom
@@ -15,9 +15,9 @@ from lm import geom
 LOOKUP_BEDS = 1
 
 
-def _with_listmode():
+def _with_listmode(source=decoded_beds):
     out = []
-    for b in decoded_beds():
+    for b in source():
         from utils.paths import case as get_case
 
         npy = get_case(b["case"]).decoded / f"bed{b['bed']}.lm.npy"
@@ -31,6 +31,7 @@ def _with_listmode():
 
 
 LM_BEDS = _with_listmode()
+BINMAP_BEDS = _with_listmode(beds_without_vendor_terms)
 
 
 @pytest.fixture(scope="module")
@@ -44,7 +45,7 @@ def _binmap(cache, hs):
     return cache[hs]
 
 
-@pytest.mark.parametrize("bed", LM_BEDS)
+@pytest.mark.parametrize("bed", BINMAP_BEDS)
 def test_histogram_reproduces_the_decoded_sinogram(bed, _binmaps):
     binmap = _binmap(_binmaps, bed["hs"])
     e = ev.load(bed["npy"])
@@ -56,6 +57,58 @@ def test_histogram_reproduces_the_decoded_sinogram(bed, _binmaps):
     assert int(h.sum(dtype=np.int64)) == len(e) - dropped
     assert np.array_equal(h.reshape(-1), ref), (
         f"{int((h.reshape(-1) != ref).sum()):,} bins differ")
+
+
+@pytest.mark.parametrize("bed", BINMAP_BEDS)
+def test_crossing_the_ring_pairing_breaks_the_histogram(bed, _binmaps):
+    """The bit-exact check above must be able to FAIL, or it proves nothing.
+
+    Reversing which ring sits on `det1` mirrors the segment axis; if the check
+    survived that, its passing would be an accident of a symmetric object
+    rather than evidence about GE's convention.  Numbers: `.claude/D710_AUDITS.md`.
+    """
+    binmap = _binmap(_binmaps, bed["hs"])
+    e = ev.load(bed["npy"])
+    ref = np.fromfile(bed["hs"].replace(".hs", ".s"), "<i2")
+    n_tof = ref.size // binmap.n_bin
+
+    crossed = geom.BinMap(bed["hs"])
+    crossed.pl = np.ascontiguousarray(binmap.pl.T)
+    h, _dropped = ev.histogram(e, crossed, n_tof)
+
+    differing = int((h.reshape(-1) != ref).sum())
+    assert differing > ref.size // 100, (
+        f"only {differing:,} of {ref.size:,} bins differ under the reversed "
+        f"pairing -- this bed cannot tell the two conventions apart, so it is "
+        f"no evidence for either")
+
+
+@pytest.mark.parametrize("bed", BINMAP_BEDS)
+def test_the_crossed_histogram_is_the_segment_mirror(bed, _binmaps):
+    """The failure above must be a mirror, not noise: segment +s becomes -s."""
+    binmap = _binmap(_binmaps, bed["hs"])
+    e = ev.load(bed["npy"])
+    ref = np.fromfile(bed["hs"].replace(".hs", ".s"), "<i2")
+    n_tof = ref.size // binmap.n_bin
+    if n_tof != 1:
+        pytest.skip("comparing segment totals needs a non-TOF bed")
+
+    crossed = geom.BinMap(bed["hs"])
+    crossed.pl = np.ascontiguousarray(binmap.pl.T)
+    h, _d = ev.histogram(e, crossed, n_tof)
+    h = h.reshape(binmap.shape)
+    r = ref.reshape(binmap.shape)
+
+    seg, p0 = {}, 0
+    for s, _lo, _hi, n in binmap.hdr.segments():
+        seg[s], p0 = slice(p0, p0 + n), p0 + n
+
+    assert int(h[seg[0]].sum()) == int(r[seg[0]].sum()), \
+        "segment 0 is its own mirror and must be untouched"
+    for s in (1, 2, 3):
+        if s in seg and -s in seg:
+            assert int(h[seg[s]].sum()) == int(r[seg[-s]].sum()), \
+                f"crossed segment {s} should hold decoded segment {-s}"
 
 
 def _lm_sidecar(bed) -> dict | None:

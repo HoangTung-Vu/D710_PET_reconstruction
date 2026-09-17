@@ -50,8 +50,8 @@ class Header:
             raise SystemExit(
                 f"error: {self.path} is in SIRF's own segment order (axis 3 is "
                 f"{self.axis3!r}, segments ascending).\n"
-                "  `lm` reads with numpy, not SIRF, so it needs the decoded "
-                "layout every other term is in.\n"
+                "  Nothing here reads with SIRF any more, so every term must be "
+                "in the decoded layout.\n"
                 f"  delete it and rebuild:  rm {self.path[:-3]}.hs "
                 f"{self.path[:-3]}.s && d710 attn --case <name>")
 
@@ -67,6 +67,18 @@ class Header:
         return out
 
     def ring_pairs(self):
+        """Per plane, the `(a, b)` ring pairs merged into it, with `a - b` the
+        header's ring difference.
+
+        The header declares the ring difference with STIR's sign, so `a` is
+        the ring STIR calls `ring2` and `b` the one it calls `ring1` -- it is
+        `b` that sits on `det1`.  Nothing should turn a plane back into a
+        geometric line from here: go through
+        `utils.binmap.BinMap.ring_pairs_by_plane()`, which pairs these rings
+        with detectors and is what `d710 lm check` proves bit-exact against
+        GE's own sinogram.  `utils/binmap.py` holds the measurement, and the
+        warning about headers written before 2026-09-18.
+        """
         out = []
         for _s, lo, hi, n in self.segments():
             z0 = min(abs(d) for d in range(lo, hi + 1))

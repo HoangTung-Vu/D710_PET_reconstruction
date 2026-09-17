@@ -166,8 +166,12 @@ def main(argv=None) -> int:
     C = get_case(args.case, args.out)
     src = C.recon_lm if args.lm else C.recon
     if not src.exists():
-        raise SystemExit("error: %s does not exist -- run `d710 %s --case %s` first"
-                         % (src, "lm recon" if args.lm else "osem", C.name))
+        how = ("d710 lm recon --case %s" % C.name if args.lm else
+               "./d710_isolate_stir.sh osem --case %s  (the sinogram path, "
+               "docker only)\n  or, for the list-mode one, which is the "
+               "default:  d710 lm recon --case %s && d710 export --lm --case %s"
+               % (C.name, C.name, C.name))
+        raise SystemExit("error: %s does not exist -- run:\n  %s" % (src, how))
 
     z = np.load(src, allow_pickle=False)
     vol, z0, vox = z["vol"], float(z["z0"]), [float(v) for v in z["vox"]]

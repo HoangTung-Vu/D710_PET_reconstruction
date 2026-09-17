@@ -218,15 +218,13 @@ def test_dicom_replaces_nan_and_inf(tmp_path):
     assert peak == pytest.approx(1000.0, rel=1e-3)
 
 
-def test_a_ct_feature_comes_back_at_the_same_patient_coordinate(ct_dir, bed24,
-                                                                tmp_path):
-    _ad, template = bed24
+def test_a_ct_feature_comes_back_at_the_same_patient_coordinate(ct_dir, tmp_path):
     ct = attenuation.load(ct_dir)
     span = (attenuation.PLANES_PER_BED - 1) * attenuation.PLANE_MM
     table = float(ct.z[0] + (ct.z[-1] - ct.z[0] - span) / 2)
-    mu = attenuation.mu_image(ct, table, template).as_array()
-
-    vz, vy, vx = (float(v) for v in template.voxel_sizes())
+    vx = vy = synth_ct.DEFAULT_PIXEL_MM
+    vz = attenuation.PLANE_MM
+    mu = attenuation.mu_map(ct, table, 32, vy)
     paths = export.write_dicom(mu, str(tmp_path / "dcm"), HDR, vx, vy, vz, table)
     d = read_series(paths)[len(paths) // 2]
 

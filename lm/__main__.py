@@ -10,7 +10,9 @@ from utils.paths import case as get_case
 from utils.scanner import DR_MM, PLANE_MM, XY
 
 from . import events as ev
-from . import geom, interfile, recon
+from utils import interfile
+
+from . import geom, recon
 
 
 def _events_path(C, bed: int):

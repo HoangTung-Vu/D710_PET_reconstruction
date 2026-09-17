@@ -23,38 +23,39 @@ fi
 PY="${D710_PYTHON:-python3}"
 SIRF_IMAGE="${D710_SIRF_IMAGE:-sirf-local:0.1}"
 SIRF_ENV_SH="${D710_SIRF_ENV_SH:-/opt/SIRF-SuperBuild/INSTALL/bin/env_sirf.sh}"
-IMAGE="${D710_IMAGE:-d710:full}"
-export D710_IMAGE="$IMAGE"
 
 die() { echo "error: $*" >&2; exit 2; }
 usage() {
     cat <<'USAGE'
-d710_isolate_stir.sh -- exactly like `d710`, but SIRF/STIR runs in docker.
+d710_isolate_stir.sh -- `d710 osem`, with SIRF/STIR supplied by a docker image.
 
-`attn`, `osem` and `export` are the only commands that need SIRF, and a host
-installation of SIRF reaches deep into the system. Here SIRF comes from a
-prebuilt image (default sirf-local:0.1), and the host needs only bash and
-docker. `lm` and `lowdose` belong to the other runtime -- PyTomography, with no
-SIRF at all -- and are forwarded to ./d710 like everything else.
+`osem` -- the sinogram reconstruction -- is the ONLY command left that needs
+SIRF, and it is kept for comparison rather than used day to day; the list-mode
+path is the one the project reconstructs with. A host installation of SIRF
+reaches deep into the system, so SIRF comes from a prebuilt image (default
+sirf-local:0.1) and the host needs only bash and docker.
 
-  ./d710_isolate_stir.sh attn   --case ped
-  ./d710_isolate_stir.sh osem   --case ped [--beds ...] [--iters n]
-  ./d710_isolate_stir.sh export --case ped [--format nifti|dicom] [--lm]
+  ./d710_isolate_stir.sh osem --case ped [--beds ...] [--iters n]
 
-Every other command (decode, estimate, tostir, exam, lm, lowdose, read, shell)
-is forwarded to ./d710 untouched, since those already run inside d710:full.
-`--tof` and `--no-tof` therefore pass through unchanged; see `./d710 --help`.
+There is no apptainer counterpart and none is wanted: the workstation runs
+decode and estimate in d710:full and everything else on the host, with no SIRF
+anywhere. This script is therefore a docker-only, laptop-only convenience.
+
+Every other command is forwarded to ./d710 untouched -- including `attn` and
+`export`, which used to need this wrapper and now run on the host: `attn`
+projects the CT mu-map with parallelproj (utils/attn_proj.py) and `export`
+never needed more than numpy, nibabel and pydicom.
 
 `--tof` and `--no-tof` configure decode and estimate rather than osem, which
-reads TOF from the prompts header itself. The two commands here accept and
-discard them without complaint, exactly as ./d710 does, so that
-`d710 osem --tof` and `d710_isolate_stir.sh osem --tof` behave identically
-instead of one staying silent while the other fails because argparse in
-`-m osem` does not know the flag.
+reads TOF from the prompts header itself. `osem` accepts and discards them
+without complaint, exactly as ./d710 does, so that `d710 osem --tof` and
+`d710_isolate_stir.sh osem --tof` behave identically instead of one staying
+silent while the other fails because argparse in `-m osem` does not know the
+flag.
 
 MOUNTS, AT THE EXACT HOST PATHS (-v /x:/x), with no path translation:
   $D710_OUT           rw   the output tree
-  D710/ source dir    ro   `-m osem` and `-m utils.export` run from here
+  D710/ source dir    ro   `-m osem` runs from here
   CT directory        ro   taken from --ct and from work/bed<n>/to_stir.json
 This keeps the absolute CT paths written into the sidecar and into recon.npz
 valid verbatim, both inside the container and when reopened on the host.
@@ -66,9 +67,6 @@ All may also be set in D710/.env; copy .env.example and edit it.
   D710_SIRF_IMAGE    the SIRF image (default sirf-local:0.1)
   D710_SIRF_ENV_SH   SIRF's env script inside the image
                      (default /opt/SIRF-SuperBuild/INSTALL/bin/env_sirf.sh)
-  D710_IMAGE         the vendor image (default d710:full); `export` reads the
-                     WCC factor from the calibration files inside it, so it is
-                     needed here too and is forwarded into the SIRF container
   D710_PYTHON        python3 on the host, used only to read sidecars
                      (standard library only; conda is not required)
 USAGE
@@ -77,19 +75,18 @@ USAGE
 CMD="${1:-}"
 case "$CMD" in
   ""|-h|--help|help) usage; exit $([[ -z "$CMD" ]] && echo 2 || echo 0) ;;
-  attn|osem|export) ;;
+  osem) ;;
   *) exec "$HERE/d710" "$@" ;;
 esac
 shift
 
-CASE="${D710_CASE:-}"; OUT=""; CT=""; BED=""; FORMAT=""; REST=()
+CASE="${D710_CASE:-}"; OUT=""; CT=""; BED=""; REST=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --case)    CASE="$2"; shift 2 ;;
     -o|--out)  OUT="$2"; shift 2 ;;
     --ct)      CT="$2"; shift 2 ;;
     --bed)     BED="$2"; shift 2 ;;
-    --format)  FORMAT="$2"; shift 2 ;;
     --tof|--no-tof|--collapse-tof) shift ;;
     --tof-mash) shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -110,8 +107,8 @@ docker image inspect "$SIRF_IMAGE" >/dev/null 2>&1 || die "no SIRF image '$SIRF_
   check \`docker images\` and put the real name in D710/.env:
       D710_SIRF_IMAGE=<name:tag>
   or, for one run:  D710_SIRF_IMAGE=<name:tag> $(basename "${BASH_SOURCE[0]}") $CMD ...
-  or run the host version instead:
-      conda activate petct_reconstruction && $HERE/d710 $CMD --case $CASE"
+  or, if SIRF is installed on this host:
+      conda activate petct_reconstruction && $HERE/d710 osem --case $CASE"
 
 ct_dirs_of() {
     local casedir="$1"
@@ -149,27 +146,14 @@ while IFS= read -r d; do add_ro "$d"; done < <(ct_dirs_of "$O/$CASE")
 MOUNTS=(-v "$HERE:$HERE:ro" -v "$O:$O")
 for d in ${EXTRA_RO[@]+"${EXTRA_RO[@]}"}; do MOUNTS+=(-v "$d:$d:ro"); done
 
-DOCKER_BIN="$(command -v docker || true)"
-GROUPS_ADD=()
-if [[ "$CMD" == export && -S /var/run/docker.sock && -n "$DOCKER_BIN" ]]; then
-    MOUNTS+=(-v /var/run/docker.sock:/var/run/docker.sock
-             -v "$DOCKER_BIN:/usr/bin/docker:ro")
-    GROUPS_ADD=(--group-add "$(stat -c %g /var/run/docker.sock)")
-fi
-
-case "$CMD" in
-  attn)   MOD=(utils.attn_main --case "$CASE" ${BED:+--beds "$BED"} ${CT:+--ct "$CT"}) ;;
-  osem)   MOD=(osem --case "$CASE" ${BED:+--beds "$BED"} ${CT:+--ct "$CT"}) ;;
-  export) MOD=(utils.export --case "$CASE" ${FORMAT:+--format "$FORMAT"}) ;;
-esac
-MOD+=(${REST[@]+"${REST[@]}"})
+MOD=(osem --case "$CASE" ${BED:+--beds "$BED"} ${CT:+--ct "$CT"}
+     ${REST[@]+"${REST[@]}"})
 
 TTY=(); [[ -t 1 ]] && TTY=(-t)
 
 ARGV=(docker run --rm -i "${TTY[@]}" --no-healthcheck
-      --user "$(id -u):$(id -g)" ${GROUPS_ADD[@]+"${GROUPS_ADD[@]}"} -e HOME=/tmp
-      -e D710_OUT="$O" -e D710_IMAGE="$IMAGE" -e PYTHONPATH="$HERE" -w "$O"
-      ${D710_K:+-e D710_K="$D710_K"} ${D710_K_LM:+-e D710_K_LM="$D710_K_LM"}
+      --user "$(id -u):$(id -g)" -e HOME=/tmp
+      -e D710_OUT="$O" -e PYTHONPATH="$HERE" -w "$O"
       "${MOUNTS[@]}" --entrypoint bash "$SIRF_IMAGE"
       -c '. "$0"; exec python3 -u -m "$@"' "$SIRF_ENV_SH" "${MOD[@]}")
 

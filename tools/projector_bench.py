@@ -56,7 +56,8 @@ def main(argv=None) -> int:
     C = get_case(args.case, args.out)
     sirf_env.setup(C)
     y0, x0 = recon.image_grid(C, args.bed)
-    at = attn.Attenuation(C, terms.ct_dir(C, args.bed), x0, y0)
+    at = attn.Attenuation(C, terms.ct_dir(C, args.bed),
+                          xy=x0.as_array().shape[-1])
     af = at.all([args.bed])
     objs, _ = terms.load(C, args.bed, af=af[args.bed], lean=True)
     y = objs["prompts"]

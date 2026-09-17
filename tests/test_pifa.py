@@ -171,7 +171,7 @@ def test_resample_warns_when_the_bed_leaves_the_ct(ct_dir, capsys):
 
 
 def test_the_pifa_plane_pitch_is_what_pet_recon_reported():
-    from utils import geometry
+    from utils import scanner
 
     assert 3.264583 == pytest.approx(156.7 / 48.0, rel=1e-5)
-    assert abs(3.264583 - geometry.PLANE_MM) / geometry.PLANE_MM < 2e-3
+    assert abs(3.264583 - scanner.PLANE_MM) / scanner.PLANE_MM < 2e-3

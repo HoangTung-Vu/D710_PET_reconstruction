@@ -12,10 +12,13 @@ The governing rule is that a function meaningful only to OSEM belongs in
 | `paths.py` | `$D710_OUT/<case>/...`; the only module that knows the output tree |
 | `container.py` | the only module that knows how to invoke `docker` from Python |
 | `attenuation.py` | CT DICOM to mu-map (`load`, `hu_to_mu`, `mu_image`, `factors`) |
-| `geometry.py` | the D710-to-STIR bin index conventions (`crystal_to_det`, `plane_ring_pairs`) |
+| `geometry.py` | the D710-to-STIR bin index conventions and the crystal positions (`crystal_to_det`, `det_pair_map`, `crystal_positions`); plain numpy, no STIR |
+| `interfile.py` | the projdata header reader, which does not need STIR |
+| `binmap.py` | crystal pairs to sinogram bins, and the one statement of the detector-to-ring pairing |
+| `attn_proj.py` | attenuation factors by parallelproj line integral, in PyTomography's world frame |
 | `terms.py` | loading one bed's terms, plus the summary and invariant tables |
-| `attn.py` | per-bed `af`, cached in `work/bed<n>/attn.hs` |
-| `sirf_env.py` | changing into the scratch directory and keeping `MessageRedirector` alive |
+| `attn.py` | per-bed `af`, cached in `work/bed<n>/attn.hs`; builds it with `attn_proj`, reads it with `np.fromfile` |
+| `sirf_env.py` | changing into the scratch directory and keeping `MessageRedirector` alive — used by `osem/` alone, the one command that still needs SIRF |
 | `quant.py` | counts per voxel to Bq/mL to SUV, and the constant `K` |
 | `export.py` | writing NIfTI and DICOM (`python3 -m utils.export` is `d710 export`) |
 | `plots.py` | figures for inspecting sinograms and images; currently uncalled |
@@ -39,7 +42,7 @@ is measured, read from a vendor header, or derived from one that is.
 | `NSEG0` | 47 | axial positions in segment 0 |
 | `N_TOF_RAW`, `TOF_LSB_PS` | 55, 89.2459 | header `coincTimingPrecision` |
 | `BIN_MM`, `DR_MM` | 2.1306 | tangential bin size and transverse voxel pitch |
-| `XY` | 337 | the only matrix size giving 2.130600 mm in both SIRF builds |
+| `XY` | 337 | the only matrix size giving 2.130600 mm in both SIRF builds, which is what lets `osem` and `lm` be compared |
 | `PSF_MM` | 6.4 | GE's resolution model |
 
 `VIEW_OFFSET_DEG` is provisional and is not the same quantity as

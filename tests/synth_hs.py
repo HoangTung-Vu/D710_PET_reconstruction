@@ -14,13 +14,19 @@ AVG_DOI_CM = 0.84
 
 
 def segments(num_rings: int) -> list[tuple[int, int, int, int]]:
-    """`(segment, min_rd, max_rd, num_axial_poss)` in STIR storage order."""
+    """`(segment, min_rd, max_rd, num_axial_poss)` in STIR storage order.
+
+    The negative block comes first, exactly as
+    `custom_tool/gerdf/interfile.py::ordered_segments` emits it -- the miniature
+    scanner has to declare its ring differences the way the real decoder does,
+    or `BinMap` reads it with one convention and the tests assert another.
+    """
     n0 = 2 * num_rings - 1
     out = [(0, -1, 1, n0)]
     k = 1
     while n0 - 4 * k >= 1:
-        out.append((k, 2 * k, 2 * k + 1, n0 - 4 * k))
         out.append((-k, -(2 * k + 1), -2 * k, n0 - 4 * k))
+        out.append((k, 2 * k, 2 * k + 1, n0 - 4 * k))
         k += 1
     return out
 

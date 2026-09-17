@@ -13,9 +13,9 @@ d710 lowdose --case ped --drf 10 --mode low-dose    # -> ped_drf10_lowdose
 d710 lowdose --case ped --split 2                   # -> ped_r0, ped_r1 (Noise2Noise)
 d710 lowdose --case ped --drf 4 --replicates        # -> ped_drf4_r0 .. _r3
 
-./d710_isolate_stir.sh osem --case ped_drf10        # or: d710 lm recon --case ped_drf10
-./d710_isolate_stir.sh export --case ped_drf10      # K × DRF applied automatically
-./d710_isolate_stir.sh export --case ped_drf10 --lm # from recon_lm.npz
+d710 attn      --case ped_drf10
+d710 lm recon  --case ped_drf10
+d710 export    --case ped_drf10 --lm    # K × DRF applied automatically
 ```
 
 The runtime requires numpy only: no SIRF and no torch. The simulator needs
@@ -317,7 +317,7 @@ d710_out/<case>/
 One directory therefore holds exactly what thinning changed and nothing else,
 which is also what distinguishes a simulated case from a measured one at a
 glance. The links are relative, so they resolve identically on the host and
-inside `d710:full` and `sirf-local:0.1`, which bind-mount the output root at its
+inside `d710:full`, which bind-mounts the output root at its
 own path; and they stay inside the case, so `rm -rf <case>` still removes
 everything. Links rather than second copies, because the thinned prompts are
 116 MiB per bed and each scaled term 232 MiB.

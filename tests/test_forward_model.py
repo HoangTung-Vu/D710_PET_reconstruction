@@ -8,7 +8,7 @@ import json
 import numpy as np
 import pytest
 
-import interfile
+import projdata
 from conftest import ROOT
 
 MAX_STATEMENTS = 15
@@ -142,7 +142,7 @@ def test_stir_canonicalises_the_plane_order_on_read(sirf, bed24, tmp_path):
 
     assert (sirf.AcquisitionData(out).as_array() == stamp).all()
 
-    written = interfile.keys(out)
+    written = projdata.keys(out)
     assert written["matrix axis label [3]"].lower() == "view"
     ascending = [int(n) for n in
                  written["minimum ring difference per segment"]
@@ -176,10 +176,10 @@ def test_decay_to_injection_uses_the_frame_average(model):
 
 
 def test_bed_stitching_indices_are_exact_plane_offsets():
-    from utils import geometry
+    from utils import scanner
 
     step_mm = 124.26
-    planes = step_mm / geometry.PLANE_MM
+    planes = step_mm / scanner.PLANE_MM
     assert planes == pytest.approx(round(planes), abs=0.02)
     assert round(planes) == 38
     assert 47 - round(planes) == 9

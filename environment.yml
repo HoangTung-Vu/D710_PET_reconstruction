@@ -1,3 +1,21 @@
+# A verbatim `conda env export` of the measurement machine, which has no GPU.
+#
+# TWO PINS MUST BE RECONSIDERED ON A MACHINE WITH ONE, and `./d710_apptainer
+# doctor` reports both:
+#
+#   libparallelproj=...=cpu_*   has no libparallelproj_cuda.so, and on a machine
+#       where `nvidia-smi` is on PATH the Python package demands that file with
+#       no fallback: ImportError: Cannot find parallelproj cuda lib.  Replace
+#       with a cuda129_* or cuda130_* build of the SAME 1.10.2 version -- 2.x is
+#       a different package under the same name and breaks PyTomography.
+#
+#   torch==2.14.0               is a CUDA 13 wheel here.  Within CUDA 12 any
+#       12.x wheel runs on any 12.x driver, but a CUDA 13 wheel needs a CUDA 13
+#       driver; on a machine whose nvidia-smi says "CUDA Version: 12.6" the only
+#       symptom is torch.cuda.is_available() == False.  Install a cu12x build.
+#
+# See the GPU section of README.md.
+
 name: petct_recon
 channels:
   - conda-forge

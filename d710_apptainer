@@ -14,48 +14,52 @@ d710_apptainer -- exactly `./d710`, with apptainer instead of docker.
   ./d710_apptainer doctor                        check this machine first
   ./d710_apptainer exam --raw D --ct D --case N  everything else: ./d710 --help
 
-A WRAPPER, NOT A COPY. `d710` holds 570 lines of pipeline logic -- the TOF
-switch that must reach both decode and estimate, the numeric bed sort, the
-per-bed SINO lookup, the interpreter probing -- and a second copy would begin
-to diverge at the first edit. This script therefore changes only the two things
-apptainer changes, then runs the real `d710`:
+This is the workstation's entry point. Only two commands need a container at
+all -- `decode` and `estimate`, both inside d710:full -- and everything after
+them runs on the host in the petct_recon conda environment, through
+PyTomography and parallelproj. There is no SIRF on this path and no second
+image to carry around.
 
-  1. the image name becomes the .sif path (D710_IMAGE / D710_SIRF_IMAGE);
+A WRAPPER, NOT A COPY. `d710` holds the pipeline logic -- the TOF switch that
+must reach both decode and estimate, the numeric bed sort, the per-bed SINO
+lookup, the interpreter probing -- and a second copy would begin to diverge at
+the first edit. This script therefore changes only the two things apptainer
+changes, then runs the real `d710`:
+
+  1. the image name becomes the .sif path (D710_IMAGE);
   2. apptainer_shim/ goes first on $PATH, so that every `docker` in the tree --
      d710's own, and equally vendor/run.sh's and utils/container.py's, which
      this script never touches -- is the shim and becomes `apptainer exec`.
 
-WHAT WORKS, AND WHAT IT REQUIRES
+WHAT RUNS WHERE
   decode tostir read shell   apptainer and the d710 .sif; nothing else.
   estimate                   the same, plus --fakeroot, because GE's pet_recon
                              opens /usr/PET/systemConfig/cmcfg.xml read-write
                              and docker ran that step as root. `doctor` checks
                              it; apptainer_shim/docker prints the fallback if
                              it is missing.
-  attn osem export           not here; use ./d710_isolate_stir_apptainer.sh
-  lm lowdose                 no container either way: conda activate
-                             petct_recon. This is where a GPU pays off.
+  attn lm lowdose export     no container: conda activate petct_recon. This is
+                             where a GPU pays off.
+  osem                       not here. The sinogram path still needs SIRF and
+                             is kept for comparison only, on a machine with
+                             docker: ./d710_isolate_stir.sh osem --case N
 
-THE GPU. The shim adds --nv whenever /dev/nvidiactl exists, so CUDA is visible
-inside both images, but nothing inside them uses it today: sirf-local's STIR
-links a CPU build of libparallelproj, and pet_recon's GPU path is forced off in
-vendor/boot.gdb, GE never having shipped the .cl kernels. The one place a GPU
-changes the figures in `./d710 --help` is `d710 lm`, which runs on the host
-through PyTomography; install a CUDA torch in petct_recon and the TOF timings
-in that table cease to matter.
+THE GPU. The shim adds --nv whenever /dev/nvidiactl exists, but nothing inside
+d710:full uses it: pet_recon's GPU path is forced off in vendor/boot.gdb, GE
+never having shipped the .cl kernels. The GPU is worth having for the host
+half -- `d710 attn --device cuda` and `d710 lm` -- which needs a CUDA torch and
+a cuda* build of libparallelproj in petct_recon. `doctor` reports both.
 
-BUILDING THE .sif FILES, on the machine holding the docker images:
-  apptainer build d710_full.sif  docker-daemon://d710:full
-  apptainer build sirf_local.sif docker-daemon://sirf-local:0.1
-Then declare them once in D710/.env:
+BUILDING THE .sif FILE, on the machine holding the docker image:
+  apptainer build d710_full.sif docker-daemon://d710:full
+Then declare it once in D710/.env:
   D710_SIF=/path/to/d710_full.sif
-  D710_SIRF_SIF=/path/to/sirf_local.sif
-Without those lines they are looked for in $D710_SIF_DIR, D710/sif/, D710/,
+Without that line it is looked for in $D710_SIF_DIR, D710/sif/, D710/,
 $D710_OUT/sif and ~/sif.
 
 ADDITIONAL ENVIRONMENT, beyond everything ./d710 --help lists:
-  D710_SIF D710_SIRF_SIF   the two images
-  D710_SIF_DIR             where to look for them
+  D710_SIF                 the image
+  D710_SIF_DIR             where to look for it
   D710_APPTAINER_BIN       the apptainer binary, if not on $PATH
   D710_APPTAINER_FAKEROOT  1 / 0 / auto           (see apptainer_shim/docker)
   D710_APPTAINER_OVERLAY   tmpfs / none / <dir>   the writable layer
@@ -69,12 +73,10 @@ USAGE
         ;;
     decode|estimate|tostir|exam|read|shell)
         _apt_need "d710:full" "${D710_SIF:-}" D710_SIF ;;
-    attn|osem|export)
-        if [[ -n "${D710_SIRF_SIF:-}" ]]; then
-            echo ">> note: '$CMD' here needs SIRF installed on the HOST." >&2
-            echo ">>       to run it in $D710_SIRF_SIF instead:" >&2
-            echo ">>       ./d710_isolate_stir_apptainer.sh $*" >&2
-        fi
+    osem)
+        echo ">> note: 'osem' is the sinogram path and still needs SIRF, which" >&2
+        echo ">>       is not on this machine.  It is kept for comparison only:" >&2
+        echo ">>       ./d710_isolate_stir.sh osem --case ...  (needs docker)" >&2
         ;;
 esac
 

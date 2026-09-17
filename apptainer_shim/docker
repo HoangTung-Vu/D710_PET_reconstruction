@@ -11,14 +11,9 @@ if [[ -z "$APPTAINER" ]]; then
     done
 fi
 [[ -n "$APPTAINER" ]] || die "neither apptainer nor singularity is on \$PATH.
-  This shim is only reachable through d710_apptainer / d710_isolate_stir_apptainer.sh,
-  so seeing this means one of two things:
-    - apptainer is not installed on this machine, or
-    - you are inside a container that has this shim bound in as /usr/bin/docker
-      (d710_isolate_stir.sh does that for \`export\`) -- nested apptainer does
-      not work.  Harmless: the only caller is utils/quant.py reading the WCC
-      factor, which it needs only for beds estimated before that factor was
-      written into estimate.json.  Pass D710_K instead."
+  This shim is only reachable through d710_apptainer, so seeing this means
+  apptainer is not installed on this machine.  Point at it with:
+      export D710_APPTAINER_BIN=/path/to/apptainer"
 
 resolve_image() {
     local img="${1:-}"
@@ -28,10 +23,9 @@ resolve_image() {
         return 0
     fi
     die "'$img' is not a file.
-  Under apptainer the image name IS the .sif path, and the wrappers export it:
+  Under apptainer the image name IS the .sif path, and the wrapper exports it:
       export D710_SIF=/path/to/d710_full.sif
-      export D710_SIRF_SIF=/path/to/sirf_local.sif
-  (or put them in D710/.env).  Getting '$img' here means the wrapper was
+  (or put it in D710/.env).  Getting '$img' here means the wrapper was
   bypassed -- run  ./d710_apptainer ...  not  ./d710 ..."
 }
 
@@ -50,7 +44,7 @@ case "$sub" in
         ;;
     images)
         printf 'REPOSITORY (apptainer: these are .sif files)\n'
-        printf '%s\n' "${D710_IMAGE:-}" "${D710_SIRF_IMAGE:-}"
+        printf '%s\n' "${D710_IMAGE:-}"
         exit 0
         ;;
     *) die "unsupported docker subcommand '${sub:-<none>}'.

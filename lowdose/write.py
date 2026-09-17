@@ -117,7 +117,7 @@ def bed(src, dst, n: int, e, mask, binmap, f: float, mode: str,
         sinogram: str = "derived", q=None, rng=None, window: str = "uniform"):
     """Write one bed of the thinned case."""
     from lm import events as ev
-    from lm import interfile
+    from utils import interfile
 
     if sinogram not in SINOGRAM:
         raise ValueError(f"sinogram must be one of {SINOGRAM}, got {sinogram!r}")

@@ -50,9 +50,29 @@ def mini_hs(tmp_path_factory):
 
 @pytest.fixture(scope="session")
 def mini_info(stir, mini_hs):
-    """`(proj_data, info)` for the miniature scanner."""
+    """`(proj_data, info)` for the miniature scanner, as the derived class.
+
+    `ProjData.read_from_file(...).get_proj_data_info()` hands back the base
+    `ProjDataInfo` in STIR 6.3 -- SWIG does not downcast it -- and the base
+    class has neither `get_min_ring_difference` nor
+    `get_num_ring_pairs_for_segment_axial_pos_num`, which is most of what the
+    oracle is for. Rebuilding the info from the scanner gives the real class,
+    and the geometry is asserted identical to the file's rather than assumed.
+    """
+    import synth_hs
+
     pd = stir.ProjData.read_from_file(mini_hs)
-    return pd, pd.get_proj_data_info()
+    base = pd.get_proj_data_info()
+    segs = synth_hs.segments(base.get_scanner().get_num_rings())
+    info = stir.ProjDataInfoCylindricalNoArcCorr.construct_proj_data_info(
+        base.get_scanner(), 2, max(s[2] for s in segs),
+        base.get_num_views(), base.get_num_tangential_poss(), False)
+
+    for s, lo, hi, n in segs:
+        assert (info.get_num_axial_poss(s), info.get_min_ring_difference(s),
+                info.get_max_ring_difference(s)) == (n, lo, hi), \
+            f"the rebuilt info disagrees with {mini_hs} at segment {s}"
+    return pd, info
 
 
 @pytest.fixture(scope="session")

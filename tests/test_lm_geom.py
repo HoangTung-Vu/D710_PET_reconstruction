@@ -6,8 +6,9 @@ import numpy as np
 import pytest
 
 from lm import events as ev
-from lm import geom, interfile
-from utils import geometry, scanner
+from lm import geom
+import stir_oracle
+from utils import geometry, interfile, scanner
 from utils.terms import NSEG0
 
 RINGS, NDET, NTANG = 6, 16, 9
@@ -15,7 +16,7 @@ RINGS, NDET, NTANG = 6, 16, 9
 
 @pytest.fixture(scope="module")
 def binmap(mini_hs):
-    """A `BinMap` built from the header by `lm.interfile`, without the `stir` fixture."""
+    """A `BinMap` built from the header by `utils.interfile`, without the `stir` fixture."""
     return geom.BinMap(mini_hs)
 
 
@@ -29,15 +30,15 @@ def test_header_segments_match_stir(mini_hs, mini_info):
     h = interfile.Header(mini_hs)
     got = [(s, lo, hi, n) for s, lo, hi, n in h.segments()]
     want = [(s, info.get_min_ring_difference(s), info.get_max_ring_difference(s),
-             info.get_num_axial_poss(s)) for s in geometry.segment_order(info)]
+             info.get_num_axial_poss(s)) for s in stir_oracle.segment_order(info)]
     assert got == want
 
 
 def test_header_ring_pairs_match_stir(mini_hs, mini_info):
     _pd, info = mini_info
     h = interfile.Header(mini_hs)
-    want = geometry.plane_ring_pairs(info, h.n_rings)
-    geometry.check_ring_pairs(info, want)
+    want = stir_oracle.plane_ring_pairs(info, h.n_rings)
+    stir_oracle.check_ring_pairs(info, want)
     assert h.ring_pairs() == want
 
 
@@ -56,13 +57,13 @@ def test_shape_matches_the_header(binmap, mini_info):
     assert binmap.n_view == info.get_num_views()
     assert binmap.n_tang == info.get_num_tangential_poss()
     assert binmap.n_plane == sum(info.get_num_axial_poss(s)
-                                 for s in geometry.segment_order(info))
+                                 for s in stir_oracle.segment_order(info))
 
 
 def test_multiplicity_is_stirs_own(binmap, mini_info):
     _pd, info = mini_info
     assert np.array_equal(binmap.mult,
-                          geometry.ring_pair_multiplicity(info).astype(np.int32))
+                          stir_oracle.ring_pair_multiplicity(info).astype(np.int32))
     assert set(np.unique(binmap.mult)) <= {1, 2}
     assert binmap.mult[:2 * RINGS - 1][1::2].tolist() == [2] * (RINGS - 1)
 
@@ -80,14 +81,50 @@ def test_flat_inverts_det_pair_map(binmap):
         assert np.array_equal(got, want)
 
 
-def test_ring_order_follows_pos1_minus_pos2(binmap, mini_info):
+def test_ring_order_follows_stirs_ring2_minus_ring1(binmap, mini_info):
+    """`pl[ring1, ring2]` must land in the segment of `ring2 - ring1`.
+
+    An earlier form asserted only that the two orders fall in opposite-signed
+    segments, which holds under BOTH conventions and so constrained nothing.
+    The sign decides which ring sits on `det1`; `tests/test_lm_data.py` proves
+    the choice against GE's own data.
+    """
     _pd, info = mini_info
-    order = geometry.segment_order(info)
+    order = stir_oracle.segment_order(info)
     seg_of = np.concatenate([[s] * info.get_num_axial_poss(s) for s in order])
-    p1 = binmap.pl[3, 0]
-    p2 = binmap.pl[0, 3]
-    assert p1 >= 0 and p2 >= 0
-    assert seg_of[p1] == -seg_of[p2] != 0
+
+    checked = 0
+    for r_det1 in range(binmap.nrings):
+        for r_det2 in range(binmap.nrings):
+            p = int(binmap.pl[r_det1, r_det2])
+            if p < 0:
+                continue
+            s = int(seg_of[p])
+            lo = info.get_min_ring_difference(s)
+            hi = info.get_max_ring_difference(s)
+            assert lo <= r_det2 - r_det1 <= hi, (
+                f"pl[{r_det1}, {r_det2}] is plane {p}, segment {s}, whose ring "
+                f"difference runs {lo}..{hi} -- but ring2 - ring1 = "
+                f"{r_det2 - r_det1}.  The pairing has been reversed; "
+                f"see utils/binmap.py.")
+            checked += 1
+    assert checked == int(binmap.mult.sum())
+
+
+def test_ring_pairs_read_back_out_of_pl_agree_with_the_header(binmap):
+    """`ring_pairs_by_plane` is what everything geometric must go through."""
+    r1, r2, planes = binmap.ring_pairs_by_plane()
+    assert np.array_equal(binmap.pl[r1, r2], planes)
+    assert np.array_equal(np.bincount(planes, minlength=binmap.n_plane),
+                          binmap.mult)
+
+    # pl stores (ring on det1, ring on det2), which is ring_pairs reversed
+    want = {p: sorted((b, a) for a, b in prs) for p, prs in
+            enumerate(binmap.hdr.ring_pairs())}
+    got = {p: [] for p in range(binmap.n_plane)}
+    for a, b, p in zip(r1, r2, planes):
+        got[int(p)].append((int(a), int(b)))
+    assert {p: sorted(v) for p, v in got.items()} == want
 
 
 def test_lor_table_covers_every_bin_with_its_multiplicity(binmap):
@@ -113,7 +150,7 @@ def test_scanner_lut_is_a_cylinder():
     z = lut[:, 2].reshape(geom.NRINGS, geom.NDET)
     assert np.allclose(np.diff(z[:, 0]), geom.RING_PITCH_MM)
     assert abs(z.mean()) < 1e-4
-    assert z.max() >= (NSEG0 - 1) / 2 * geometry.PLANE_MM
+    assert z.max() >= (NSEG0 - 1) / 2 * scanner.PLANE_MM
 
 
 def test_scanner_lut_is_in_stirs_frame():

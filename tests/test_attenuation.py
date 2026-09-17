@@ -142,12 +142,19 @@ def _bed_start(ct):
     return float(ct.z[0] + (ct.z[-1] - ct.z[0] - span) / 2)
 
 
-def test_mu_image_is_in_per_cm_on_the_bed_grid(ct_dir, bed24):
-    _ad, template = bed24
+# The grid `mu_map` is asked for.  It used to come from a SIRF `ImageData`, and
+# the whole file needed the `bed24` fixture for it; the mu-map is plain numpy
+# now, so these run everywhere.  1.3672 mm over 32 voxels reaches +-21.9 mm,
+# inside synth_ct's 26.25 mm water cylinder except at the corners, which is
+# what gives both water and air in one map.
+XY, DR_MM = 32, synth_ct.DEFAULT_PIXEL_MM
+
+
+def test_mu_map_is_in_per_cm_on_the_bed_grid(ct_dir):
     ct = attenuation.load(ct_dir)
-    mu = attenuation.mu_image(ct, _bed_start(ct), template)
-    a = mu.as_array()
-    assert a.shape == (attenuation.PLANES_PER_BED, 32, 32)
+    a = attenuation.mu_map(ct, _bed_start(ct), XY, DR_MM)
+    assert a.shape == (attenuation.PLANES_PER_BED, XY, XY)
+    assert a.dtype == np.float32
     water = a[(a > 0.05) & (a < 0.12)]
     assert water.size, "no water-like voxels: check the /cm conversion"
     assert np.median(water) == pytest.approx(0.096, rel=0.05)
@@ -155,43 +162,38 @@ def test_mu_image_is_in_per_cm_on_the_bed_grid(ct_dir, bed24):
     assert a.min() == 0.0
 
 
-def test_mu_image_is_radiological_so_y_is_flipped(ct_dir, bed24):
-    _ad, template = bed24
+def test_mu_map_is_radiological_so_y_is_flipped(ct_dir):
     ct = attenuation.load(ct_dir)
-    mu = attenuation.mu_image(ct, _bed_start(ct), template).as_array()
+    mu = attenuation.mu_map(ct, _bed_start(ct), XY, DR_MM)
     row_profile = mu[mu.shape[0] // 2].sum(axis=1)
     assert row_profile[: len(row_profile) // 2].sum() > \
         row_profile[len(row_profile) // 2:].sum()
 
 
-def test_mu_image_refuses_a_grid_that_is_not_a_bed(ct_dir, bed24, sirf):
-    ad, _template = bed24
+def test_mu_map_is_always_a_whole_bed(ct_dir):
+    """The grid cannot be wrong any more; it is built, not accepted."""
     ct = attenuation.load(ct_dir)
-    wrong = ad.create_uniform_image(1.0, (10, 32, 32))
-    with pytest.raises(SystemExit, match="is not"):
-        attenuation.mu_image(ct, _bed_start(ct), wrong)
+    for xy in (16, 32, 64):
+        assert attenuation.mu_map(ct, _bed_start(ct), xy, DR_MM).shape == \
+            (attenuation.PLANES_PER_BED, xy, xy)
 
 
-def test_mu_image_refuses_a_bed_far_outside_the_ct(ct_dir, bed24):
-    _ad, template = bed24
+def test_mu_map_refuses_a_bed_far_outside_the_ct(ct_dir):
     ct = attenuation.load(ct_dir)
     with pytest.raises(SystemExit, match="overhang"):
-        attenuation.mu_image(ct, float(ct.z[-1]) + 50.0, template)
+        attenuation.mu_map(ct, float(ct.z[-1]) + 50.0, XY, DR_MM)
 
 
-def test_mu_image_clamps_a_small_overhang_instead_of_filling_air(ct_dir, bed24, capsys):
-    _ad, template = bed24
+def test_mu_map_clamps_a_small_overhang_instead_of_filling_air(ct_dir, capsys):
     ct = attenuation.load(ct_dir)
-    inside = _bed_start(ct)
-    over = float(ct.z[0]) - 1.0 * attenuation.PLANE_MM
-    mu_in = attenuation.mu_image(ct, inside, template).as_array()
-    mu_over = attenuation.mu_image(ct, over, template).as_array()
+    mu_in = attenuation.mu_map(ct, _bed_start(ct), XY, DR_MM)
+    mu_over = attenuation.mu_map(ct, float(ct.z[0]) - 1.0 * attenuation.PLANE_MM,
+                                 XY, DR_MM)
     assert "warning" in capsys.readouterr().out
     assert mu_over[0].max() > 0.5 * mu_in[0].max()
 
 
-def test_overhang_tolerance_is_counted_in_pet_planes(ct_dir, bed24, tmp_path):
-    _ad, template = bed24
+def test_overhang_tolerance_is_counted_in_pet_planes(ct_dir, tmp_path):
     coarse = attenuation.load(ct_dir)
     fine = attenuation.load(synth_ct.series(
         tmp_path / "fine", n_slices=160, dz=1.25, z0=-100.0))
@@ -200,29 +202,73 @@ def test_overhang_tolerance_is_counted_in_pet_planes(ct_dir, bed24, tmp_path):
 
     for ct in (coarse, fine):
         assert float(ct.z[-1] - ct.z[0]) > span + out_mm, "series too short to test"
-        attenuation.mu_image(ct, float(ct.z[0]) - out_mm, template)
+        attenuation.mu_map(ct, float(ct.z[0]) - out_mm, XY, DR_MM)
         with pytest.raises(SystemExit, match="overhang"):
-            attenuation.mu_image(ct, float(ct.z[0]) - 3.0 * attenuation.PLANE_MM,
-                                 template)
+            attenuation.mu_map(ct, float(ct.z[0]) - 3.0 * attenuation.PLANE_MM,
+                               XY, DR_MM)
 
 
-def test_factors_are_survival_probabilities(ct_dir, bed24):
-    ad, template = bed24
+def test_ct_to_attenuation_factors_end_to_end(ct_dir, mini_hs):
+    """CT -> mu -> af, with no SIRF anywhere in the chain."""
+    from utils import attn_proj
+
+    pytest.importorskip("parallelproj")
     ct = attenuation.load(ct_dir)
-    mu = attenuation.mu_image(ct, _bed_start(ct), template)
-    af, acf = attenuation.factors(ad, mu)
-    a, c = af.as_array(), acf.as_array()
-    assert 0 < a.min() and a.max() <= 1.0 + 1e-6
-    assert (c >= 1.0 - 1e-6).all()
-    nz = a > 0
-    assert np.allclose(a[nz] * c[nz], 1.0, rtol=1e-4)
+    mu = attenuation.mu_map(ct, _bed_start(ct), 64, DR_MM)
+    af = attn_proj.factors(mu, mini_hs, dr_mm=DR_MM, out=lambda *_: None)
+    assert 0 < af.min() and af.max() <= 1.0 + 1e-6
+    assert (1.0 / af >= 1.0 - 1e-6).all(), "acf must never be below one"
+    assert af.min() < 0.999, "the phantom attenuated nothing: check the geometry"
+
+
+def test_an_unstamped_attn_hs_is_rebuilt_not_reused(tmp_path):
+    """An `attn.hs` from before 2026-09-18 has a mirrored segment axis.
+
+    Nothing about its name, size or shape says so, so the only way not to
+    reuse it silently is to require the provenance line. See `utils/binmap.py`.
+    """
+    from utils import attn
+
+    hs = tmp_path / "attn.hs"
+    hs.with_suffix(".s").write_bytes(b"\x00" * 16)
+
+    hs.write_text("!INTERFILE :=\nname of data file := attn.s\n")
+    assert not attn._complete(hs), "a file with no ring-pairing stamp was reused"
+
+    hs.write_text("!INTERFILE :=\nname of data file := attn.s\n"
+                  + attn.PROVENANCE + "\n")
+    assert attn._complete(hs), "a stamped file was rejected"
+
+
+def test_the_writer_stamps_what_the_reader_requires(tmp_path):
+    import numpy as np
+
+    from utils import attn
+
+    class Case:
+        name = "t"
+
+        def work_bed(self, n):
+            return tmp_path
+
+        def prompt(self, n):
+            q = tmp_path / "prompts.hs"
+            q.write_text("name of data file := prompts.s\n"
+                         "!number format := signed integer\n"
+                         "!number of bytes per pixel := 2\n")
+            return q
+
+    path = tmp_path / "attn.hs"
+    attn._write_like_the_others(np.zeros(4, "<f4"), Case(), 1, path)
+    assert attn._complete(path)
 
 
 def test_a_header_without_its_data_is_not_a_cache(tmp_path):
     from utils import attn
 
     hs = tmp_path / "attn.hs"
-    hs.write_text("!INTERFILE :=\nname of data file := attn.s\n")
+    hs.write_text("!INTERFILE :=\nname of data file := attn.s\n"
+                  + attn.PROVENANCE + "\n")
     assert not attn._complete(hs), "a lone header was accepted as a cache"
 
     hs.with_suffix(".s").write_bytes(b"\x00" * 16)
@@ -233,7 +279,7 @@ def test_a_truncated_term_is_not_a_cache_either(tmp_path):
     from utils import attn
 
     hs = tmp_path / "attn.hs"
-    hs.write_text("!INTERFILE :=\n")
+    hs.write_text("!INTERFILE :=\n" + attn.PROVENANCE + "\n")
     (tmp_path / "normdt.s").write_bytes(b"\x00" * 64)
 
     hs.with_suffix(".s").write_bytes(b"\x00" * 32)

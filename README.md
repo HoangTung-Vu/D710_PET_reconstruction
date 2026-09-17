@@ -17,32 +17,33 @@ cd D710 && conda env create -f environment.yml    # host environment, petct_reco
 cp .env.example .env                              # per-machine settings, not committed
 ```
 
-On a machine that has apptainer but not docker, see
+On a machine that has apptainer but not docker — the workstation — see
 [Running under apptainer instead of docker](#running-under-apptainer-instead-of-docker).
-The two script sets are equivalent: same arguments, same results.
+The two entry points take the same arguments and give the same results.
 
 ### The host environment must be conda
 
-The constraint comes from `parallelproj`, which `d710 lm` reaches through
-PyTomography. The package is not published on PyPI, and `pytomography` does not
-declare it in `Requires-Dist`, not even as an extra. No resolver therefore knows
-it exists: `pip` and `uv` produce a PyTomography that imports but cannot
-reconstruct, because the import is lazy and lives in
-`pytomography.projectors.PET`, which only `d710 lm recon` reaches.
+The constraint comes from `parallelproj`, which `d710 attn` uses directly and
+`d710 lm` reaches through PyTomography. The package is not published on PyPI,
+and `pytomography` does not declare it in `Requires-Dist`, not even as an
+extra. No resolver therefore knows it exists: `pip` and `uv` produce a
+PyTomography that imports but cannot reconstruct, because the import is lazy
+and lives in `pytomography.projectors.PET`.
 
-Since nothing declares the dependency, nothing imposes a version ceiling either,
-and that is the dangerous part. `parallelproj` 2.x is a different package under
-the same name: the compiled half moved into `parallelproj_core`, a per-platform
-CPython extension no longer loaded through ctypes via `$PARALLELPROJ_C_LIB`, and
-the six functions PyTomography calls at top level (`joseph3d_fwd`,
-`joseph3d_back`, and the four `joseph3d_{fwd,back}_tof_{sino,lm}`) disappeared
-from the `parallelproj` namespace. Release 2.0.2 renamed the four TOF entry
-points and exported none of them; `__all__` holds exactly six metadata names.
-Without a pin, the next environment build resolves to 2.0.2 and all six raise
-`AttributeError`. `environment.yml` pins **1.10.2**, the last 1.x release.
-There is no upstream fix: 3.4.0 is the current PyTomography.
+Since nothing declares the dependency, nothing imposes a version ceiling
+either, and that is the dangerous part. `parallelproj` 2.x is a different
+package under the same name: the compiled half moved into `parallelproj_core`,
+a per-platform CPython extension no longer loaded through ctypes via
+`$PARALLELPROJ_C_LIB`, and the six functions PyTomography calls at top level
+(`joseph3d_fwd`, `joseph3d_back`, and the four
+`joseph3d_{fwd,back}_tof_{sino,lm}`) disappeared from the `parallelproj`
+namespace. Release 2.0.2 renamed the four TOF entry points and exported none of
+them; `__all__` holds exactly six metadata names. Without a pin, the next
+environment build resolves to 2.0.2 and all six raise `AttributeError`.
+`environment.yml` pins **1.10.2**, the last 1.x release. There is no upstream
+fix: 3.4.0 is the current PyTomography.
 
-### A complete case, both reconstruction paths
+### A complete case
 
 Run from inside `D710/`:
 
@@ -57,35 +58,26 @@ SRC=~/UET/Handson_PET_CT_Reconstruction/data/cases/20260819_FDG26081901_ok
     --ct   $SRC/dicom/CT_s002_CT_WB_AC_5mm \
     --listmode --lists $SRC/raw/petLists/NQLHXWDK/PZAMCDES/USIRBPEU
 
-./d710_isolate_stir.sh attn --case $CASE
-
-./d710_isolate_stir.sh osem --case $CASE --resume
-
-env D710_PYTHON=$HOME/miniconda3/envs/petct_recon/bin/python \
-    ./d710 lm recon --case $CASE --resume
-
-./d710_isolate_stir.sh export --case $CASE --format both
-./d710_isolate_stir.sh export --case $CASE --format both --lm
+./d710 attn      --case $CASE
+./d710 lm recon  --case $CASE --resume
+./d710 export    --case $CASE --format both --lm
 ```
 
 | step | command | produces |
 |---|---|---|
 | 1 | `d710 exam` | sinograms, the event table and GE's four correction terms |
-| 2 | `d710 attn` | attenuation from CT (SIRF; `--ct` is read from the bed sidecar) |
-| 3a | `d710 osem` | the sinogram path, non-TOF, to `recon.npz` |
-| 3b | `d710 lm recon` | the list-mode path, all 55 TOF bins, to `recon_lm.npz` |
+| 2 | `d710 attn` | attenuation from CT (`--ct` is read from the bed sidecar) |
+| 3 | `d710 lm recon` | the list-mode reconstruction, all 55 TOF bins, to `recon_lm.npz` |
 | 4 | `d710 export` | Bq/mL and SUV, as NIfTI and DICOM |
 
-Only step 3b requires conda. SIRF in steps 2, 3a and 4 comes from the
-`sirf-local:0.1` image, and step 1 runs under any `python3`. Omitting
-`--listmode --lists` in step 1 restricts the run to the sinogram path, in which
-case step 3b and the `export --lm` invocation are dropped as well — and the
-sinogram pipeline then needs conda nowhere at all.
+Step 1 runs inside `d710:full` and needs nothing but bash, a container runtime
+and any `python3`. Steps 2 to 4 run on the host, in `petct_recon`. **No step
+needs SIRF.**
 
 `exam` skips beds that are already complete, so it is safe to rerun after an
-interruption; `--force` rebuilds from the start. `osem` and `lm recon` behave
-the same way under `--resume`, and both detect a changed configuration and
-rebuild the affected bed rather than reusing a stale result.
+interruption; `--force` rebuilds from the start. `attn` and `lm recon` behave
+the same way, and `lm recon --resume` detects a changed configuration and
+rebuilds the affected bed rather than reusing a stale result.
 
 | command | function | runtime |
 |---|---|---|
@@ -93,45 +85,66 @@ rebuild the affected bed rather than reusing a stale result.
 | `d710 estimate` | GE's kernel to `randoms/scatter/normdt/norm_only.f32` | `d710:full` |
 | `d710 tostir` | `.f32` to STIR Interfile, with a bit-exact self-check | `d710:full` |
 | `d710 exam` | all three, for every bed | `d710:full` |
-| `d710 attn` | CT to `work/bed<n>/attn.hs` | `sirf-local:0.1` |
-| `d710 osem` | per-bed OSEM and axial stitching, to `recon.npz` | `sirf-local:0.1` |
-| `d710 export` | Bq/mL and SUV to NIfTI/DICOM (`--lm` for `recon_lm.npz`) | `sirf-local:0.1` |
+| `d710 attn` | CT to `work/bed<n>/attn.hs`, by parallelproj | host python |
 | `d710 lm` | list-mode OSEM, to `recon_lm.npz` | host python |
 | `d710 lowdose` | a reduced-dose copy of a case | host python |
+| `d710 export` | Bq/mL and SUV to NIfTI/DICOM (`--lm` for `recon_lm.npz`) | host python |
 | `d710 read` | read one vendor `.f32` | `d710:full` |
 | `d710 shell` | interactive shell inside the image | `d710:full` |
+| `d710 osem` | the sinogram path, kept for comparison — see below | `sirf-local:0.1` |
 
-`d710_isolate_stir.sh` accepts only `attn`, `osem` and `export`; every other
-command is forwarded unchanged to `./d710`, so using the wrong wrapper does not
-change the result.
+### The sinogram path, and why it is separate
 
-## Running under apptainer instead of docker
-
-On a machine with apptainer and no docker — a workstation or an HPC cluster —
-two equivalent entry points are provided. They take the same arguments and
-produce the same results; only container start-up differs.
-
-| docker | apptainer |
-|---|---|
-| `./d710 <command>` | `./d710_apptainer <command>` |
-| `./d710_isolate_stir.sh <command>` | `./d710_isolate_stir_apptainer.sh <command>` |
-
-One-time preparation, on a machine that already holds the docker images:
+`d710 osem` reconstructs from sinograms with SIRF/STIR. It is the only command
+left that needs SIRF, it is kept for comparison against the list-mode path
+rather than used, and it runs only on a machine with docker:
 
 ```bash
-apptainer build d710_full.sif  docker-daemon://d710:full
-apptainer build sirf_local.sif docker-daemon://sirf-local:0.1
+./d710_isolate_stir.sh osem --case $CASE --resume
+./d710 export --case $CASE --format both
 ```
 
-Copy the two `.sif` files to the target machine and declare them once in
-`D710/.env`:
+It reads the same `work/bed<n>/attn.hs` the host wrote and will not build one,
+so `d710 attn` must have run first. Everything else `d710_isolate_stir.sh` is
+given is forwarded to `./d710` unchanged.
+
+The comparison is not close. Measured on the same bed of the paediatric case,
+2 iterations x 24 subsets, the same four corrections:
+
+| | sinogram, TOF 5 bins | list-mode, all 55 bins |
+|---|---|---|
+| time per bed | 1 h 36 min | 4 min 29 s |
+
+`parallelproj` projects the whole sinogram on every subset, so subsets buy
+nothing there, and the cost goes as `n_subsets x n_iterations`. In list mode
+each event's ray is truncated to +-3 sigma about its own TOF position and is
+therefore shorter than the full chord.
+
+## The workstation: apptainer, one image, no SIRF
+
+Two commands need a container — `decode` and `estimate`, both inside
+`d710:full`. Everything after them is host python in the `petct_recon` conda
+environment, so the workstation carries one `.sif` and no SIRF at all.
+
+| | runs in | reached by |
+|---|---|---|
+| `decode`, `estimate`, `tostir`, `exam` | `d710:full` (apptainer) | `./d710_apptainer` |
+| `attn`, `lm`, `lowdose`, `export` | the host | `./d710` (or `./d710_apptainer`, which forwards) |
+| `osem` | `sirf-local:0.1` (docker) | not on the workstation — see below |
+
+One-time preparation, on a machine that already holds the docker image:
+
+```bash
+apptainer build d710_full.sif docker-daemon://d710:full
+```
+
+Copy the `.sif` to the target machine and declare it once in `D710/.env`:
 
 ```bash
 D710_SIF=/path/to/d710_full.sif
-D710_SIRF_SIF=/path/to/sirf_local.sif
 ```
 
-If they are not declared, they are looked for in `$D710_SIF_DIR`, `D710/sif/`,
+If it is not declared, it is looked for in `$D710_SIF_DIR`, `D710/sif/`,
 `D710/`, `$D710_OUT/sif` and `~/sif`. Verify the machine before the first case;
 every condition checked here otherwise fails later and far less legibly:
 
@@ -139,8 +152,14 @@ every condition checked here otherwise fails later and far less legibly:
 ./d710_apptainer doctor
 ```
 
-The check covers apptainer itself, both `.sif` files, the decoder self-test,
-fakeroot and GPU visibility. A complete case follows the order given above:
+The check covers apptainer itself, the `.sif`, the decoder self-test, fakeroot,
+and — the half that matters most now — the host environment: the seven Python
+packages, the GPU, and whether the installed `torch` and `libparallelproj`
+builds can actually use it. On a machine with a GPU, read the [GPU](#gpu)
+section before the first case; the stock pins in `environment.yml` do not work
+there and one of them fails loudly rather than quietly.
+
+A complete case:
 
 ```bash
 export D710_OUT=~/UET/d710_out
@@ -152,49 +171,51 @@ SRC=~/UET/Handson_PET_CT_Reconstruction/data/cases/20260819_FDG26081901_ok
     --ct   $SRC/dicom/CT_s002_CT_WB_AC_5mm \
     --listmode --lists $SRC/raw/petLists/NQLHXWDK/PZAMCDES/USIRBPEU
 
-./d710_isolate_stir_apptainer.sh attn --case $CASE
-./d710_isolate_stir_apptainer.sh osem --case $CASE --resume
-
-env D710_PYTHON=$HOME/miniconda3/envs/petct_recon/bin/python \
-    ./d710_apptainer lm recon --case $CASE --resume
-
-./d710_isolate_stir_apptainer.sh export --case $CASE --format both
+conda activate petct_recon
+./d710 attn     --case $CASE
+./d710 lm recon --case $CASE --resume
+./d710 export   --case $CASE --format both --lm
 ```
 
-The list-mode step runs on the host, outside any container, so apptainer plays
-no part in it.
+The last three run on the host, outside any container, so apptainer plays no
+part in them; `./d710_apptainer` forwards them to `./d710` unchanged, which is
+why writing `./d710_apptainer attn` also works.
+
+`d710 osem` is the one command the workstation cannot run: it is the sinogram
+path, it needs SIRF, and it is kept for comparison rather than used. It stays on
+a machine with docker, behind `./d710_isolate_stir.sh`.
 
 ### Wrappers, not copies
 
-`d710` holds 570 lines of pipeline logic — the TOF switch must reach both decode
-and estimate, beds are ordered numerically rather than lexically, SINO files are
+`d710` holds the pipeline logic — the TOF switch must reach both decode and
+estimate, beds are ordered numerically rather than lexically, SINO files are
 resolved per bed, and the interpreter is discovered at run time — so a second
-copy would diverge at the first change. The two apptainer scripts change only
-the two things apptainer actually changes, then call `./d710` itself:
+copy would diverge at the first change. `d710_apptainer` changes only the two
+things apptainer actually changes, then calls `./d710` itself:
 
-1. **The image name is the `.sif` path.** `D710_IMAGE` and `D710_SIRF_IMAGE` are
-   already the single place the tree reads an image name from, so pointing them
-   at a `.sif` file accomplishes most of the port.
+1. **The image name is the `.sif` path.** `D710_IMAGE` is already the single
+   place the tree reads an image name from, so pointing it at a `.sif`
+   accomplishes most of the port.
 2. **`apptainer_shim/` is placed first on `$PATH`**, and it contains a file
    named `docker` that translates directly into `apptainer exec`.
 
-The shim is required rather than convenient: three other places in the tree
-invoke `docker` themselves and none is reachable by editing an entry-point
+The shim is required rather than convenient: two other places in the tree
+invoke `docker` themselves and neither is reachable by editing an entry-point
 script — `vendor/run.sh` (gdb driving `pet_recon`, that is, the `estimate`
-step), `utils/container.py` (`rdf_info`, `cal_tags`, `ct_to_pifa`), and
-`d710_isolate_stir.sh` itself when it mounts the docker socket *into* the SIRF
-container. With the shim, all three pass through one translation layer and
-`d710` needs no change.
+step) and `utils/container.py` (`rdf_info`, `cal_tags`, `ct_to_pifa`, and the
+WCC lookup `d710 export` makes). With the shim, both pass through one
+translation layer and `d710` needs no change.
 
-### Three cases that do not translate mechanically
+### Two cases that do not translate mechanically
 
-**`--writable-tmpfs` is always enabled**, for two independent reasons. First, it
-is the actual meaning of `docker run --rm`: a write layer discarded on exit.
-Second, without an overlay apptainer cannot create mount points at all. A `.sif`
-is squashfs, and `/d710`, `/vendor`, `/case`, `/raw`, `/lists`, `/ct` and `/cal`
-do not exist inside `d710:full`, whose Dockerfile creates only `/out`,
-`/vendorlib` and `/petRDFS`. If an out-of-space error appears — the default
-session tmpfs is 64 MiB — point `D710_APPTAINER_OVERLAY` at a directory on disk.
+**`--writable-tmpfs` is always enabled**, for two independent reasons. First,
+it is the actual meaning of `docker run --rm`: a write layer discarded on exit.
+Second, without an overlay apptainer cannot create mount points at all. A
+`.sif` is squashfs, and `/d710`, `/vendor`, `/case`, `/raw`, `/lists`, `/ct`
+and `/cal` do not exist inside `d710:full`, whose Dockerfile creates only
+`/out`, `/vendorlib` and `/petRDFS`. If an out-of-space error appears — the
+default session tmpfs is 64 MiB — point `D710_APPTAINER_OVERLAY` at a directory
+on disk.
 
 **`estimate` requires `--fakeroot`.** `vendor/run.sh` is the one place that
 deliberately does not pass `--user`, because `pet_recon` opens
@@ -207,67 +228,46 @@ otherwise the permission failure surfaces two hundred lines into a gdb log. On
 this path apptainer is the better of the two: the resulting `.f32` files belong
 to the invoking user rather than to root.
 
-**`export` loses the in-container WCC lookup.** The docker variant mounts the
-docker socket into the SIRF container so that `utils/quant.py` can open a second
-container and read the vendor calibration file; nesting apptainer inside
-apptainer does not work. In practice this is harmless: `d710 estimate` has
-already written `wcc_activity_factor` into `estimate.json`, `quant.py` consults
-the sidecar first, and the scale actually applied is `K_EXPORT` or `$D710_K`.
-The `docker.sock` bind is therefore dropped, while the `/usr/bin/docker` bind is
-kept deliberately, so that the call fails with an exit status that
-`container.cal_tags` already handles instead of a `FileNotFoundError` that would
-abort `export`.
-
-### `sirf-local:0.1` lacks `pydicom` and `nibabel`
-
-This is not an apptainer defect: the image has never contained them and the same
-command under docker fails identically. It surfaces now only because the
-apptainer route is the first to run `attn` inside the image rather than against
-a host SIRF. Three commands are affected:
-
-| command | location | requirement |
-|---|---|---|
-| `attn`, `osem` | `utils/attenuation.py` | `pydicom`, to read the CT |
-| `export` | `utils/export.py` | `pydicom` and `nibabel`, to write the output |
-
-The symptom is `ModuleNotFoundError: No module named 'pydicom'` *after*
-`import sirf.STIR` has already succeeded, which shows that the interpreter is
-correct and only the package is missing. Do not switch `python3` for another
-interpreter: it is the one SIRF was built against.
-
-The remedy is a pure-Python install placed beside the output. `$D710_OUT` is
-already bind-mounted read-write, so no additional mount is required and the
-directory lies outside the source tree:
-
-```bash
-python3 -m pip install --no-deps --target "$D710_OUT/.pylibs" pydicom nibabel
-```
-
-`--no-deps` is deliberate: numpy is already present in the image, and a second
-copy on `PYTHONPATH` would shadow the one SIRF was built against.
-[apptainer_shim/sirf_env.sh](apptainer_shim/sirf_env.sh) appends that directory
-to the end of `PYTHONPATH` — appended, never prepended, so the image's own
-packages win every collision — and `d710_isolate_stir_apptainer.sh` points
-`D710_SIRF_ENV_SH` at it. Nothing happens if the directory is absent, so the
-workaround is optional. `./d710_apptainer doctor` checks all four packages and
-prints the command above.
-
 ### GPU
 
-The shim adds `--nv` when `/dev/nvidiactl` is present, but nothing in either
-image currently uses it: STIR in `sirf-local:0.1` links the CPU build of
-`libparallelproj`, and the GPU path of `pet_recon` is forced off in
-`vendor/boot.gdb` because GE never shipped the OpenCL kernel sources. The place
-where a GPU is worth having is `d710 lm`, and that command runs on the host
-rather than in a container. Switch `libparallelproj` in `environment.yml` to a
-`cuda129_*` or `cuda130_*` build and install a CUDA build of `torch`.
+The shim adds `--nv` when `/dev/nvidiactl` is present, but nothing inside
+`d710:full` uses it: the GPU path of `pet_recon` is forced off in
+`vendor/boot.gdb` because GE never shipped the OpenCL kernel sources. The GPU
+is worth having for the host half — `d710 attn --device cuda` and `d710 lm` —
+and two things have to line up for it:
+
+* **`libparallelproj` must be a `cuda*` build.** The pin in `environment.yml`
+  is `cpu_*`, which has no `libparallelproj_cuda.so`. Worse, on a machine that
+  *has* a GPU the cpu build does not merely waste it, it fails:
+  `parallelproj/backend.py` sets `cuda_present = shutil.which("nvidia-smi") is
+  not None` and then requires the CUDA library with no fallback, raising
+  `ImportError: Cannot find parallelproj cuda lib`.
+
+  ```bash
+  conda install -c conda-forge "libparallelproj=1.10.2=cuda129_h897a41e_203"
+  ```
+
+  `conda search -c conda-forge 'libparallelproj=1.10.2'` lists exactly three
+  build families: `cpu_*`, `cuda129_*` and `cuda130_*`.
+
+* **`torch`'s CUDA major version must not exceed the driver's.** Within CUDA 12
+  any 12.x wheel runs on any 12.x driver, but a CUDA 13 wheel needs a CUDA 13
+  driver. A machine whose `nvidia-smi` reports "CUDA Version: 12.6" therefore
+  cannot run `torch ...+cu130`, and the only symptom is
+  `torch.cuda.is_available()` returning `False`.
+
+  ```bash
+  pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cu126
+  ```
+
+`./d710_apptainer doctor` reports both and names the fix.
 
 Additional environment variables, beyond everything `./d710 --help` lists:
 
 | variable | function |
 |---|---|
-| `D710_SIF`, `D710_SIRF_SIF` | the two images |
-| `D710_SIF_DIR` | where to look for them |
+| `D710_SIF` | the image |
+| `D710_SIF_DIR` | where to look for it |
 | `D710_APPTAINER_BIN` | the apptainer binary, if not on `PATH` |
 | `D710_APPTAINER_FAKEROOT` | `1` to force, `0` to forbid, `auto` (default, probed once) |
 | `D710_APPTAINER_OVERLAY` | `tmpfs` (default), `none`, or a directory on disk |
@@ -275,35 +275,122 @@ Additional environment variables, beyond everything `./d710 --help` lists:
 | `D710_APPTAINER_BIND` | additional binds, space-separated |
 | `D710_APPTAINER_QUIET` | `1` to suppress the echo of each apptainer command |
 
-## Two separate runtimes
+## Where the code runs, and what it needs
 
-| | SIRF/STIR | PyTomography |
+| | host python (`petct_recon`) | `d710:full` | `sirf-local:0.1` |
+|---|---|---|---|
+| commands | `attn`, `lm`, `lowdose`, `export` | `decode`, `estimate`, `tostir`, `exam`, `read`, `shell` | `osem` |
+| reached by | `./d710` | `./d710` or `./d710_apptainer` | `./d710_isolate_stir.sh` |
+| on the workstation | yes | yes (apptainer) | no |
+
+Nothing on the list-mode path imports `sirf` or `stir`. The segment layout is
+read from the Interfile header by `utils/interfile.py`, every term is read with
+`np.fromfile`, and attenuation — the last thing that needed STIR — is projected
+by `utils/attn_proj.py` with parallelproj, in the same world frame
+`PETLMSystemMatrix` reconstructs in.
+
+### Attenuation without STIR
+
+`utils/attn_proj.py` replaces SIRF's
+`AcquisitionSensitivityModel.compute_attenuation_factors`. For each bin it
+averages `exp(-int mu dl)` over the ring pairs the bin merges, with `mu` in
+1/mm and the path in mm, using `parallelproj.joseph3d_fwd` on the crystal
+positions `utils/geometry.py` computes. On a whole D710 bed that is 576 ring
+pairs x 109,728 LORs = 63.2 M rays, about 40 s on 16 CPU cores and far less on
+a GPU (`--device cuda`).
+
+**Which detector carries which ring had to be measured.** A plane merges
+several ring pairs, and the pairing decides how the LOR tilts axially. Reversing
+it mirrors the segment axis -- `+s` for `-s` at the same axial index, with
+segment 0 a fixed point, since its pairs `(r+1, r)` and `(r, r+1)` already form
+a symmetric set.
+
+The evidence is `d710 lm check`, which re-histograms the list-mode events --
+decoded from GE's `LIST*.BLF` -- through `BinMap.flat()` and compares element by
+element against the prompts sinogram the same decoder produced from GE's
+independent `SINO*` file. Two vendor data paths, one acquisition. On
+`fdg26081901`:
+
+| bed | events | bins differing, as shipped | bins differing, pairing reversed |
+|---|---|---|---|
+| 1 | 29,962,337 | **0** | 24,172,076 |
+| 3 | 38,272,246 | **0** | 28,315,342 |
+| 6 | 37,691,517 | **0** | 29,076,944 |
+
+and under the reversal the histogram of segment `+s` came out equal to the
+decoded segment `-s`, count for count. The check can fail, so its passing is
+evidence. `tests/test_lm_data.py` fixes both halves; `utils/binmap.py` holds the
+statement of the convention and is the only place it is written down.
+`utils/attn_proj.py` reads `BinMap.ring_pairs_by_plane()` rather than restating
+the rule, which is what makes `lm check` prove the attenuation geometry too.
+
+### The decoder declares the ring differences with STIR's sign
+
+Until 2026-09-18 the decoder labelled the first oblique block `+k` and `BinMap`
+paired ring `a` with `det1`. That reproduced GE's data exactly -- but STIR's own
+rule is `ring2 - ring1 = rd` (`ProjDataInfoCylindrical.inl`, "KT 01/08/2002
+swapped rings"), so **STIR read the same header as the mirror of what the file
+holds**, and `d710 osem` back-projected every oblique bin along a ray tilted the
+wrong way.
+
+Two one-line changes fix it, and they cancel:
+
+* `custom_tool/gerdf/interfile.py::ordered_segments` labels the first oblique
+  block `-k`, so the declaration matches STIR's sign;
+* `utils/binmap.py` fills `pl[b, a]` instead of `pl[a, b]`, adopting the same
+  sign.
+
+Because they cancel, `pl`, `flat()`, `lor_table()` and every `attn.s` come out
+**numerically identical**, and the `.s` payload is byte-identical -- checked by
+sha256 on three beds, and `attn.s` rebuilt from scratch hashes the same. Only
+STIR's reading changes. Measured on `fdg26081901` against GE's own image, on the
+SUV scale inside the body:
+
+| | r vs GE | SUV ratio |
 |---|---|---|
-| location | image `sirf-local:0.1`, via `./d710_isolate_stir.sh` | host python, conda env `petct_recon` |
-| commands | `attn`, `osem`, `export` | `lm`, `lowdose` |
+| sinogram, before | 0.9602 | 0.9275 |
+| **sinogram, after** | **0.9728** | 0.9270 |
+| list-mode, before and after | 0.9760 | 0.9308 |
 
-The name "parallelproj" refers to two different artefacts in this project. They
-have different sonames and therefore coexist in one environment without
+The list-mode path never took its geometry from the header -- PyTomography
+places each event from its two crystal ids through `scanner_LUT` -- so it is
+bit-for-bit unchanged. That is also why the earlier `attn` correction barely
+moved it: measured on one bed with everything else held fixed, the ring pairing
+of `attn` alone changes the image by **+0.21 %**. Misplacing a ray is a
+structural error; mis-weighting it by a percent is not.
+
+> **A header written before 2026-09-18 says the opposite and there is no marker
+> to detect it.** Anything decoded earlier must be decoded again -- the payload
+> is byte-identical, only the header text differs, so `d710 decode` followed by
+> `d710 tostir` is enough, and `attn.hs`, `lm.npz` and `recon_lm.npz` all stay
+> valid. `d710 lm check` is the tripwire: it fails outright on a stale header.
+> `K_EXPORT` (sinogram) needs re-measuring, because the sinogram images change;
+> `K_EXPORT_LM` does not.
+
+### `parallelproj` means two different things here
+
+They have different sonames and therefore coexist in one environment without
 conflict:
 
 | file | loaded by | origin |
 |---|---|---|
-| `lib/libparallelproj_c.so.1.10.2` | the Python package `parallelproj`, through PyTomography (`d710 lm`) | conda-forge, loaded by ctypes |
+| `lib/libparallelproj_c.so.1.10.2` | the Python package `parallelproj`, directly by `d710 attn` and through PyTomography by `d710 lm` | conda-forge, loaded by ctypes |
 | `dlevel/INSTALL/lib/libparallelproj.so.2.0.7` | STIR, for `osem --projector parallelproj` | built by SIRF-SuperBuild, used through its C++ API |
 
-The incompatibility described above therefore concerns only the first row. The
-2.0.7 build that STIR links is a C++ library, does not pass through the Python
+The 2.x incompatibility described above concerns only the first row. The 2.0.7
+build that STIR links is a C++ library, does not pass through the Python
 namespace, and is unaffected.
 
-Nothing under `lm/` or `lowdose/` imports `sirf` or `stir`: the segment layout
-is read directly from the header (`lm/interfile.py`) and every term is read with
-`np.fromfile`. In exchange, `utils/attn.py` now writes `attn.hs` with a header
-cloned from the prompts — the same layout as every other file in
-`work/bed<n>/` — rather than in SIRF's own layout. **Existing `attn.hs` files
-must therefore be rebuilt:**
-`./d710_isolate_stir.sh attn --case <case> --force`.
+**`attn.hs` files written before this change must be rebuilt**, because the
+header layout changed with them — `utils/attn.py` clones the header from the
+prompts, the same layout as every other file in `work/bed<n>/`, rather than
+writing SIRF's own segment order:
 
-### One image grid, shared by both runtimes
+```bash
+./d710 attn --case <case> --force
+```
+
+### One image grid, shared by both reconstruction paths
 
 The two SIRF builds interpret `--xy` differently. The build inside
 `sirf-local:0.1` fixes the FOV at 718.01 mm and lets the voxel size follow `xy`;
@@ -320,10 +407,10 @@ if the SIRF build in use would produce a different voxel size.
 **Any `recon.npz`, `lm.npz` or `recon_lm.npz` built on the earlier grid must be
 regenerated.** See `lm/README.md` and `lowdose/README.md`.
 
-Steps 1 to 3 require only bash, docker (or apptainer) and any `python3` on the
+`d710 exam` requires only bash, docker (or apptainer) and any `python3` on the
 host: no conda, no numpy, no pydicom, no i386 multiarch and no `custom_tool/`
-checkout. Only `osem`, `attn`, `export`, `lm` and `lowdose` need the project
-environment, because SIRF and PyTomography are not in the image.
+checkout. `attn`, `lm`, `lowdose` and `export` need the project environment,
+because PyTomography is not in the image.
 
 `d710` does not assume that `python3` is the correct interpreter. On a machine
 where `/usr/bin` precedes conda on `PATH` — a common arrangement — `python3` is
@@ -433,11 +520,10 @@ print('OK')"
 built from source into `$CONDA_PREFIX/dlevel/` of a *different* environment,
 `petct_reconstruction`. That is a C++ build bound to the libraries of that
 environment and requiring its `LD_LIBRARY_PATH` at load time; no dependency file
-reproduces it on another machine. Day-to-day use does not need them: `attn`,
-`osem` and `export` run from the `sirf-local:0.1` image via
-`./d710_isolate_stir.sh`. If they are absent on the host, those three commands
-report which interpreters were tried and stop; `decode`, `estimate`, `tostir`,
-`exam`, `lm` and `lowdose` are unaffected.
+reproduces it on another machine. Day-to-day use does not need them at all:
+only `osem` does, and it runs from the `sirf-local:0.1` image via
+`./d710_isolate_stir.sh`. Every other command — `decode`, `estimate`, `tostir`,
+`exam`, `attn`, `lm`, `lowdose`, `export` — is unaffected by their absence.
 
 > **`petct_recon` is not `petct_reconstruction`.** The names are similar but the
 > environments are distinct. `petct_recon` is the host runtime defined by
@@ -482,26 +568,31 @@ performs a dry run by default and only ever moves files.
 ```
 d710              the CLI, and the only entry point
 d710_apptainer    the apptainer form of `d710`; a wrapper that calls `d710`
-d710_isolate_stir_apptainer.sh   the same, for `d710_isolate_stir.sh`
+d710_isolate_stir.sh   `d710 osem` inside sirf-local:0.1; docker only
 apptainer_shim/   a `docker` that translates to `apptainer exec`; first on $PATH
 Dockerfile        a record of the image contents (the image is delivered, not built)
 environment.yml   the host environment `petct_recon`, a verbatim conda export
 decode/           the per-bed loop that runs inside the container
 vendor/           the driver for GE's kernel, and the principal reference document
-osem/             the OSEM algorithm on sinograms, and nothing else
 lm/               the list-mode algorithm (PyTomography); see lm/README.md
+osem/             the sinogram algorithm (SIRF), kept for comparison
 lowdose/          low-dose simulation by event decimation; see lowdose/README.md
 utils/            everything shared that is not part of an algorithm
 utils/scanner.py    every geometric constant, machine setting and image grid
+utils/interfile.py  the Interfile header reader, which does not need STIR
+utils/attn_proj.py  attenuation by parallelproj line integral
 tests/            the checks on those conventions; see tests/README.md
 tools/            migrate_out.sh, lm_frame.py, tof_direction.py and others
 ```
 
 A future algorithm — FBP, MLEM, a deep prior — belongs in its own package
-alongside `osem/`, reusing `utils/`. That is why `utils/` must contain nothing
-OSEM-specific: a function that is meaningful only for OSEM belongs in `osem/`.
+alongside `lm/`, reusing `utils/`. That is why `utils/` must contain nothing
+algorithm-specific: a function that is meaningful only for OSEM belongs in
+`osem/`. Nothing under `utils/` imports `sirf` or `stir`; the STIR
+cross-checks that used to sit in `utils/geometry.py` are in
+`tests/stir_oracle.py`, where only the tests reach them.
 
-## The three inputs to OSEM, which are not interchangeable
+## The three inputs to sinogram OSEM, which are not interchangeable
 
 | | file | how it is attached |
 |---|---|---|
@@ -551,11 +642,14 @@ All four arose in practice rather than in anticipation.
    `ring_pair_multiplicity()` a second time squares it, giving a factor of four
    at the odd planes.
 
-One further point is not obvious: a file written by SIRF (`attn.hs`) uses a
-different layout from the decoded files — segments ascending, and the view axis
-before the axial axis — yet `as_array()` still returns the same plane order.
-Since the pipeline multiplies `normdt` by `attn` as numpy arrays, that property
-is required.
+One further point used to bite here and no longer can. A file written by SIRF
+uses a different layout from the decoded files — segments ascending, and the
+view axis before the axial axis — yet `as_array()` still returns the same plane
+order, so a SIRF-written `attn.hs` multiplied `normdt` correctly as a numpy
+array while being unreadable by `np.fromfile`. `attn.hs` is now written by
+`utils/attn.py` with the header cloned from the prompts, so every file in
+`work/bed<n>/` has one layout and `utils/interfile.py` refuses the other
+(`Header.require_plane_major`).
 
 ## The four invariants across all six beds of the paediatric case
 
@@ -582,9 +676,9 @@ Livetime follows randoms rather than prompts. Bed 6 has the highest prompt rate
 than bed 5's (24.2 M): randoms scale as singles squared, and dead time follows
 singles. This is a natural cross-check on the direction of `normdt`.
 
-## Provenance of the OSEM pipeline
+## Provenance of the sinogram OSEM pipeline
 
-The pipeline follows SIRF's own examples rather than an invented API:
+`osem/` follows SIRF's own examples rather than an invented API:
 
 | example | contribution |
 |---|---|
@@ -606,14 +700,14 @@ combines all of prompts, randoms, scatter, norm and CTAC on a real sinogram;
 | scatter (SSS) | complete — GE's kernel, S/(T+S) = 32.9 % |
 | normalisation | complete — the scanner's own 3D norm, resolved from the exam header |
 | dead time | complete — `normdt/norm_only`; count-rate dependent |
-| CT attenuation | complete — mu-map orientation measured on both axes |
+| CT attenuation | complete — `utils/attn_proj.py`, parallelproj rather than STIR; mu-map orientation measured on both axes, ring order measured against SIRF |
 | full multi-bed runs | complete — `d710 exam` |
 | decay correction and axial stitching | complete — referred to injection time, weighted by the sensitivity image |
 | DICOM and NIfTI export | complete — `utils/export.py`, `Units = BQML` |
 | list-mode (PyTomography) | complete — `lm/`, bit-exact bin mapping on all six beds; all 55 TOF bins in 2 m 01 s per bed, faster than non-TOF |
 | transaxial FOV | complete — a disc of radius 356.7 mm applied to the initial estimate; previously 34 % of counts fell into the corners of the square grid |
 | low-dose simulation | complete — `lowdose/`, with binomial and per-plane invariant checks |
-| image grid | complete — `utils/scanner.py`, 337 × 2.1306 mm, identical in both runtimes |
+| image grid | complete — `utils/scanner.py`, 337 × 2.1306 mm, identical in both reconstruction paths |
 | the constant `K` | measured — `K_EXPORT` (sinogram) and `K_EXPORT_LM` (list-mode), two constants rather than one; requires re-measurement after the `MU_*_511` correction of 2026-09-06 |
 
 `K` has been measured but currently requires re-measurement. It was obtained by
@@ -630,6 +724,10 @@ rather than volume; a value measured at 2.1306 mm and applied at 1.3672 mm reads
 to the values the machine declares (`cmcfg.XR.xml`), which changed attenuation,
 so both constants are currently invalid. Re-measure by running `run_all_ok.sh`,
 then `export_all_ok.sh`, then `tools/calib_k.py`.
+
+Replacing SIRF's attenuation with `utils/attn_proj.py` does **not** add to that:
+the prompt-count weighted mean attenuation factor moved by -0.0006 %, which is
+five orders of magnitude below anything `K` is quoted to.
 
 Further detail: `vendor/README.md` is the principal reference;
 `vendor/PARAMS.md` holds the live parameters read from the running process;

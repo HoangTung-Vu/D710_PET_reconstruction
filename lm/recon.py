@@ -36,33 +36,89 @@ def object_meta(xy: int = XY, n_plane: int = NSEG0):
     return ObjectMeta(dr=(DR_MM, DR_MM, PLANE_MM), shape=(xy, xy, n_plane))
 
 
-def system_matrix(case, bed, e, binmap, n_tof, xy=XY, psf=PSF_MM, tof_sign=1,
-                  n_splits=8, tof_scatter=None):
-    """`(system matrix, additive term, events kept)`."""
+_FIXED_SENS = {}
+
+
+def _fixed_sensitivity_class():
+    cls = _FIXED_SENS.get("cls")
+    if cls is not None:
+        return cls
+
+    from pytomography.projectors.PET import PETLMSystemMatrix
+
+    class _FixedSensitivity(PETLMSystemMatrix):
+        def __init__(self, *a, sensitivity=None, **kw):
+            self._sensitivity = sensitivity
+            super().__init__(*a, **kw)
+
+        def _backward_full(self, N_splits: int = 20):
+            return self._sensitivity.detach().to("cpu").clone()
+
+    _FIXED_SENS["cls"] = _FixedSensitivity
+    return _FixedSensitivity
+
+
+def _as_tensor(a):
+    if a is None:
+        return None
     import torch
+
+    if isinstance(a, torch.Tensor):
+        return a
+    return torch.from_numpy(np.asarray(a))
+
+
+def build_sm(ids, n_tof, xy=XY, n_plane=NSEG0, psf=PSF_MM, n_splits=8,
+             sens_ids=None, sens_w=None, sensitivity=None, weights=None,
+             lut=None, tof=None, device=None):
     from pytomography.metadata.PET import PETLMProjMeta
     from pytomography.projectors.PET import PETLMSystemMatrix
     from pytomography.transforms.shared import GaussianFilter
 
-    keep, w, add = terms.event_terms(case, bed, e, binmap, n_tof, tof_scatter)
-    ids = ev.detector_ids(e, n_tof, tof_sign)[keep]
-    if n_tof == 1:
+    if n_tof == 1 and ids.shape[1] > 2:
         ids = ids[:, :2]
-    sens_ids, sens_w = terms.sensitivity(case, bed, binmap)
-    print(f"  {len(ids):,} events kept, {int((~keep).sum()):,} outside the "
-          f"sinogram; {len(sens_ids):,} sensitivity LORs")
 
     proj_meta = PETLMProjMeta(
-        torch.from_numpy(ids), info=None,
-        scanner_LUT=torch.from_numpy(geom.scanner_lut()),
-        tof_meta=geom.tof_meta(n_tof) if n_tof > 1 else None,
-        weights=torch.from_numpy(w),
-        detector_ids_sensitivity=torch.from_numpy(sens_ids),
-        weights_sensitivity=torch.from_numpy(sens_w))
+        _as_tensor(ids), info=None,
+        scanner_LUT=_as_tensor(geom.scanner_lut() if lut is None else lut),
+        tof_meta=(geom.tof_meta(n_tof) if n_tof > 1 else None) if tof is None
+        else tof,
+        weights=_as_tensor(weights),
+        detector_ids_sensitivity=_as_tensor(sens_ids),
+        weights_sensitivity=_as_tensor(sens_w))
 
-    sm = PETLMSystemMatrix(object_meta(xy), proj_meta,
-                           obj2obj_transforms=[GaussianFilter(psf)] if psf else [],
-                           N_splits=n_splits)
+    kw = dict(obj2obj_transforms=[GaussianFilter(psf)] if psf else [],
+              N_splits=n_splits)
+    if device is not None:
+        kw["device"] = device
+    om = object_meta(xy, n_plane)
+
+    if sensitivity is None:
+        return PETLMSystemMatrix(om, proj_meta, **kw)
+    return _fixed_sensitivity_class()(
+        om, proj_meta, sensitivity=_as_tensor(sensitivity), **kw)
+
+
+def system_matrix(case, bed, e, binmap, n_tof, xy=XY, psf=PSF_MM, tof_sign=1,
+                  n_splits=8, tof_scatter=None, sensitivity=None):
+    """`(system matrix, additive term, events kept)`."""
+    import torch
+
+    keep, w, add = terms.event_terms(case, bed, e, binmap, n_tof, tof_scatter)
+    ids = ev.detector_ids(e, n_tof, tof_sign)[keep]
+
+    sens_ids = sens_w = None
+    if sensitivity is None:
+        sens_ids, sens_w = terms.sensitivity(case, bed, binmap)
+        tail = f"; {len(sens_ids):,} sensitivity LORs"
+    else:
+        tail = "; sensitivity supplied"
+    print(f"  {len(ids):,} events kept, {int((~keep).sum()):,} outside the "
+          f"sinogram{tail}")
+
+    sm = build_sm(ids, n_tof, xy=xy, psf=psf, n_splits=n_splits,
+                  sens_ids=sens_ids, sens_w=sens_w, sensitivity=sensitivity,
+                  weights=w)
     return sm, torch.from_numpy(add), int(keep.sum())
 
 

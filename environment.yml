@@ -149,6 +149,12 @@ dependencies:
       - nvidia-nvshmem-cu13==3.4.5
       - nvidia-nvtx==13.0.85
       - opencv-python==5.0.0.93
+      # GATE 10, for `d710 simulate gate`. Added 2026-09-22 after `pip install
+      # --dry-run` showed it changes no installed package; pip pulls in the rest
+      # (opengate-core, itk, simpleitk, tables, gatetools, ...). The first
+      # `opengate.Simulation()` downloads ~2.2 GB of Geant4 data into
+      # site-packages/opengate_core/geant4_data. The wheel is manylinux_2_34.
+      - opengate==10.1.1
       - pandas==3.0.5
       - pluggy==1.6.0
       - pydicom==3.0.2

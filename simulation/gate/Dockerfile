@@ -34,12 +34,36 @@ ARG OPENGATE_VERSION=10.1.1
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_ROOT_USER_ACTION=ignore
+    PIP_ROOT_USER_ACTION=ignore \
+    QT_QPA_PLATFORM=offscreen
 
-# opengate pulls in numpy, scipy, itk and uproot itself; `import opengate_core`
-# downloads the Geant4 datasets into site-packages, which bakes them in here.
-RUN pip install --no-cache-dir "opengate==${OPENGATE_VERSION}" \
- && python -c "import opengate_core" \
+# `opengate_core` links against Qt and OpenGL even when nothing is displayed,
+# and the slim image has none of it: the first build died on
+# "ImportError: libGL.so.1: cannot open shared object file". The wheel bundles
+# Qt itself (opengate_core.libs) but not the driver-side libraries below.
+# If another one is ever missing, the error names it; add it here and find its
+# package with `apt-file search <name>`.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        libgl1 \
+        libglib2.0-0 \
+        libxext6 \
+        libxrender1 \
+        libsm6 \
+        libice6 \
+        libxkbcommon0 \
+        libdbus-1-3 \
+        libfontconfig1 \
+        libfreetype6 \
+ && rm -rf /var/lib/apt/lists/*
+
+# opengate pulls in numpy, scipy, itk and uproot itself.
+RUN pip install --no-cache-dir "opengate==${OPENGATE_VERSION}"
+
+# `import opengate_core` downloads the Geant4 datasets into site-packages,
+# which bakes them into the image. A separate layer, so that a failure here
+# does not repeat the install above.
+RUN python -c "import opengate_core" \
  && python -c "import opengate; opengate.Simulation(); print('opengate ${OPENGATE_VERSION} ready')"
 
 WORKDIR /work

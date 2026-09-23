@@ -196,6 +196,7 @@ def build(cfg: RunConfig, meta: dict, crop: dict):
     sim.check_volumes_overlap = cfg.check_overlap
     sim.g4_verbose = False
     sim.visu = False
+    sim.progress_bar = True
 
     z_extent = crop["box_mm"][2]
     sim.world.size = [2 * m, 2 * m, max(2 * m, (z_extent + 200) * mm)]

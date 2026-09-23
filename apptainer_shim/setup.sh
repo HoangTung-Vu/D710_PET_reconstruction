@@ -50,6 +50,17 @@ if [[ -n "${D710_SIF:-}" && -f "$D710_SIF" ]]; then
     export D710_IMAGE="$D710_SIF"
 fi
 
+# The GATE image, used only by `simulate gate`: the opengate wheels need
+# glibc >= 2.34 and the workstation has 2.31, so Geant4 runs in a container
+# while everything after it stays on the host.  See simulation/gate/Dockerfile.
+if [[ -z "${D710_GATE_SIF:-}" ]]; then
+    D710_GATE_SIF="$(_apt_find_sif 'd710_gate.sif' 'd710-gate.sif' \
+                                   'd710*gate*.sif' 'opengate*.sif' || true)"
+fi
+if [[ -n "${D710_GATE_SIF:-}" && -f "$D710_GATE_SIF" ]]; then
+    D710_GATE_SIF="$(_apt_abs "$D710_GATE_SIF")"; export D710_GATE_SIF
+fi
+
 export PATH="$HERE/apptainer_shim:$PATH"
 [[ -x "$HERE/apptainer_shim/docker" ]] || chmod +x "$HERE/apptainer_shim/docker" 2>/dev/null || true
 
@@ -79,6 +90,48 @@ $(_apt_sif_dirs | sed 's/^/      /' | grep -v '^      $')
       $var=/path/to/<file>.sif
 EOF
     exit 2
+}
+
+_apt_gate_runner() {
+    # `apptainer exec --bind ... <sif> python`, quoted for shlex.split on the
+    # python side (simulation/gate/driver.py::gate_python).
+    local bin b args=()
+    bin="$(_apt_bin)" || return 1
+    args=("$bin" exec)
+    for b in "$HERE" "${D710_OUT:-}" ${D710_APPTAINER_BIND:-}; do
+        [[ -n "$b" && -d "$b" ]] && args+=(--bind "$b")
+    done
+    args+=("$D710_GATE_SIF" python)
+    printf '%q ' "${args[@]}"
+}
+
+_apt_need_gate() {
+    [[ -n "${D710_GATE_RUNNER:-}" ]] && return 0
+    _apt_bin >/dev/null || {
+        echo "error: no apptainer (or singularity) on \$PATH." >&2
+        exit 2; }
+    if [[ -z "${D710_GATE_SIF:-}" || ! -f "${D710_GATE_SIF:-}" ]]; then
+        cat >&2 <<EOF
+error: no GATE .sif found, and this host cannot pip install opengate
+  (the wheels need glibc >= 2.34).  Looked in:
+$(_apt_sif_dirs | sed 's/^/      /' | grep -v '^      $')
+
+  Build it where docker is, as root on this machine:
+      docker build -t d710:gate $HERE/simulation/gate
+      sif-convert d710:gate     # -> /home/shared/apptainer/images/d710_gate.sif
+  or build the image elsewhere and move it over:
+      docker save d710:gate | gzip > d710_gate.tar.gz     # on the other machine
+      zcat d710_gate.tar.gz | docker load && sif-convert d710:gate
+  then say where it is, once, in D710/.env:
+      D710_GATE_SIF=/home/shared/apptainer/images/d710_gate.sif
+EOF
+        exit 2
+    fi
+    D710_GATE_RUNNER="$(_apt_gate_runner)" || {
+        echo "error: could not build the GATE runner command" >&2; exit 2; }
+    export D710_GATE_RUNNER
+    [[ "${D710_APPTAINER_QUIET:-0}" == 1 ]] || \
+        echo ">> GATE runs in $D710_GATE_SIF" >&2
 }
 
 _apt_doctor() {
@@ -184,6 +237,21 @@ PYEOF
         echo "   kernels.  The GPU pays off on the HOST, in attn and lm."
     else
         echo "   no /dev/nvidiactl -- --nv off"
+    fi
+    echo "== the GATE image  (simulate gate; the rest of simulate is host python)"
+    if [[ -n "${D710_GATE_SIF:-}" && -f "${D710_GATE_SIF:-}" ]]; then
+        printf '   d710:gate  %s\n' "$D710_GATE_SIF"
+        if [[ -n "${bin:-}" ]]; then
+            if "$bin" exec "$D710_GATE_SIF" python -c \
+                    "import opengate, opengate_core" >/dev/null 2>&1; then
+                echo "   opengate imports: ok"
+            else
+                echo "   opengate does NOT import inside it"; rc=1
+            fi
+        fi
+    else
+        echo "   NOT FOUND -- only needed for \`simulate gate\`; build it with"
+        echo "   simulation/gate/Dockerfile and set D710_GATE_SIF (see --help)"
     fi
     echo "== output"
     printf '   D710_OUT=%s\n' "${D710_OUT:-<unset>  (required: export D710_OUT=~/UET/d710_out)}"

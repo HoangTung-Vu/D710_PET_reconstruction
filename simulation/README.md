@@ -22,7 +22,7 @@ d710 lm check         --case fdg26081008_sim_gate_s1 --bed 1  # bit-exact, like 
 ```bash
 export D710_OUT=~/UET/Handson_PET_CT_Reconstruction/d710_out
 export D710_PYTHON=~/miniconda3/envs/petct_recon/bin/python
-nohup D710/simulation/overnight.sh > /dev/null 2>&1 &     # BEDS="7 6" SIM_SECONDS=9 HOURS=8
+nohup D710/simulation/overnight.sh > ~/overnight_nohup.out 2>&1 &   # BEDS="7 6" SIM_SECONDS=9 HOURS=8
 ```
 
 It simulates each bed in `$BEDS` to `$SIM_SECONDS` in 1 s chunks, and starts a chunk only if it can end before the deadline. It resumes where it stopped. Every time a bed completes, it converts, reconstructs with `d710 lm recon` (the simulation's own randoms and scatter), exports, and runs both comparisons:
@@ -31,6 +31,22 @@ It simulates each bed in `$BEDS` to `$SIM_SECONDS` in 1 s chunks, and starts a c
 * `python -m simulation.compare_images`: the SUV image against the real exam thinned to the same time (`<case>_lowcount_time`), our full-dose image and GE's
 
 The default beds are the head and neck (7, then 6). Bed 7 takes ~5 h here. It refuses to start if the case fails `d710 lm check`, i.e. was decoded before the 2026-09-18 ring-pairing fix.
+
+## GATE on a host with an old glibc (the workstation)
+
+`opengate-core` publishes only `manylinux_2_34` wheels and no source distribution, so on Ubuntu 20.04 (glibc 2.31) `pip install opengate` fails with "No matching distribution found for opengate-core". Geant4 then runs in a container while everything after it -- the conversion, `lm recon`, the comparisons -- stays on the host, which needs only numpy, uproot and PyTomography.
+
+```bash
+docker build -t d710:gate D710/simulation/gate      # where docker is; Debian 12, glibc 2.36
+sif-convert d710:gate                               # as root -> /home/shared/apptainer/images/d710_gate.sif
+echo D710_GATE_SIF=/home/shared/apptainer/images/d710_gate.sif >> D710/.env
+./d710_apptainer doctor                             # reports the image and whether opengate imports
+./d710_apptainer simulate gate --case fdg26081008 --bed 7 --seconds 9
+```
+
+To build the image on another machine instead: `docker save d710:gate | gzip > d710_gate.tar.gz`, copy it over, then `zcat d710_gate.tar.gz | docker load && sif-convert d710:gate`.
+
+`d710_apptainer` sets `D710_GATE_RUNNER` to `apptainer exec --bind <repo> --bind $D710_OUT <sif> python`, which [`gate/driver.py`](gate/driver.py) uses in place of the host interpreter. Set that variable yourself to run Geant4 any other way. The image carries the 2.2 GB of Geant4 data, so it needs no network and nothing writable.
 
 ## Inputs
 

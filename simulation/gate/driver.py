@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import shlex
 import subprocess
 import sys
 from dataclasses import asdict
@@ -41,6 +42,19 @@ def raw_dir(dst: Case, bed: int) -> Path:
     return dst.raw_sim / "gate" / f"bed{bed}"
 
 
+def gate_python() -> list[str]:
+    """How to start the interpreter that runs Geant4.
+
+    `D710_GATE_RUNNER` replaces it with a command prefix, for a host whose
+    glibc is too old for the opengate wheels: `./d710_apptainer` sets it to
+    `apptainer exec --bind ... d710_gate.sif python` (see
+    `simulation/gate/Dockerfile`). Everything else -- the conversion, the
+    reconstruction, the comparison -- stays on the host.
+    """
+    runner = os.environ.get("D710_GATE_RUNNER", "").strip()
+    return shlex.split(runner) if runner else [sys.executable]
+
+
 def _launch(cfg: RunConfig, out=print) -> None:
     d = Path(cfg.out_dir)
     d.mkdir(parents=True, exist_ok=True)
@@ -48,10 +62,12 @@ def _launch(cfg: RunConfig, out=print) -> None:
     env = dict(os.environ)
     env["PYTHONPATH"] = str(HERE) + (os.pathsep + env["PYTHONPATH"]
                                      if env.get("PYTHONPATH") else "")
+    cmd = gate_python() + ["-u", "-m", "simulation.gate.run", str(d / "cfg.json")]
+    if os.environ.get("D710_GATE_RUNNER"):
+        out(f"      {' '.join(cmd[:-3])} ...")
     with open(d / "log.txt", "w") as log:
-        r = subprocess.run([sys.executable, "-u", "-m", "simulation.gate.run",
-                            str(d / "cfg.json")], stdout=log,
-                           stderr=subprocess.STDOUT, env=env, cwd=str(HERE))
+        r = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT,
+                           env=env, cwd=str(HERE))
     tail = (d / "log.txt").read_text().splitlines()[-3:]
     for ln in tail:
         out(f"      {ln}")

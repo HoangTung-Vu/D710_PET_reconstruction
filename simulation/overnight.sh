@@ -3,7 +3,10 @@
 #
 #   export D710_OUT=~/UET/Handson_PET_CT_Reconstruction/d710_out
 #   export D710_PYTHON=~/miniconda3/envs/petct_recon/bin/python
-#   nohup D710/simulation/overnight.sh > /dev/null 2>&1 &
+#   nohup D710/simulation/overnight.sh > ~/overnight_nohup.out 2>&1 &
+#
+# Keep that redirect: anything the script says before its own log exists (a
+# missing D710_OUT, say) goes only there.
 #
 # Beds are simulated in the order of $BEDS, each to $SIM_SECONDS of simulated
 # time (9 s = the frame of <case>_lowcount_time), in 1 s chunks. A chunk is

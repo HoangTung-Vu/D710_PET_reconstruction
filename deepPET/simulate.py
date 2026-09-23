@@ -2,18 +2,27 @@
 
     Px    = fwd(blur_psf(SUV))          line integrals, SUV.mm
     AF    = exp(-fwd(mu))               attenuation factor per LOR
-    T     = s * n * AF * Px             trues mean (n: optional crystal efficiency)
+    T     = s * n * AF * Px             trues mean, counts (n: optional crystal efficiency)
     R     = flat,                rf * C  randoms mean      (paper mode)
     S     = blur_tang(n*AF*Px),  sf * C  scatter mean      (paper mode)
-    y     ~ Poisson(T + R + S)
+    y     ~ Poisson(T + R + S)          C = sum(T) / (1 - rf - sf) prompts
     x_in  = (y - R - S) / (s * n * AF)  E[x_in] = Px, exactly
 
-`C` is the total prompts of the slice, drawn log-uniform in `count_range`, and
-`s` follows from it: `s = (1 - rf - sf) C / sum(n AF Px)`. The randoms and
-scatter means are subtracted exactly, as DeepPET did (paper eq. 3); negative
-bins are kept, clipping them would bias the input. `rf` and `sf` are drawn from
-the ranges measured on the real D710 beds of fdg26081008 (randoms 0.24-0.54,
-scatter 0.17-0.18 of the prompts).
+`s` is counts per SUV.mm, and there are two ways to set it (`SCALES`):
+
+  physical  the default. `s = count_scale x counts_per_suv_mm` of `calib.json`,
+            which `python -m deepPET.calibrate` measured on a real adult D710
+            exam: SUV -> Bq/mL (net dose, decay to scan start, weight), then
+            Bq/mL -> counts (the real rebinned trues of each bed). A slice's
+            counts then follow its activity, as on the scanner; `count_scale`
+            < 1 is a shorter scan or a lower dose.
+  counts    the total prompts `C` of the slice are drawn log-uniform in
+            `count_range`, and `s` follows from them. An explicit `counts=`
+            always means this.
+
+The randoms and scatter means are subtracted exactly, as DeepPET did (paper
+eq. 3); negative bins are kept, clipping them would bias the input. `rf` and
+`sf` are drawn from the ranges `calib.json` measured on the same exam.
 
 Modes: `paper` as above; `attn` drops R and S; `pure` also drops AF, i.e. only
 the forward model and Poisson noise.
@@ -28,7 +37,9 @@ reach the sinogram while the (masked) target ignores it.
 from __future__ import annotations
 
 import argparse
+import json
 import math
+from pathlib import Path
 
 import numpy as np
 
@@ -38,11 +49,27 @@ from .scanner2d import Scanner2D, fov_mask
 
 MODES = ("paper", "attn", "pure")
 
+SCALES = ("physical", "counts")
+
+CALIB_JSON = Path(__file__).with_name("calib.json")
+
+
+def load_calib(path=CALIB_JSON) -> dict:
+    p = Path(path)
+    if not p.exists():
+        raise SystemExit(f"error: no {p}\n  run: python -m deepPET.calibrate")
+    return json.loads(p.read_text())
+
+
+CALIB = load_calib()
+
+COUNTS_PER_SUV_MM = float(CALIB["counts_per_suv_mm"])
+
 COUNT_RANGE = (1e5, 1e7)
 
-RF_RANGE = (0.24, 0.54)
+RF_RANGE = tuple(CALIB["randoms_fraction_range"])
 
-SF_RANGE = (0.15, 0.20)
+SF_RANGE = tuple(CALIB["scatter_fraction_range"])
 
 SCATTER_FWHM_MM = 200.0
 
@@ -89,20 +116,24 @@ def augment(suv, mu, rng, grid: int):
 
 
 def simulate(suv, mu, scanner: Scanner2D, rng, mode: str = "paper", counts=None,
+             scale: str = "physical", count_scale: float = 1.0,
              count_range=COUNT_RANGE, psf_mm: float = PSF_MM, eff=None,
              noiseless: bool = False, return_raw: bool = False):
     """`(x_in (288, 371), target (grid, grid), info)` for one slice.
 
-    `suv`, `mu`: `(grid, grid)` on `scanner`'s grid. `eff`: an optional
-    `(288, 371)` crystal-pair efficiency (a real bed's normdt in 2D).
-    `noiseless` returns the mean instead of a Poisson draw. `return_raw` adds
-    `y`, `gamma` and `mult` (so that `mean = mult * Px + gamma`) to `info`, which
-    is what OSEM needs.
+    `suv`, `mu`: `(grid, grid)` on `scanner`'s grid. `scale`: `physical`
+    (`s = count_scale * COUNTS_PER_SUV_MM`) or `counts` (total prompts drawn
+    from `count_range`); a given `counts` forces the latter. `eff`: an optional
+    `(288, 371)` crystal-pair efficiency. `noiseless` returns the mean instead
+    of a Poisson draw. `return_raw` adds `y`, `gamma` and `mult` (so that
+    `mean = mult * Px + gamma`) to `info`, which is what OSEM needs.
     """
     from scipy.ndimage import gaussian_filter, gaussian_filter1d
 
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
+    if scale not in SCALES:
+        raise ValueError(f"scale must be one of {SCALES}, got {scale!r}")
     mask = fov_mask(scanner.grid)
     target = np.where(mask, np.asarray(suv, np.float32), 0.0).astype(np.float32)
     img = target
@@ -117,12 +148,17 @@ def simulate(suv, mu, scanner: Scanner2D, rng, mode: str = "paper", counts=None,
     n = np.ones_like(px) if eff is None else np.asarray(eff, np.float32)
     shape = n * af * px
 
-    if counts is None:
-        lo, hi = count_range
-        counts = math.exp(rng.uniform(math.log(lo), math.log(hi)))
     rf = rng.uniform(*RF_RANGE) if mode == "paper" else 0.0
     sf = rng.uniform(*SF_RANGE) if mode == "paper" else 0.0
     total = float(shape.sum(dtype=np.float64))
+    if counts is None and scale == "counts":
+        lo, hi = count_range
+        counts = math.exp(rng.uniform(math.log(lo), math.log(hi)))
+    if counts is None:
+        s = float(count_scale) * COUNTS_PER_SUV_MM
+        counts = s * total / (1.0 - rf - sf)
+    else:
+        s = (1.0 - rf - sf) * float(counts) / total if total > 0 else 0.0
     info = {"counts": float(counts), "rf": rf, "sf": sf, "empty": total <= 0}
     if total <= 0:
         z = np.zeros_like(px)
@@ -130,7 +166,6 @@ def simulate(suv, mu, scanner: Scanner2D, rng, mode: str = "paper", counts=None,
             info.update(y=z, gamma=z, mult=z)
         return z, target, info
 
-    s = (1.0 - rf - sf) * counts / total
     mult = (s * n * af).astype(np.float32)
     gamma = np.zeros_like(px)
     if mode == "paper":
@@ -161,7 +196,10 @@ def main(argv=None) -> int:
     ap.add_argument("--slice", type=int, default=None, help="default: the middle slice")
     ap.add_argument("--grid", type=int, default=128, choices=(128, 256))
     ap.add_argument("--mode", default="paper", choices=MODES)
-    ap.add_argument("--counts", type=float, nargs="+", default=[1e5, 1e6, 1e7])
+    ap.add_argument("--count-scales", type=float, nargs="+", default=[1.0, 0.25, 0.1],
+                    help="physical scale: multiples of the calibrated counts")
+    ap.add_argument("--counts", type=float, nargs="+", default=None,
+                    help="fixed total prompts instead (counts scale)")
     ap.add_argument("--png", default=None)
     a = ap.parse_args(argv)
 
@@ -173,26 +211,30 @@ def main(argv=None) -> int:
     suv, mu = store.get(k, i, a.grid)
     sc = Scanner2D(a.grid)
     rng = np.random.default_rng(0)
+    levels = ([(f"{c:.0e} prompts", {"counts": c}) for c in a.counts] if a.counts else
+              [(f"x{f:g} dose", {"count_scale": f}) for f in a.count_scales])
 
-    x0, target, _ = simulate(suv, mu, sc, rng, a.mode, counts=a.counts[0], noiseless=True)
-    print(f"{a.study} slice {i}/{store.n[k]}, grid {a.grid}, mode {a.mode}")
+    x0, target, _ = simulate(suv, mu, sc, rng, a.mode, noiseless=True)
+    print(f"{a.study} slice {i}/{store.n[k]}, grid {a.grid}, mode {a.mode}; "
+          f"calibrated s = {COUNTS_PER_SUV_MM:.4f} counts per SUV.mm")
     rows = []
-    for c in a.counts:
-        reps = [simulate(suv, mu, sc, rng, a.mode, counts=c)[0] for _ in range(20)]
+    for label, kw in levels:
+        draws = [simulate(suv, mu, sc, rng, a.mode, **kw) for _ in range(20)]
+        reps = [d[0] for d in draws]
         m = np.mean(reps, 0)
-        print(f"  {c:.0e} prompts: mean(x_in)/Px over 20 draws = "
+        print(f"  {label}: {draws[0][2]['counts']:.3g} prompts, mean(x_in)/Px over 20 draws = "
               f"{m.sum() / x0.sum():.4f}, per-bin CV at the Px peak "
               f"{np.std(reps, 0).flat[x0.argmax()] / x0.max():.3f}")
-        rows.append((c, reps[0]))
+        rows.append((label, reps[0]))
 
     fig, ax = plt.subplots(1, 2 + len(rows), figsize=(4 * (2 + len(rows)), 4.4))
     ax[0].imshow(target, cmap="gray_r", vmax=np.percentile(target, 99.8))
     ax[0].set_title("target SUV")
     ax[1].imshow(x0, aspect="auto", cmap="gray_r")
     ax[1].set_title("P x (noiseless)")
-    for j, (c, x) in enumerate(rows):
+    for j, (label, x) in enumerate(rows):
         ax[2 + j].imshow(x, aspect="auto", cmap="gray_r", vmin=0, vmax=x0.max())
-        ax[2 + j].set_title(f"x_in, {c:.0e} prompts")
+        ax[2 + j].set_title(f"x_in, {label}")
     for x in ax:
         x.axis("off")
     png = a.png or f"deeppet_sim_{a.study}_{i}_{a.mode}_{a.grid}.png"

@@ -19,7 +19,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .simulate import COUNT_RANGE, MODES, augment, downsample, simulate
+from .simulate import COUNT_RANGE, MODES, SCALES, augment, downsample, simulate
 
 
 def default_data() -> Path:
@@ -71,16 +71,20 @@ class SinoDataset:
     """`(x_in (1, 288, 371), target (1, grid, grid), counts)` per slice of a split.
 
     `train=True`: fresh randomness and augmentation per call. Otherwise the
-    generator is seeded by `(seed, index)`, and `counts` fixes the count level
-    (else it is drawn from `count_range`, deterministically).
+    generator is seeded by `(seed, index)`. The count level is `scale`'s (see
+    `simulate`): `physical` with `count_scale` times the calibrated counts, or
+    `counts` drawn from `count_range`; a given `counts` fixes it.
     """
 
     def __init__(self, root, split: str, grid: int = 128, mode: str = "paper",
-                 train: bool = False, count_range=COUNT_RANGE, counts=None,
+                 train: bool = False, scale: str = "physical", count_scale: float = 1.0,
+                 count_range=COUNT_RANGE, counts=None,
                  limit_studies=None, max_items=None, seed: int = 0,
                  eff=None, return_raw: bool = False):
         if mode not in MODES:
             raise ValueError(f"mode must be one of {MODES}")
+        if scale not in SCALES:
+            raise ValueError(f"scale must be one of {SCALES}")
         studies = SliceStore(root).split(split)
         if limit_studies:
             studies = studies[:limit_studies]
@@ -90,6 +94,7 @@ class SinoDataset:
             pick = np.random.default_rng(seed).choice(len(self.items), max_items, replace=False)
             self.items = [self.items[j] for j in sorted(pick)]
         self.grid, self.mode, self.train = grid, mode, train
+        self.scale, self.count_scale = scale, count_scale
         self.count_range, self.counts, self.seed = count_range, counts, seed
         self.eff, self.return_raw = eff, return_raw
         self._scanner = None
@@ -119,6 +124,7 @@ class SinoDataset:
         if self.train:
             suv, mu = augment(suv, mu, rng, self.grid)
         x, t, info = simulate(suv, mu, self.scanner, rng, self.mode, counts=self.counts,
+                              scale=self.scale, count_scale=self.count_scale,
                               count_range=self.count_range, eff=self.eff,
                               return_raw=self.return_raw)
         info["study"], info["slice"] = self.store.studies[k], i

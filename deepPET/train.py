@@ -26,7 +26,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .simulate import COUNT_RANGE, MODES
+from .simulate import COUNT_RANGE, COUNTS_PER_SUV_MM, MODES, SCALES
 
 
 def run_dir(name: str, out=None) -> Path:
@@ -99,6 +99,12 @@ def main(argv=None) -> int:
     ap.add_argument("--grid", type=int, default=128, choices=(128, 256))
     ap.add_argument("--mode", default="paper", choices=MODES)
     ap.add_argument("--loss", default="mse", choices=("mse", "l1"))
+    ap.add_argument("--scale", default="physical", choices=SCALES,
+                    help="physical: calibrated counts per SUV.mm (calib.json); "
+                         "counts: prompts per slice drawn from --count-min..--count-max")
+    ap.add_argument("--count-scale", type=float, default=1.0,
+                    help="physical scale only: multiple of the calibrated counts "
+                         "(0.25 = a quarter of the dose or of the scan time)")
     ap.add_argument("--count-min", type=float, default=COUNT_RANGE[0])
     ap.add_argument("--count-max", type=float, default=COUNT_RANGE[1])
     ap.add_argument("--epochs", type=int, default=100)
@@ -152,17 +158,20 @@ def main(argv=None) -> int:
         (rd / "args.json").write_text(json.dumps(vars(a), indent=1))
 
     cr = (a.count_min, a.count_max)
-    tr = SinoDataset(data, "train", a.grid, a.mode, train=True, count_range=cr,
-                     limit_studies=a.limit_studies)
-    va = SinoDataset(data, "val", a.grid, a.mode, train=False, count_range=cr,
-                     limit_studies=a.limit_studies, max_items=a.val_items, seed=a.seed)
+    kw = {"scale": a.scale, "count_scale": a.count_scale, "count_range": cr,
+          "limit_studies": a.limit_studies}
+    tr = SinoDataset(data, "train", a.grid, a.mode, train=True, **kw)
+    va = SinoDataset(data, "val", a.grid, a.mode, train=False, max_items=a.val_items,
+                     seed=a.seed, **kw)
     dl_tr = loader(tr, a.batch, a.workers, True, a.sim_threads, drop_last=len(tr) > a.batch)
     dl_va = loader(va, a.batch, a.workers, False, a.sim_threads)
     mask = torch.from_numpy(fov_mask(a.grid).astype(np.float32))[None, None].to(device)
     n_steps = min(len(dl_tr), a.steps or len(dl_tr))
     print(f"train {len(tr)} slices ({len(tr.store.studies)} studies), val {len(va)}; "
           f"{n_steps} steps/epoch on {device}, grid {a.grid}, mode {a.mode}, "
-          f"counts {cr[0]:.0e}..{cr[1]:.0e}, loss {a.loss}")
+          + (f"physical scale {a.count_scale:g} x {COUNTS_PER_SUV_MM:.4f} counts per SUV.mm"
+             if a.scale == "physical" else f"counts {cr[0]:.0e}..{cr[1]:.0e}")
+          + f", loss {a.loss}")
 
     log = rd / "log.csv"
     if not log.exists():

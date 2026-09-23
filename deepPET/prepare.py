@@ -16,8 +16,14 @@ native resolution *before* resampling: it is mu that gets line-integrated, so
 averaging mu keeps the integral, where averaging HU across the bone kink would
 not. Slices holding less than `--min-activity` SUV.cm^2 are dropped.
 
-`<out>/index.json` lists the studies; `<out>/split.json` splits them 70/10/20
-by patient (`<pid>`, so a patient's repeat scans never straddle two splits).
+`<out>/index.json` lists the studies. `<out>/split.json` keeps the dataset's
+own test set -- `test` is every study of `imagesTs` -- and splits `imagesTr` by
+patient (`<pid>`) into `train` and `val` (`--val-frac`, 0.15). A patient with
+studies in both folders (0029 and 0033 in H108) would put a test patient into
+training, so their `imagesTr` studies are left out of train and val
+(`--keep-overlap` keeps them in train).
+
+    python -m deepPET.prepare --split-only    # rewrite split.json only
 """
 
 from __future__ import annotations
@@ -39,7 +45,7 @@ from .scanner2d import FOV_MM
 
 STORE_GRID = 256
 
-SPLIT = (0.7, 0.1, 0.2)
+VAL_FRAC = 0.15
 
 
 def find_studies(root: Path) -> list[dict]:
@@ -92,16 +98,38 @@ def prepare_study(st: dict, out_dir: str, min_activity: float, kvp: float) -> di
             "suv_max": float(suv_g.max())}
 
 
-def split(studies: list[dict], seed: int = 0) -> dict:
-    """Patient-level train/val/test lists of study ids."""
-    pids = sorted({s["pid"] for s in studies})
+def split(studies: list[dict], val_frac: float = VAL_FRAC, seed: int = 0,
+          keep_overlap: bool = False) -> dict:
+    """`test` = the `imagesTs` studies; `imagesTr` split by patient into train/val.
+
+    Also returns `overlap`, the patients found in both folders; unless
+    `keep_overlap`, their `imagesTr` studies are in neither train nor val.
+    """
+    ts = [s for s in studies if s["subset"] == "imagesTs"]
+    tr = [s for s in studies if s["subset"] == "imagesTr"]
+    overlap = sorted({s["pid"] for s in tr} & {s["pid"] for s in ts})
+    pool = sorted({s["pid"] for s in tr} - set(overlap))
     rng = np.random.default_rng(seed)
-    rng.shuffle(pids)
-    n_tr = int(round(SPLIT[0] * len(pids)))
-    n_va = int(round(SPLIT[1] * len(pids)))
-    parts = {"train": set(pids[:n_tr]), "val": set(pids[n_tr:n_tr + n_va]),
-             "test": set(pids[n_tr + n_va:])}
-    return {k: [s["sid"] for s in studies if s["pid"] in v] for k, v in parts.items()}
+    rng.shuffle(pool)
+    val = set(pool[:int(round(val_frac * len(pool)))])
+    train = set(pool) - val | (set(overlap) if keep_overlap else set())
+    return {"train": [s["sid"] for s in tr if s["pid"] in train],
+            "val": [s["sid"] for s in tr if s["pid"] in val],
+            "test": [s["sid"] for s in ts], "overlap": overlap}
+
+
+def write_split(out: Path, rows: list[dict], val_frac: float, seed: int,
+                keep_overlap: bool) -> None:
+    sp = split(rows, val_frac, seed, keep_overlap)
+    (out / "split.json").write_text(json.dumps(sp, indent=1))
+    n = {k: sum(r["n"] for r in rows if r["sid"] in set(sp[k])) for k in ("train", "val", "test")}
+    print("split: " + ", ".join(
+        f"{k} {len(sp[k])} studies / {len({s.split('_')[0] for s in sp[k]})} patients / "
+        f"{n[k]} slices" for k in ("train", "val", "test")))
+    if sp["overlap"]:
+        print(f"  patients in both imagesTr and imagesTs: {', '.join(sp['overlap'])} -- their "
+              + ("imagesTr studies are in train (--keep-overlap)" if keep_overlap else
+                 "imagesTr studies are left out of train and val"))
 
 
 def default_out() -> Path:
@@ -112,7 +140,7 @@ def default_out() -> Path:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--data", required=True, help="dataset root holding imagesTr/ imagesTs/")
+    ap.add_argument("--data", default=None, help="dataset root holding imagesTr/ imagesTs/")
     ap.add_argument("--out", default=None, help="default: $D710_OUT/deeppet/data")
     ap.add_argument("--limit", type=int, default=None, help="first N studies only")
     ap.add_argument("--workers", type=int, default=4)
@@ -120,10 +148,24 @@ def main(argv=None) -> int:
                     help="drop slices below this many SUV.cm^2 (default 20)")
     ap.add_argument("--kvp", type=float, default=120.0)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--val-frac", type=float, default=VAL_FRAC,
+                    help="share of the imagesTr patients held out for validation")
+    ap.add_argument("--keep-overlap", action="store_true",
+                    help="keep patients who are also in imagesTs in train")
+    ap.add_argument("--split-only", action="store_true",
+                    help="rewrite split.json from the existing index.json and stop")
     a = ap.parse_args(argv)
 
-    root = Path(os.path.expanduser(a.data))
+    if not a.data and not a.split_only:
+        ap.error("--data is required (except with --split-only)")
+    root = Path(os.path.expanduser(a.data or "."))
     out = Path(os.path.expanduser(a.out)) if a.out else default_out()
+    if a.split_only:
+        idx = out / "index.json"
+        if not idx.exists():
+            raise SystemExit(f"error: no {idx}; run prepare without --split-only first")
+        write_split(out, json.loads(idx.read_text()), a.val_frac, a.seed, a.keep_overlap)
+        return 0
     (out / "slices").mkdir(parents=True, exist_ok=True)
     studies = find_studies(root)
     if not studies:
@@ -148,11 +190,7 @@ def main(argv=None) -> int:
                   f"{time.time() - t0:.0f} s")
 
     (out / "index.json").write_text(json.dumps(rows, indent=1))
-    sp = split(rows, a.seed)
-    (out / "split.json").write_text(json.dumps(sp, indent=1))
-    n = {k: sum(r["n"] for r in rows if r["sid"] in set(v)) for k, v in sp.items()}
-    print(f"split by patient: " + ", ".join(f"{k} {len(v)} studies / {n[k]} slices"
-                                            for k, v in sp.items()))
+    write_split(out, rows, a.val_frac, a.seed, a.keep_overlap)
     return 0
 
 

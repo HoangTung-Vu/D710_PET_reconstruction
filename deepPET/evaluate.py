@@ -1,8 +1,12 @@
 """DeepPET against 2D OSEM on the test patients, at fixed count levels.
 
-    python -m deepPET.evaluate --name g128 [--counts 1e5 1e6 1e7] [--limit 300]
+    python -m deepPET.evaluate --name g128 [--count-scales 1 0.25 0.1] [--limit 300]
+    python -m deepPET.evaluate --name g128 --counts 1e5 1e6 1e7
 
-Every test slice is simulated once per count level, deterministically. DeepPET
+Every test slice is simulated once per count level, deterministically. A level
+is a multiple of the calibrated counts per SUV.mm (`--count-scales`: 1 is the
+measured 90 s adult bed, 0.25 a quarter of the dose), or a fixed number of
+prompts per slice (`--counts`). DeepPET
 reads the precorrected sinogram; OSEM (5 it x 16 subsets, 6.4 mm post-filter,
 the paper's comparison) reads the raw counts with the same attenuation, randoms
 and scatter in its model. Metrics are inside the bore: rRMSE (the paper's),
@@ -41,7 +45,9 @@ def main(argv=None) -> int:
     ap.add_argument("--out", default=None, help="runs root; default $D710_OUT/deeppet/runs")
     ap.add_argument("--data", default=None)
     ap.add_argument("--split", default="test", choices=("val", "test"))
-    ap.add_argument("--counts", type=float, nargs="+", default=[1e5, 1e6, 1e7])
+    ap.add_argument("--count-scales", type=float, nargs="+", default=[1.0, 0.25, 0.1])
+    ap.add_argument("--counts", type=float, nargs="+", default=None,
+                    help="fixed prompts per slice instead of --count-scales")
     ap.add_argument("--limit", type=int, default=300, help="test slices per count level")
     ap.add_argument("--osem-iters", type=int, default=5)
     ap.add_argument("--osem-subsets", type=int, default=16)
@@ -80,8 +86,11 @@ def main(argv=None) -> int:
     # child of a libgomp process can hang in its first parallel region
     ex = None if a.no_osem else ProcessPoolExecutor(max_workers=a.workers,
                                                     mp_context=mp.get_context("spawn"))
-    for c in a.counts:
-        ds = SinoDataset(data, a.split, grid, mode, train=False, counts=c,
+    levels = ([(f"{c:.0e} prompts", {"scale": "counts", "counts": c}) for c in a.counts]
+              if a.counts else
+              [(f"x{f:g} dose", {"scale": "physical", "count_scale": f}) for f in a.count_scales])
+    for c, lv in levels:
+        ds = SinoDataset(data, a.split, grid, mode, train=False, **lv,
                          max_items=a.limit, seed=1, return_raw=True,
                          limit_studies=targs.get("limit_studies"))
         t0 = time.time()
@@ -100,7 +109,8 @@ def main(argv=None) -> int:
         for j, (x, t, info) in enumerate(items):
             if info["empty"]:
                 continue
-            r = {"counts": c, "study": info["study"], "slice": info["slice"]}
+            r = {"level": c, "prompts": info["counts"], "study": info["study"],
+                 "slice": info["slice"]}
             for name, img in (("deeppet", pred[j]), ("osem", osems[j])):
                 if img is None:
                     continue
@@ -111,19 +121,20 @@ def main(argv=None) -> int:
         order = np.argsort([-t.sum() for _, t, _ in items])
         j = int(order[len(order) // 4])
         examples.append((c, items[j][0], items[j][1], osems[j], pred[j]))
-        print(f"  {c:.0e} prompts: {len(items)} slices in {time.time() - t0:.0f} s")
+        med = np.median([i["counts"] for _, _, i in items])
+        print(f"  {c}: {len(items)} slices (median {med:.3g} prompts) in {time.time() - t0:.0f} s")
     if ex is not None:
         ex.shutdown()
 
     keys = [k for k in rows[0] if k.endswith(("_rrmse", "_psnr", "_ssim"))]
     summary = {}
-    print(f"\n{'prompts':>8} " + " ".join(f"{k:>16}" for k in keys))
-    for c in a.counts:
-        sel = [r for r in rows if r["counts"] == c]
-        summary[f"{c:.0e}"] = {k: [float(np.mean([r[k] for r in sel])),
-                                   float(np.std([r[k] for r in sel]))] for k in keys}
-        print(f"{c:8.0e} " + " ".join(f"{summary[f'{c:.0e}'][k][0]:9.4f}+-"
-                                     f"{summary[f'{c:.0e}'][k][1]:<5.3f}" for k in keys))
+    print(f"\n{'level':>14} " + " ".join(f"{k:>16}" for k in keys))
+    for c, _ in levels:
+        sel = [r for r in rows if r["level"] == c]
+        summary[c] = {k: [float(np.mean([r[k] for r in sel])),
+                          float(np.std([r[k] for r in sel]))] for k in keys}
+        print(f"{c:>14} " + " ".join(f"{summary[c][k][0]:9.4f}+-"
+                                     f"{summary[c][k][1]:<5.3f}" for k in keys))
 
     tag = f"eval_{a.ckpt}_{a.split}"
     with open(rd / f"{tag}.csv", "w", newline="") as f:
@@ -142,7 +153,7 @@ def main(argv=None) -> int:
                 continue
             kw = {"aspect": "auto"} if k == 0 else {"vmin": 0, "vmax": vmax}
             ax[r, k].imshow(img, cmap="hot" if k else "gray_r", **kw)
-            label = f"{c:.0e} prompts" if k == 0 else \
+            label = c if k == 0 else \
                 (f"rRMSE {M.rrmse(img, t, mask):.2f}" if k > 1 else "SUV")
             ax[r, k].set_title(f"{cols[k]}  {label}", fontsize=9)
             ax[r, k].axis("off")

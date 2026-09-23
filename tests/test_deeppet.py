@@ -198,3 +198,45 @@ def test_osem_recovers_a_disk(sc):
     img = osem(i["y"], i["mult"], i["gamma"], sc, 3, 8, post_fwhm_mm=0.0)
     inner = disk(128, 90.0) > 0
     assert img[inner].mean() == pytest.approx(3.0, rel=0.05)
+
+
+def test_calibration_is_the_product_of_its_two_factors():
+    from deepPET.simulate import CALIB, COUNTS_PER_SUV_MM
+
+    assert COUNTS_PER_SUV_MM == pytest.approx(CALIB["bqml_per_suv"] * CALIB["counts_per_bqml_mm"])
+    assert all(c["age_y"] >= 18 for c in CALIB["cases"]), "calibrate on adults only"
+    lo, hi = CALIB["randoms_fraction_range"]
+    assert 0 < lo <= hi < 1
+
+
+@pytest.mark.parametrize("count_scale", [1.0, 0.25])
+def test_physical_scale_follows_the_activity(sc, count_scale):
+    """Physical scale: s is the calibrated constant, so doubling the SUV doubles the counts."""
+    from deepPET.simulate import COUNTS_PER_SUV_MM, simulate
+
+    suv, mu = disk(128, 150.0, 2.0), disk(128, 180.0, 0.0096)
+    out = []
+    for f in (1.0, 2.0):
+        x, _, i = simulate(suv * f, mu, sc, np.random.default_rng(6), "paper",
+                           count_scale=count_scale, noiseless=True, return_raw=True)
+        assert i["s"] == pytest.approx(count_scale * COUNTS_PER_SUV_MM)
+        assert np.allclose(x, i["px"], rtol=1e-4, atol=1e-3 * i["px"].max())
+        assert i["y"].sum() == pytest.approx(i["counts"], rel=1e-3)
+        out.append(i["counts"])
+    assert out[1] == pytest.approx(2 * out[0], rel=1e-6)
+
+
+def test_split_keeps_imagests_as_test_and_splits_tr_by_patient():
+    from deepPET.prepare import split
+
+    tr = [{"sid": f"{p:04d}_2020010{k}", "pid": f"{p:04d}", "subset": "imagesTr"}
+          for p in range(40) for k in range(1 + (p % 3 == 0))]
+    ts = [{"sid": f"{p:04d}_20210101", "pid": f"{p:04d}", "subset": "imagesTs"}
+          for p in (5, 50, 51)]
+    sp = split(tr + ts, val_frac=0.2)
+    pid = lambda k: {s.split("_")[0] for s in sp[k]}
+    assert sp["test"] == [s["sid"] for s in ts]
+    assert sp["overlap"] == ["0005"] and "0005" not in pid("train") | pid("val")
+    assert not pid("train") & pid("val") and not (pid("train") | pid("val")) & pid("test")
+    assert len(pid("val")) == round(0.2 * 39)
+    assert "0005" in {s.split("_")[0] for s in split(tr + ts, keep_overlap=True)["train"]}

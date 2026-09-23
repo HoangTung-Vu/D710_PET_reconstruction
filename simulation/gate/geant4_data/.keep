@@ -1,0 +1,2 @@
+# Geant4 datasets go here to avoid downloading them at build time; see the
+# Dockerfile. Everything beside this file is git-ignored.

@@ -43,7 +43,9 @@ is measured, read from a vendor header, or derived from one that is.
 | `N_TOF_RAW`, `TOF_LSB_PS` | 55, 89.2459 | header `coincTimingPrecision` |
 | `BIN_MM`, `DR_MM` | 2.1306 | tangential bin size and transverse voxel pitch |
 | `XY` | 337 | the only matrix size giving 2.130600 mm in both SIRF builds, which is what lets `osem` and `lm` be compared |
-| `PSF_MM` | 6.4 | GE's resolution model |
+| `PSF_XY_MM`, `PSF_Z_MM` | 4.87, 4.45 | GE's resolution model as Gaussian FWHMs: `psfLUT.XR` radial kernels fitted over \|s\| < 195 mm, and `sharcAp.cfg.XR` `PSF_AXIAL_KERNEL` [1/6, 2/3, 1/6] |
+| `PSF_FWHM_MM` | (4.87, 4.87, 4.45) | the two above in PyTomography's object order (x, y, z), the default of `lm` |
+| `POST_FILTER_FWHM_MM` | 6.4 | `(0009,10BB) post_filt_parm`: GE's post-filter, not a PSF |
 
 `VIEW_OFFSET_DEG` is provisional and is not the same quantity as
 `XTAL0_OFFSET_DEG`; copying one into the other costs 10.04° of image rotation on

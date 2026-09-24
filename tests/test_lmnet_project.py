@@ -163,7 +163,7 @@ def test_full_grid_adjoint_on_a_real_bed():
     from lmnet import sens as senscache
     from lmnet.project import LMBackward, LMForward
     from utils.paths import case as get_case
-    from utils.scanner import NSEG0, PSF_MM, XY
+    from utils.scanner import NSEG0, PSF_FWHM_MM, XY
 
     C = get_case(b["case"])
     npy = C.decoded / f"bed{b['bed']}.lm.npy"
@@ -180,7 +180,7 @@ def test_full_grid_adjoint_on_a_real_bed():
     ids = ev.detector_ids(e, geom.N_TOF_RAW, 1)
     keep = ev.bins(e, binmap) >= 0
     sm = recon.build_sm(ids[keep], geom.N_TOF_RAW, xy=XY, n_plane=NSEG0,
-                        psf=PSF_MM, sensitivity=torch.from_numpy(s))
+                        psf=PSF_FWHM_MM, sensitivity=torch.from_numpy(s))
 
     rng = np.random.default_rng(3)
     n = int(keep.sum())

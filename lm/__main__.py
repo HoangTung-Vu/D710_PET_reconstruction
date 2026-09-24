@@ -1,5 +1,3 @@
-"""Command-line entry point for `d710 lm`."""
-
 from __future__ import annotations
 
 import argparse
@@ -7,7 +5,7 @@ import argparse
 import numpy as np
 
 from utils.paths import case as get_case
-from utils.scanner import DR_MM, PLANE_MM, XY
+from utils.scanner import DR_MM, PLANE_MM, PSF_FWHM_MM, XY
 
 from . import events as ev
 from utils import interfile
@@ -32,7 +30,6 @@ def _template_counts(C, bed: int):
 
 
 def cmd_check(C, args) -> int:
-    """Histogram the events back and require `decoded/bed<n>.s` bit for bit."""
     binmap = geom.BinMap(C.prompt(args.bed))
     e = ev.load(_events_path(C, args.bed))
     ref, n_tof = _template_counts(C, args.bed)
@@ -52,7 +49,6 @@ def cmd_check(C, args) -> int:
 
 
 def cmd_tofcheck(C, args) -> int:
-    """Measure which TOF sign parallelproj expects, against a non-TOF image."""
     import torch
     from pytomography.algorithms import OSEM
     from pytomography.likelihoods import PoissonLogLikelihood
@@ -106,7 +102,8 @@ def _bed_key(C, n: int, args, tof_scatter) -> str:
               C.work_bed(n) / "attn.hs"):
         st = p.stat()
         parts.append(f"{p.name}:{st.st_size}:{int(st.st_mtime)}")
-    parts += [f"{k}={getattr(args, k)!r}" for k in
+    norm = {"psf": recon.psf_fwhm(args.psf)}
+    parts += [f"{k}={norm.get(k, getattr(args, k))!r}" for k in
               ("tof_bins", "xy", "subsets", "iters", "psf", "tof_sign",
                "n_splits", "beta")]
     if tof_scatter is not None:
@@ -134,6 +131,7 @@ def cmd_recon(C, args) -> int:
     print(f"case {C.name!r}: {len(beds)} beds  ->  {beds}\n")
 
     tof_scatter = np.load(args.tof_scatter) if args.tof_scatter else None
+    psf = np.array(recon.psf_fwhm(args.psf) or [0.0, 0.0, 0.0])
     img, sens = {}, {}
     for n in beds:
         p, key = C.work_bed(n) / "lm.npz", _bed_key(C, n, args, tof_scatter)
@@ -153,7 +151,7 @@ def cmd_recon(C, args) -> int:
             tof_sign=args.tof_sign, n_splits=args.n_splits, beta=args.beta,
             tof_scatter=tof_scatter)
         np.savez_compressed(p, img=img[n], sens=sens[n], key=key, bed=n,
-                            n_tof=args.tof_bins, beta=args.beta)
+                            n_tof=args.tof_bins, beta=args.beta, psf_fwhm_mm=psf)
 
     vol, z0, factors = stitch.stitch(C, beds, img, sens)
     stitch.overlap_report(C, beds, img, factors)
@@ -166,7 +164,7 @@ def cmd_recon(C, args) -> int:
                         decay=np.array([factors[n] for n in beds]),
                         n_subsets=args.subsets, n_iterations=args.iters,
                         ct=ct_dir, n_tof=args.tof_bins, beta=args.beta,
-                        tangential_lors=0,
+                        tangential_lors=0, psf_fwhm_mm=psf,
                         post_filter_fwhm_mm=args.post_filter,
                         post_filter_z_ratio=args.z_ratio,
                         tof_scatter=(args.tof_scatter or "per-bed"))
@@ -199,7 +197,10 @@ def main(argv=None) -> int:
                          f"builds, in either SIRF runtime)")
     ap.add_argument("--iters", type=int, default=recon.N_ITERATIONS)
     ap.add_argument("--subsets", type=int, default=recon.N_SUBSETS)
-    ap.add_argument("--psf", type=float, default=recon.PSF_MM)
+    ap.add_argument("--psf", type=float, nargs="+", default=list(PSF_FWHM_MM),
+                    metavar="MM",
+                    help="XY [Z] mm FWHM; one value = isotropic; 0 disables "
+                         "(default %(default)s: GE's PSF, not its 6.4 mm post-filter)")
     ap.add_argument("--beta", type=float, default=0.0,
                     help="> 0 switches OSEM for BSREM with a relative-difference prior")
     ap.add_argument("--n-splits", type=int, default=8)

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Probe whether PyTomography's list-mode TOF path accepts D710 data."""
 
 from __future__ import annotations
 
@@ -13,7 +12,7 @@ from utils.scanner import (C_MM_PS as C_MM_PER_PS,
                            NXTAL, RING_PITCH_MM, R_MM, TIMING_PS as RES_PS,
                            TOF_RANGE_MM)
 from utils.scanner import NDET as NDET_RING
-from utils.scanner import NRINGS
+from utils.scanner import NRINGS, PSF_FWHM_MM
 from utils.scanner import N_TOF_RAW as N_TOF
 N_VALID_LORS = 60_679_584
 
@@ -66,8 +65,9 @@ def main(argv=None) -> int:
                          "linear, so this is extrapolated rather than allocated")
     ap.add_argument("--iters", type=int, default=2)
     ap.add_argument("--subsets", type=int, default=24)
-    ap.add_argument("--psf", type=float, default=6.4, metavar="MM",
-                    help="GE's own transaxial PSF FWHM; 0 disables")
+    ap.add_argument("--psf", type=float, nargs="+", default=list(PSF_FWHM_MM),
+                    metavar="MM",
+                    help="XY [Z] mm FWHM; one value = isotropic; 0 disables")
     ap.add_argument("--xy", type=int, default=128)
     args = ap.parse_args(argv)
 
@@ -102,7 +102,10 @@ def main(argv=None) -> int:
                               detector_ids_sensitivity=sens_ids)
     print(f"PETLMProjMeta built in {time.time() - t:.1f}s   info=None accepted")
 
-    tr = [GaussianFilter(args.psf)] if args.psf > 0 else []
+    from lm.recon import psf_fwhm
+
+    f = psf_fwhm(args.psf)
+    tr = [GaussianFilter(f)] if f else []
     object_meta = ObjectMeta(dr=(2.13, 2.13, pitch / 2),
                              shape=(args.xy, args.xy, 47))
     t = time.time()

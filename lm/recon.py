@@ -1,5 +1,3 @@
-"""List-mode OSEM and BSREM for one bed, via PyTomography and parallelproj."""
-
 from __future__ import annotations
 
 import time
@@ -8,14 +6,30 @@ import numpy as np
 
 from utils import scanner
 from utils.scanner import (DR_MM, N_ITERATIONS, N_SUBSETS,
-                           NSEG0, PLANE_MM, PSF_MM, XY)
+                           NSEG0, PLANE_MM, PSF_FWHM_MM, XY)
 
 from . import events as ev
 from . import geom, terms
 
 
+def psf_fwhm(psf=PSF_FWHM_MM) -> list[float] | None:
+    if psf is None:
+        return None
+    v = [float(x) for x in np.atleast_1d(np.asarray(psf, np.float64)).ravel()]
+    if len(v) == 1:
+        v = v * 3
+    elif len(v) == 2:
+        v = [v[0], v[0], v[1]]
+    elif len(v) != 3:
+        raise ValueError(f"psf takes 1, 2 or 3 FWHM values, got {len(v)}: {v}")
+    if not any(v):
+        return None
+    if min(v) <= 0:
+        raise ValueError(f"psf FWHM must be > 0 on every axis, or 0 on all: {v}")
+    return v
+
+
 def axial_mask(nz: int, dz: float, z_ring):
-    """`(nz,)` bool: which image planes lie inside the ring extent."""
     z = (np.arange(nz) - (nz - 1) / 2.0) * dz
     return (z >= float(z_ring.min()) - dz / 2) & (z <= float(z_ring.max()) + dz / 2)
 
@@ -68,7 +82,7 @@ def _as_tensor(a):
     return torch.from_numpy(np.asarray(a))
 
 
-def build_sm(ids, n_tof, xy=XY, n_plane=NSEG0, psf=PSF_MM, n_splits=8,
+def build_sm(ids, n_tof, xy=XY, n_plane=NSEG0, psf=PSF_FWHM_MM, n_splits=8,
              sens_ids=None, sens_w=None, sensitivity=None, weights=None,
              lut=None, tof=None, device=None):
     from pytomography.metadata.PET import PETLMProjMeta
@@ -87,7 +101,8 @@ def build_sm(ids, n_tof, xy=XY, n_plane=NSEG0, psf=PSF_MM, n_splits=8,
         detector_ids_sensitivity=_as_tensor(sens_ids),
         weights_sensitivity=_as_tensor(sens_w))
 
-    kw = dict(obj2obj_transforms=[GaussianFilter(psf)] if psf else [],
+    f = psf_fwhm(psf)
+    kw = dict(obj2obj_transforms=[GaussianFilter(f)] if f else [],
               N_splits=n_splits)
     if device is not None:
         kw["device"] = device
@@ -99,9 +114,8 @@ def build_sm(ids, n_tof, xy=XY, n_plane=NSEG0, psf=PSF_MM, n_splits=8,
         om, proj_meta, sensitivity=_as_tensor(sensitivity), **kw)
 
 
-def system_matrix(case, bed, e, binmap, n_tof, xy=XY, psf=PSF_MM, tof_sign=1,
+def system_matrix(case, bed, e, binmap, n_tof, xy=XY, psf=PSF_FWHM_MM, tof_sign=1,
                   n_splits=8, tof_scatter=None, sensitivity=None):
-    """`(system matrix, additive term, events kept)`."""
     import torch
 
     keep, w, add = terms.event_terms(case, bed, e, binmap, n_tof, tof_scatter)
@@ -123,10 +137,9 @@ def system_matrix(case, bed, e, binmap, n_tof, xy=XY, psf=PSF_MM, tof_sign=1,
 
 
 def reconstruct(case, bed: int, npy, n_tof: int = geom.N_TOF_RAW, xy: int = XY,
-                n_sub: int = N_SUBSETS, n_it: int = N_ITERATIONS, psf: float = PSF_MM,
+                n_sub: int = N_SUBSETS, n_it: int = N_ITERATIONS, psf=PSF_FWHM_MM,
                 tof_sign: int = 1, n_splits: int = 8, beta: float = 0.0,
                 tof_scatter=None):
-    """`(image (47, xy, xy), sensitivity (47, xy, xy))`, both float32."""
     import torch
     from pytomography.algorithms import BSREM, OSEM
     from pytomography.likelihoods import PoissonLogLikelihood

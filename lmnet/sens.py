@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from utils.scanner import NSEG0, PSF_MM, XY
+from lm.recon import psf_fwhm
+from utils.scanner import NSEG0, PSF_FWHM_MM, XY
 
 NAME = "sens_lm.npz"
 
@@ -11,12 +12,17 @@ STAMPED = ("normdt.s", "attn.s")
 SENTINEL = 1e7
 
 
-def path(case, bed: int, xy: int = XY, psf: float = PSF_MM,
+def _psf(psf) -> list[float]:
+    return psf_fwhm(psf) or [0.0, 0.0, 0.0]
+
+
+def path(case, bed: int, xy: int = XY, psf=PSF_FWHM_MM,
          n_plane: int = NSEG0):
-    if (int(xy), float(psf), int(n_plane)) == (XY, PSF_MM, NSEG0):
+    f = _psf(psf)
+    if (int(xy), f, int(n_plane)) == (XY, _psf(PSF_FWHM_MM), NSEG0):
         return case.work_bed(bed) / NAME
     return case.work_bed(bed) / (
-        f"sens_lm_xy{int(xy)}_psf{float(psf):g}_z{int(n_plane)}.npz")
+        f"sens_lm_xy{int(xy)}_psf{f[0]:g}-{f[1]:g}-{f[2]:g}_z{int(n_plane)}.npz")
 
 
 def stamp(case, bed: int) -> str:
@@ -32,7 +38,7 @@ def stamp(case, bed: int) -> str:
     return "|".join(out)
 
 
-def load(case, bed: int, xy: int = XY, psf: float = PSF_MM,
+def load(case, bed: int, xy: int = XY, psf=PSF_FWHM_MM,
          n_plane: int = NSEG0):
     p = path(case, bed, xy, psf, n_plane)
     if not p.exists():
@@ -41,23 +47,24 @@ def load(case, bed: int, xy: int = XY, psf: float = PSF_MM,
     if "norm_BP" not in z.files:
         return None
     if (str(z["stamp"]) != stamp(case, bed) or int(z["xy"]) != int(xy)
-            or float(z["psf"]) != float(psf)
+            or tuple(np.atleast_1d(z["psf"]).tolist()) != tuple(_psf(psf))
             or int(z["n_plane"]) != int(n_plane)):
         return None
     return np.ascontiguousarray(z["norm_BP"], np.float32)
 
 
-def save(case, bed: int, norm_bp, xy: int = XY, psf: float = PSF_MM,
+def save(case, bed: int, norm_bp, xy: int = XY, psf=PSF_FWHM_MM,
          n_plane: int = NSEG0):
     p = path(case, bed, xy, psf, n_plane)
     p.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(p, norm_BP=np.ascontiguousarray(norm_bp, np.float32),
-                        stamp=stamp(case, bed), xy=int(xy), psf=float(psf),
+                        stamp=stamp(case, bed), xy=int(xy),
+                        psf=np.array(_psf(psf), np.float64),
                         n_plane=int(n_plane), bed=int(bed))
     return p
 
 
-def build(case, bed: int, binmap, xy: int = XY, psf: float = PSF_MM,
+def build(case, bed: int, binmap, xy: int = XY, psf=PSF_FWHM_MM,
           n_plane: int = NSEG0, n_splits: int = 8):
     from lm import recon, terms
 
@@ -68,7 +75,7 @@ def build(case, bed: int, binmap, xy: int = XY, psf: float = PSF_MM,
     return np.ascontiguousarray(sm.norm_BP.cpu().numpy(), np.float32)
 
 
-def get(case, bed: int, binmap=None, xy: int = XY, psf: float = PSF_MM,
+def get(case, bed: int, binmap=None, xy: int = XY, psf=PSF_FWHM_MM,
         n_plane: int = NSEG0, n_splits: int = 8, rebuild: bool = False):
     a = None if rebuild else load(case, bed, xy, psf, n_plane)
     if a is not None:

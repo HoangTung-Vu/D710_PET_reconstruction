@@ -8,7 +8,7 @@ import numpy as np
 
 from utils.paths import case as get_case
 from utils.paths import out_root
-from utils.scanner import NDET, NRINGS, NSEG0, N_TOF_RAW, PSF_MM, XY
+from utils.scanner import NDET, NRINGS, NSEG0, N_TOF_RAW, PSF_FWHM_MM, XY
 
 MODES = ("cpu", "hybrid", "cuda")
 
@@ -163,7 +163,8 @@ def cmd_projector(args) -> int:
               f"{'cuda' if best['mode'] == 'cuda' else 'cpu'})")
     write_json("projector", {"cuda_devices": _ncuda(), "modes": modes,
                              "xy": args.xy, "tof_bins": args.tof_bins,
-                             "psf": args.psf, "n_splits": args.n_splits,
+                             "psf": recon.psf_fwhm(args.psf),
+                             "n_splits": args.n_splits,
                              "rows": rows,
                              "recommended": best["mode"] if best else None},
                args.out)
@@ -171,7 +172,7 @@ def cmd_projector(args) -> int:
 
 
 def cmd_sens(args) -> int:
-    from lm import geom
+    from lm import geom, recon
     from lmnet import sens as cache
 
     set_mode(args.mode[0] if args.mode else "cpu")
@@ -188,8 +189,9 @@ def cmd_sens(args) -> int:
 
     img = cache.image(a, binmap.n_tang)
     payload = {"case": C.name, "bed": args.bed, "xy": args.xy,
-               "psf": args.psf, "build_s": t_build, "load_s": t_load,
-               "path": str(cache.path(C, args.bed)),
+               "psf": recon.psf_fwhm(args.psf), "build_s": t_build,
+               "load_s": t_load,
+               "path": str(cache.path(C, args.bed, args.xy, args.psf)),
                "identical": bool(np.array_equal(a, b)),
                "sentinel_voxels": int((a >= cache.SENTINEL - 1).sum()),
                "support_voxels": int((img > 0).sum()),
@@ -455,7 +457,9 @@ def main(argv=None) -> int:
     ap.add_argument("--mode", nargs="+", choices=MODES)
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--xy", type=int, default=XY)
-    ap.add_argument("--psf", type=float, default=PSF_MM)
+    ap.add_argument("--psf", type=float, nargs="+", default=list(PSF_FWHM_MM),
+                    metavar="MM",
+                    help="XY [Z] mm FWHM; one value = isotropic; 0 disables")
     ap.add_argument("--tof-bins", type=int, default=N_TOF_RAW)
     ap.add_argument("--tof-sign", type=int, choices=(1, -1), default=1)
     ap.add_argument("--tof-scatter", metavar="PROF.npy")

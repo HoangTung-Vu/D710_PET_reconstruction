@@ -26,7 +26,7 @@ single pass over the 18–87 M events that were actually detected, and it retain
 the native 89.2459 ps bins instead of rebinning 55 into 5.
 
 Measured on this CPU, paediatric bed 1, 18,759,294 events, grid 337, 2 × 24
-iterations and subsets, PSF 6.4:
+iterations and subsets, PSF 6.4 mm isotropic:
 
 | | sensitivity image | OSEM 2×24 | wall clock |
 |---|---|---|---|
@@ -37,6 +37,13 @@ TOF is the faster of the two. Each event's ray is truncated to ±3σ about its o
 TOF position and is therefore shorter than the full chord — the opposite of the
 sinogram path, where a TOF axis multiplies the work. The note in `d710` that TOF
 is disabled by default on account of its cost does not apply here.
+
+## The resolution model
+
+`--psf` defaults to GE's PSF, `utils.scanner.PSF_FWHM_MM = (4.87, 4.87, 4.45)`
+mm in (x, y, z), from `psfLUT.XR` and `sharcAp.cfg.XR`. The 6.4 mm used until
+2026-09-24 is GE's post-filter; `--psf 6.4` reproduces those images and
+`--psf 0` turns the model off. `K_EXPORT_LM` was measured with 6.4.
 
 ## The runtime boundary
 

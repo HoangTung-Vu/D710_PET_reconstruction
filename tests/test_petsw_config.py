@@ -1,10 +1,10 @@
-"""Every constant claiming a source in GE's console tree, against that source."""
-
 from __future__ import annotations
 
 import re
+import warnings
 import xml.etree.ElementTree as ET
 
+import numpy as np
 import pytest
 
 from conftest import ROOT
@@ -22,14 +22,12 @@ def _need(p):
 
 @pytest.fixture(scope="module")
 def cmcfg():
-    """`{tag: text}` from `cmcfg.XR.xml`, the machine's configuration manager."""
     root = ET.parse(_need(LOCAL / "cmcfg.XR.xml")).getroot()
     return {el.tag: (el.text or "").strip() for el in root.iter()}
 
 
 @pytest.fixture(scope="module")
 def sharc():
-    """`{key: [tokens]}` from `sharcAp.cfg.XR`, the reconstruction engine's parameters."""
     out = {}
     for line in _need(LOCAL / "sharcAp.cfg.XR").read_text().splitlines():
         line = line.split("#", 1)[0].strip()
@@ -41,7 +39,6 @@ def sharc():
 
 
 def line_of(path, pattern) -> int:
-    """1-based line number of the first line matching `pattern`, or 0."""
     for i, line in enumerate(_need(path).read_text().splitlines(), 1):
         if re.search(pattern, line):
             return i
@@ -121,10 +118,55 @@ def test_the_private_tags_scanner_cites_are_defined(cmcfg):
             tags), f"(0009,{element[2:]}) {name} is not defined as {vr}"
 
 
-def test_the_transaxial_psf_is_a_scalar_where_ge_uses_a_lut():
+PSF_LUT = np.dtype([("n", "<i4"), ("off", "<i4"), ("k", "<f4", 30)])
+
+FWHM_PER_SIGMA = 2 * np.sqrt(2 * np.log(2))
+
+
+def _tangential_mm(n_tang: int):
+    from utils.geometry import det_pair_map, detector_xy_mm
+
+    d1, d2 = det_pair_map(scanner.NDET // 2, n_tang, scanner.NDET)
+    xy = detector_xy_mm().astype(np.float64)
+    a, b = xy[d1[0]], xy[d2[0]]
+    return (a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]) / np.linalg.norm(b - a, axis=1)
+
+
+def test_the_radial_psf_is_the_body_mean_of_ges_psf_lut():
+    opt = pytest.importorskip("scipy.optimize")
     lut = _need(LOCAL / "psfLUT.XR")
-    assert lut.stat().st_size == 381 * 32 * 4
-    assert isinstance(scanner.PSF_MM, float)
+    assert lut.stat().st_size == 381 * PSF_LUT.itemsize
+    r = np.fromfile(lut, PSF_LUT)
+    s = _tangential_mm(len(r))
+    assert int((r["off"] + r["n"]).max()) <= len(s)
+
+    def gauss(x, a, m, sg):
+        return a * np.exp(-(x - m) ** 2 / (2 * sg ** 2))
+
+    fwhm = {}
+    for b in np.nonzero(np.abs(s) < 195.0)[0]:
+        n, off = int(r["n"][b]), int(r["off"][b])
+        x = s[off:off + n]
+        dens = r["k"][b][:n].astype(np.float64) / np.abs(np.gradient(x))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", opt.OptimizeWarning)
+            (_a, _m, sg), _ = opt.curve_fit(gauss, x, dens,
+                                            p0=(dens.max(), s[b], 2.0))
+        fwhm[int(b)] = FWHM_PER_SIGMA * abs(sg)
+
+    centre = int(np.argmin(np.abs(s)))
+    assert fwhm[centre] == pytest.approx(3.56, abs=0.02)
+    got = float(np.mean(list(fwhm.values())))
+    assert got == pytest.approx(scanner.PSF_XY_MM, abs=0.05), got
+    assert list(scanner.PSF_FWHM_MM[:2]) == [scanner.PSF_XY_MM] * 2
+
+
+def test_the_axial_psf_is_ges_psf_axial_kernel(sharc):
+    k = np.array([float(x) for x in sharc["PSF_AXIAL_KERNEL[]"]])
+    d = (np.arange(len(k)) - (len(k) - 1) / 2) * scanner.PLANE_MM
+    var = float((k * d ** 2).sum() / k.sum())
+    assert FWHM_PER_SIGMA * np.sqrt(var) == pytest.approx(scanner.PSF_Z_MM, abs=0.02)
+    assert scanner.PSF_FWHM_MM[2] == scanner.PSF_Z_MM
 
 
 def test_the_reconstructed_fov_deliberately_exceeds_ges_maximum(sharc):

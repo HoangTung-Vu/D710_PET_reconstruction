@@ -1,5 +1,3 @@
-"""Every number describing the D710 and the grid it is reconstructed on."""
-
 from __future__ import annotations
 
 NRINGS, NDET = 24, 576
@@ -42,7 +40,9 @@ N_SUBSETS, N_ITERATIONS = 24, 2
 
 TANGENTIAL_LORS = 5
 
-PSF_MM = 6.4
+PSF_XY_MM = 4.87
+PSF_Z_MM = 4.45
+PSF_FWHM_MM = (PSF_XY_MM, PSF_XY_MM, PSF_Z_MM)
 
 POST_FILTER_FWHM_MM = 6.4
 

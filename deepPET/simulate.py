@@ -3,8 +3,8 @@
     Px    = fwd(blur_psf(SUV))          line integrals, SUV.mm
     AF    = exp(-fwd(mu))               attenuation factor per LOR
     T     = s * n * AF * Px             trues mean, counts (n: optional crystal efficiency)
-    R     = flat,                rf * C  randoms mean      (paper mode)
-    S     = blur_tang(n*AF*Px),  sf * C  scatter mean      (paper mode)
+    R     = flat,         rf * C1 * f^2  randoms mean     (paper mode)
+    S     = blur_tang(n*AF*Px), sf * C1 * f  scatter mean  (paper mode)
     y     ~ Poisson(T + R + S)          C = sum(T) / (1 - rf - sf) prompts
     x_in  = (y - R - S) / (s * n * AF)  E[x_in] = Px, exactly
 
@@ -15,7 +15,10 @@
             exam: SUV -> Bq/mL (net dose, decay to scan start, weight), then
             Bq/mL -> counts (the real rebinned trues of each bed). A slice's
             counts then follow its activity, as on the scanner; `count_scale`
-            < 1 is a shorter scan or a lower dose.
+            < 1 is a lower injected dose f: trues and scatter scale by f,
+            randoms by f^2 (they go as the singles squared), with rf and sf
+            the fractions of the full-dose prompts C1. This is not a shorter
+            scan, where randoms would scale by f too.
   counts    the total prompts `C` of the slice are drawn log-uniform in
             `count_range`, and `s` follows from them. An explicit `counts=`
             always means this.
@@ -155,10 +158,17 @@ def simulate(suv, mu, scanner: Scanner2D, rng, mode: str = "paper", counts=None,
         lo, hi = count_range
         counts = math.exp(rng.uniform(math.log(lo), math.log(hi)))
     if counts is None:
-        s = float(count_scale) * COUNTS_PER_SUV_MM
-        counts = s * total / (1.0 - rf - sf)
+        # rf, sf are fractions of the prompts at the calibrated (full) dose. At dose
+        # f, trues and scatter scale with the activity, f, but randoms with the
+        # singles squared, f^2: the randoms fraction falls as the dose does.
+        f = float(count_scale)
+        s = f * COUNTS_PER_SUV_MM
+        full = COUNTS_PER_SUV_MM * total / (1.0 - rf - sf)
+        r_tot, s_tot = rf * full * f * f, sf * full * f
+        counts = s * total + r_tot + s_tot
     else:
         s = (1.0 - rf - sf) * float(counts) / total if total > 0 else 0.0
+        r_tot, s_tot = rf * float(counts), sf * float(counts)
     info = {"counts": float(counts), "rf": rf, "sf": sf, "empty": total <= 0}
     if total <= 0:
         z = np.zeros_like(px)
@@ -169,10 +179,10 @@ def simulate(suv, mu, scanner: Scanner2D, rng, mode: str = "paper", counts=None,
     mult = (s * n * af).astype(np.float32)
     gamma = np.zeros_like(px)
     if mode == "paper":
-        gamma += np.float32(rf * counts / px.size)
+        gamma += np.float32(r_tot / px.size)
         sc = gaussian_filter1d(shape, SCATTER_FWHM_MM / FWHM / TANG_MM, axis=1,
                                mode="constant")
-        gamma += (sf * counts / float(sc.sum(dtype=np.float64)) * sc).astype(np.float32)
+        gamma += (s_tot / float(sc.sum(dtype=np.float64)) * sc).astype(np.float32)
     mean = mult * px + gamma
     y = mean.astype(np.float32) if noiseless else rng.poisson(mean).astype(np.float32)
     x_in = ((y - gamma) / mult).astype(np.float32)

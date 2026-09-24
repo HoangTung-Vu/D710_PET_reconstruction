@@ -104,7 +104,7 @@ def main(argv=None) -> int:
                          "counts: prompts per slice drawn from --count-min..--count-max")
     ap.add_argument("--count-scale", type=float, default=1.0,
                     help="physical scale only: multiple of the calibrated counts "
-                         "(0.25 = a quarter of the dose or of the scan time)")
+                         "(0.25 = a quarter of the injected dose; randoms scale by its square)")
     ap.add_argument("--count-min", type=float, default=COUNT_RANGE[0])
     ap.add_argument("--count-max", type=float, default=COUNT_RANGE[1])
     ap.add_argument("--epochs", type=int, default=100)

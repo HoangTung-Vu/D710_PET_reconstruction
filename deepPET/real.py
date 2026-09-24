@@ -112,8 +112,8 @@ def _osem_job(args):
     os.environ.setdefault("OMP_NUM_THREADS", "1")
     from .osem2d import osem
 
-    y, mult, gamma, grid = args
-    return osem(y, mult, gamma, Scanner2D(grid))
+    y, mult, gamma, grid, it, sub, post = args
+    return osem(y, mult, gamma, Scanner2D(grid), it, sub, post_fwhm_mm=post)
 
 
 def main(argv=None) -> int:
@@ -127,6 +127,9 @@ def main(argv=None) -> int:
     ap.add_argument("--out", default=None, help="runs root; default $D710_OUT/deeppet/runs")
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--no-osem", action="store_true")
+    ap.add_argument("--osem", default="ge", choices=("ge", "paper"),
+                    help="ge: GE's clinical 2 x 24 + 6.4 mm transaxial + axial [1,4,1] across "
+                         "slices (default); paper: DeepPET's 5 x 16 + 6.4 mm transaxial only")
     ap.add_argument("--device", default="auto")
     a = ap.parse_args(argv)
 
@@ -195,9 +198,21 @@ def main(argv=None) -> int:
         import multiprocessing as mp
         from concurrent.futures import ProcessPoolExecutor
 
-        jobs = [(y[k], den[k] * np.float32(s_real), gam[k], grid) for k in range(NSEG0)]
+        from .osem2d import N_ITER, N_SUBSETS, osem_ge
+        from utils.scanner import N_ITERATIONS, N_SUBSETS as GE_N_SUBSETS, POST_FILTER_FWHM_MM
+
+        ge_proto = a.osem == "ge"
+        it, sub = (N_ITERATIONS, GE_N_SUBSETS) if ge_proto else (N_ITER, N_SUBSETS)
+        post = 0.0 if ge_proto else POST_FILTER_FWHM_MM      # GE's filter goes on the stack below
+        jobs = [(y[k], den[k] * np.float32(s_real), gam[k], grid, it, sub, post)
+                for k in range(NSEG0)]
         with ProcessPoolExecutor(a.workers, mp_context=mp.get_context("spawn")) as ex:
-            res["osem"] = np.stack(list(ex.map(_osem_job, jobs)))
+            rec = list(ex.map(_osem_job, jobs))
+        mult = den * np.float32(s_real)
+        res["osem"] = (osem_ge(y, mult, gam, sc, recon=dict(enumerate(rec))) if ge_proto
+                       else np.stack(rec))
+        print(f"  OSEM 2D: {it} x {sub}" + (", GE's post-filter 6.4 mm + axial [1,4,1]"
+                                            if ge_proto else ", 6.4 mm transaxial only"))
 
     body = [k for k in range(NSEG0) if ge[k].sum() > 0]
     for name in ("osem", "deeppet"):

@@ -55,7 +55,7 @@ Bq/mL × B →  counts     B = real rebinned trues / Σ AF · P(GE's Bq/mL image
 - **The exam is fdg26081901** (77 y, 40 kg, 259 MBq net, 7 beds of 90 s). fdg26081008 is a child (11 y) and is left out. The other three FDG exams have had their sinograms pruned and could not be used.
 - **H108 carries no dose or weight**, so every study is scaled by this one A: an assumption about the population. A 40 kg patient at 259 MBq is 6.5 MBq/kg, on the high side for adults.
 
-The simulation then draws `trues = s · AF · P(SUV)` per bin, so a slice's counts follow its activity, as on the scanner: on H108 slices that gives 3.5×10⁵ – 1.7×10⁶ prompts (5th–95th percentile, median 6.6×10⁵), against 6.3×10⁵ – 1.2×10⁶ per plane on the real adult beds. `--count-scale 0.25` is a quarter of the dose or of the scan time. `--scale counts` restores the older behaviour, drawing the prompts per slice from `--count-min`..`--count-max`.
+The simulation then draws `trues = s · AF · P(SUV)` per bin, so a slice's counts follow its activity, as on the scanner: on H108 slices that gives 3.5×10⁵ – 1.7×10⁶ prompts (5th–95th percentile, median 6.6×10⁵), against 6.3×10⁵ – 1.2×10⁶ per plane on the real adult beds. `--count-scale 0.25` is a quarter of the injected dose: trues and scatter drop 4×, randoms 16× (they go as the singles squared), so the randoms fraction falls as it does on the scanner. It is not a shorter scan, where the randoms would drop 4× too. `--scale counts` restores the older behaviour, drawing the prompts per slice from `--count-min`..`--count-max`.
 
 ## Splits
 
@@ -119,6 +119,8 @@ The default is the paper's full 100 epochs; `--epochs 30` is the pilot.
 python -m deepPET.evaluate --name g128 --limit 300           # DeepPET vs OSEM 2D at x1, x0.25, x0.1 dose
 python -m deepPET.real --case fdg26081008 --bed 6 --name g128
 ```
+
+`real` reconstructs OSEM 2D the way GE does clinically (`--osem ge`, the default): 2 iterations × 24 subsets per slice, then GE's post-filter on the stack of slices — 6.4 mm transaxial and the axial [1, 4, 1] (`osem.stitch.post_filter`). On fdg26081901 bed 4 it matches GE's image at r = 0.983 (rRMSE 0.63), against r = 0.972 (rRMSE 0.81) for the paper's 5 × 16 with the transaxial filter only (`--osem paper`). `evaluate` keeps the paper's 5 × 16: its test slices are drawn one at a time, so there are no neighbours to filter axially.
 
 Outputs go to `$D710_OUT/deeppet/{data,runs/<name>,real}/`.
 

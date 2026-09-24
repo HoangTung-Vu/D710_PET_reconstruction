@@ -55,8 +55,8 @@ CARNEY_B = {80: 0.681, 100: 0.755, 120: 0.837, 140: 1.0}
 
 WCC_UNIT_SCALE = 1e4
 
-K_EXPORT = 63_002.1
-K_EXPORT_LM = 124_178.0
+K_EXPORT = 66_907.5
+K_EXPORT_LM = 133_139.5
 
 
 def fov_radius_mm(n_tang: int, ndet: int = NDET,

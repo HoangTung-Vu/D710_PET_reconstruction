@@ -1,5 +1,3 @@
-"""deepPET: the 2D projector, the noise model, the resampler, the network's shapes."""
-
 from __future__ import annotations
 
 import json
@@ -43,7 +41,6 @@ def test_adjoint(sc):
 
 
 def test_line_integral_of_a_disk(sc):
-    """A 100 mm radius uniform disk: the central bins integrate to its 200 mm chord."""
     from deepPET.scanner2d import N_TANG
 
     p = sc.fwd(disk(128, 100.0))
@@ -58,7 +55,6 @@ def test_subset_projection_matches_full(sc):
 
 @pytest.mark.parametrize("mode", ["paper", "attn", "pure"])
 def test_noiseless_input_is_the_line_integral(sc, mode):
-    """E[x_in] = P x: precorrection undoes attenuation, randoms and scatter exactly."""
     from deepPET.simulate import simulate
 
     suv = disk(128, 150.0, 2.0, cx=30.0)
@@ -102,7 +98,6 @@ def test_downsample_is_the_2x2_mean():
 
 @pytest.mark.parametrize("pixel,n", [(500.0 / 256, 256), (700.0 / 256, 256)])
 def test_to_grid_puts_a_point_at_its_world_position(pixel, n):
-    """A hot pixel at patient (x, y) = (+60, +40) mm lands at STIR (+60, -40) on both FOVs."""
     from deepPET import nifti
     from deepPET.scanner2d import FOV_MM
 
@@ -121,7 +116,6 @@ def test_to_grid_puts_a_point_at_its_world_position(pixel, n):
 
 
 def test_nifti_las_affine_reads_as_lps(tmp_path):
-    """H108 files are LAS; a voxel at a known RAS position must come out at its LPS one."""
     import nibabel as nib
 
     from deepPET import nifti
@@ -152,7 +146,6 @@ def test_model_shapes(grid):
 
 @pytest.fixture
 def tiny_data(tmp_path):
-    """Two studies of three slices each, in the `prepare` layout."""
     d = tmp_path / "data"
     (d / "slices").mkdir(parents=True)
     rows = []
@@ -188,7 +181,6 @@ def test_training_items_are_fresh(tiny_data):
 
 
 def test_osem_recovers_a_disk(sc):
-    """High counts, the model OSEM assumes: the disk's mean comes back within a few %."""
     from deepPET.osem2d import osem
     from deepPET.simulate import simulate
 
@@ -211,7 +203,6 @@ def test_calibration_is_the_product_of_its_two_factors():
 
 @pytest.mark.parametrize("count_scale", [1.0, 0.25])
 def test_physical_scale_follows_the_activity(sc, count_scale):
-    """Physical scale: s is the calibrated constant, so doubling the SUV doubles the counts."""
     from deepPET.simulate import COUNTS_PER_SUV_MM, simulate
 
     suv, mu = disk(128, 150.0, 2.0), disk(128, 180.0, 0.0096)
@@ -240,3 +231,35 @@ def test_split_keeps_imagests_as_test_and_splits_tr_by_patient():
     assert not pid("train") & pid("val") and not (pid("train") | pid("val")) & pid("test")
     assert len(pid("val")) == round(0.2 * 39)
     assert "0005" in {s.split("_")[0] for s in split(tr + ts, keep_overlap=True)["train"]}
+
+
+def test_lower_dose_scales_randoms_by_its_square(sc):
+    from deepPET.simulate import simulate
+
+    suv, mu = disk(128, 150.0, 2.0), disk(128, 180.0, 0.0096)
+    got = {}
+    for f in (1.0, 0.25):
+        x, _, i = simulate(suv, mu, sc, np.random.default_rng(7), "paper", count_scale=f,
+                           noiseless=True, return_raw=True)
+        assert np.allclose(x, i["px"], rtol=1e-4, atol=1e-3 * i["px"].max())
+        got[f] = i
+    full, low = got[1.0], got[0.25]
+    c1, rf, sf = full["counts"], full["rf"], full["sf"]
+    assert (low["rf"], low["sf"]) == (rf, sf)
+    assert low["trues"] == pytest.approx(0.25 * full["trues"], rel=1e-6)
+    assert float(full["gamma"].sum()) == pytest.approx((rf + sf) * c1, rel=1e-4)
+    assert float(low["gamma"].sum()) == pytest.approx(rf * c1 * 0.0625 + sf * c1 * 0.25, rel=1e-4)
+    assert low["counts"] == pytest.approx(low["trues"] + float(low["gamma"].sum()), rel=1e-4)
+
+
+def test_osem_ge_applies_ges_axial_filter(sc):
+    from deepPET.osem2d import osem_ge
+
+    d = disk(128, 150.0)
+    rec = {0: 0 * d, 1: 6 * d, 2: 0 * d}
+    y = np.zeros((3,) + sc.shape, np.float32)
+    out = osem_ge(y, y, y, sc, recon=rec, fwhm_mm=0.0)
+    c = 64
+    assert out.shape == (3, 128, 128)
+    assert out[1, c, c] == pytest.approx(4.0) and out[0, c, c] == pytest.approx(1.0)
+    assert np.allclose(osem_ge(y, y, y, sc, slices=[1], recon=rec, fwhm_mm=0.0)[0], out[1])

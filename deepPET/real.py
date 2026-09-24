@@ -1,34 +1,3 @@
-"""Run a trained DeepPET on a real D710 bed.
-
-    python -m deepPET.real --case fdg26081008 --bed 1 --name g128
-
-The real sinogram is 3D (553 planes of span 2, non-TOF). Every bin is
-precorrected with the pipeline's own terms, then single-slice rebinned into the
-47 direct planes, as a ratio of sums:
-
-    x[k] = sum_{planes -> k} (prompts - background)  /  sum_{planes -> k} (normdt * attn)
-
-`background` is randoms + scatter (`work/bed<n>/`, from `vendor/`); normdt is a
-sensitivity, span-2 multiplicity included, so it divides. Plane `q` of the 3D
-sinogram lands on direct plane `r1 + r2` of its ring pairs
-(`BinMap.ring_pairs_by_plane`). Bins with `normdt * attn < 1e-3` are left out.
-
-`x` is in counts per unit of line integral; the network wants SUV.mm, so one
-scale `s_real` is fitted per bed against the projection of GE's own SUV image
-of the same bed (`export/<case>_ge_suvbw.nii.gz`). That makes GE's image the
-answer key for the *scale* only -- it is stated in the output, and a real
-calibration (K, frame time, decay, SUV factor) would replace it.
-
-Tripwire: the correlation of `x`, smoothed by 2 bins, with P(GE image) is
-printed for the image as is and flipped in x and in y. The unflipped one must be
-the highest and above 0.95, or the 2D geometry and the image frame disagree.
-Unsmoothed, the per-bin correlation is capped by the noise, not the geometry:
-on fdg26081008 bed 6 (6e5 prompts per plane, 71 % background) it is 0.757 as
-is, 0.727 x-flipped, 0.641 y-flipped; smoothed, 0.988 / 0.952 / 0.840.
-
-Writes `real_<case>_bed<n>.npz` and `.png` into the run directory.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -37,12 +6,12 @@ import time
 
 import numpy as np
 
-from utils.scanner import NSEG0, PLANE_MM, PSF_MM
+from utils.scanner import NSEG0, PLANE_MM
 
 from . import metrics as M
 from . import nifti
 from .scanner2d import TANG, N_TANG, N_VIEW, Scanner2D, fov_mask
-from .simulate import FWHM
+from .simulate import FWHM, SIM_PSF_MM
 
 DEN_MIN = 1e-3
 
@@ -52,7 +21,6 @@ TRIP_MIN = 0.95
 
 
 def direct_plane_of(binmap) -> np.ndarray:
-    """For each of the 3D sinogram's planes, the direct plane `r1 + r2` it rebins to."""
     r1, r2, p = binmap.ring_pairs_by_plane()
     k = np.full(binmap.n_plane, -1, np.int64)
     for a, b, q in zip(r1, r2, p):
@@ -65,7 +33,6 @@ def direct_plane_of(binmap) -> np.ndarray:
 
 
 def ssrb(case, bed: int):
-    """`(x, den, y, gamma)`, each `(47, 288, N_TANG)`, from the 3D sinogram and its terms."""
     from utils.binmap import BinMap
 
     hs = case.prompt(bed)
@@ -95,7 +62,6 @@ def ssrb(case, bed: int):
 
 
 def ge_planes(case, bed: int, grid: int, path=None) -> np.ndarray:
-    """GE's SUV image on the bed's 47 planes and the DeepPET grid, `(47, grid, grid)`."""
     p = path or case.export / f"{case.name}_ge_suvbw.nii.gz"
     if not p.exists():
         raise SystemExit(f"error: no {p}; pass --ge <SUV NIfTI of GE's reconstruction>")
@@ -117,7 +83,7 @@ def _osem_job(args):
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap = argparse.ArgumentParser(description="Run a trained DeepPET on a real D710 bed.")
     ap.add_argument("--case", required=True)
     ap.add_argument("--bed", type=int, required=True)
     ap.add_argument("--name", default=None, help="trained run; omit for the tripwire only")
@@ -158,7 +124,8 @@ def main(argv=None) -> int:
     t0 = time.time()
     x, den, y, gam = ssrb(C, a.bed)
     ge = ge_planes(C, a.bed, grid, a.ge)
-    blur = lambda im: gaussian_filter(im, PSF_MM / FWHM / sc.voxel_mm, mode="constant")
+    blur = ((lambda im: gaussian_filter(im, SIM_PSF_MM / FWHM / sc.voxel_mm, mode="constant"))
+            if SIM_PSF_MM > 0 else (lambda im: im))
     pge = np.stack([sc.fwd(blur(g)) for g in ge])
     valid = den > 0
     s_real = float(x[valid].sum(dtype=np.float64) / pge[valid].sum(dtype=np.float64))
@@ -203,7 +170,7 @@ def main(argv=None) -> int:
 
         ge_proto = a.osem == "ge"
         it, sub = (N_ITERATIONS, GE_N_SUBSETS) if ge_proto else (N_ITER, N_SUBSETS)
-        post = 0.0 if ge_proto else POST_FILTER_FWHM_MM      # GE's filter goes on the stack below
+        post = 0.0 if ge_proto else POST_FILTER_FWHM_MM
         jobs = [(y[k], den[k] * np.float32(s_real), gam[k], grid, it, sub, post)
                 for k in range(NSEG0)]
         with ProcessPoolExecutor(a.workers, mp_context=mp.get_context("spawn")) as ex:

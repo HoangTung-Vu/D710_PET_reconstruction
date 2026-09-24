@@ -1,42 +1,3 @@
-"""One SUV + mu slice to one precorrected sinogram: DeepPET's input, PETSTEP-style.
-
-    Px    = fwd(blur_psf(SUV))          line integrals, SUV.mm
-    AF    = exp(-fwd(mu))               attenuation factor per LOR
-    T     = s * n * AF * Px             trues mean, counts (n: optional crystal efficiency)
-    R     = flat,         rf * C1 * f^2  randoms mean     (paper mode)
-    S     = blur_tang(n*AF*Px), sf * C1 * f  scatter mean  (paper mode)
-    y     ~ Poisson(T + R + S)          C = sum(T) / (1 - rf - sf) prompts
-    x_in  = (y - R - S) / (s * n * AF)  E[x_in] = Px, exactly
-
-`s` is counts per SUV.mm, and there are two ways to set it (`SCALES`):
-
-  physical  the default. `s = count_scale x counts_per_suv_mm` of `calib.json`,
-            which `python -m deepPET.calibrate` measured on a real adult D710
-            exam: SUV -> Bq/mL (net dose, decay to scan start, weight), then
-            Bq/mL -> counts (the real rebinned trues of each bed). A slice's
-            counts then follow its activity, as on the scanner; `count_scale`
-            < 1 is a lower injected dose f: trues and scatter scale by f,
-            randoms by f^2 (they go as the singles squared), with rf and sf
-            the fractions of the full-dose prompts C1. This is not a shorter
-            scan, where randoms would scale by f too.
-  counts    the total prompts `C` of the slice are drawn log-uniform in
-            `count_range`, and `s` follows from them. An explicit `counts=`
-            always means this.
-
-The randoms and scatter means are subtracted exactly, as DeepPET did (paper
-eq. 3); negative bins are kept, clipping them would bias the input. `rf` and
-`sf` are drawn from the ranges `calib.json` measured on the same exam.
-
-Modes: `paper` as above; `attn` drops R and S; `pure` also drops AF, i.e. only
-the forward model and Poisson noise.
-
-Everything outside the 350 mm bore is zeroed first, in the activity and in mu:
-a LOR through the FOV also crosses the image corners, and activity there would
-reach the sinogram while the (masked) target ignores it.
-
-    python -m deepPET.simulate --study 0001_20200702 --slice 120 [--grid 128] [--mode paper]
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -46,11 +7,11 @@ from pathlib import Path
 
 import numpy as np
 
-from utils.scanner import PSF_MM
-
 from .scanner2d import Scanner2D, fov_mask
 
 MODES = ("paper", "attn", "pure")
+
+SIM_PSF_MM = 0.0
 
 SCALES = ("physical", "counts")
 
@@ -86,7 +47,6 @@ AUG_ROT_DEG = 10.0
 
 
 def downsample(a: np.ndarray, grid: int) -> np.ndarray:
-    """A `(..., 256, 256)` array on `grid`: itself, or its 2 x 2 mean for 128."""
     n = a.shape[-1]
     if grid == n:
         return a
@@ -97,12 +57,6 @@ def downsample(a: np.ndarray, grid: int) -> np.ndarray:
 
 
 def augment(suv, mu, rng, grid: int):
-    """DeepPET's augmentation, one transform applied to both images.
-
-    With p = 1/3 the slice is shifted by up to +-25 pixels (of the 128 grid) and
-    rotated by up to +-10 degrees; one in three of those is also flipped left to
-    right (p = 1/9 overall), as in the paper's 3-of-9 and 1-of-3 realisations.
-    """
     from scipy.ndimage import affine_transform
 
     if rng.random() >= 1.0 / 3.0:
@@ -120,17 +74,8 @@ def augment(suv, mu, rng, grid: int):
 
 def simulate(suv, mu, scanner: Scanner2D, rng, mode: str = "paper", counts=None,
              scale: str = "physical", count_scale: float = 1.0,
-             count_range=COUNT_RANGE, psf_mm: float = PSF_MM, eff=None,
+             count_range=COUNT_RANGE, psf_mm: float = SIM_PSF_MM, eff=None,
              noiseless: bool = False, return_raw: bool = False):
-    """`(x_in (288, 371), target (grid, grid), info)` for one slice.
-
-    `suv`, `mu`: `(grid, grid)` on `scanner`'s grid. `scale`: `physical`
-    (`s = count_scale * COUNTS_PER_SUV_MM`) or `counts` (total prompts drawn
-    from `count_range`); a given `counts` forces the latter. `eff`: an optional
-    `(288, 371)` crystal-pair efficiency. `noiseless` returns the mean instead
-    of a Poisson draw. `return_raw` adds `y`, `gamma` and `mult` (so that
-    `mean = mult * Px + gamma`) to `info`, which is what OSEM needs.
-    """
     from scipy.ndimage import gaussian_filter, gaussian_filter1d
 
     if mode not in MODES:
@@ -158,9 +103,6 @@ def simulate(suv, mu, scanner: Scanner2D, rng, mode: str = "paper", counts=None,
         lo, hi = count_range
         counts = math.exp(rng.uniform(math.log(lo), math.log(hi)))
     if counts is None:
-        # rf, sf are fractions of the prompts at the calibrated (full) dose. At dose
-        # f, trues and scatter scale with the activity, f, but randoms with the
-        # singles squared, f^2: the randoms fraction falls as the dose does.
         f = float(count_scale)
         s = f * COUNTS_PER_SUV_MM
         full = COUNTS_PER_SUV_MM * total / (1.0 - rf - sf)

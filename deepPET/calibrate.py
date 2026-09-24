@@ -1,33 +1,3 @@
-"""Measure SUV -> counts on real D710 beds, for the simulation's absolute scale.
-
-    python -m deepPET.calibrate [--cases fdg26081901] [--out deepPET/calib.json]
-
-The simulation needs one number, `s` counts per SUV.mm, in its own 2D units:
-a slice's trues are `s * AF * P(SUV)`, per LOR of one direct plane. It is the
-product of two factors, both measured here:
-
-  A  Bq/mL per SUV    = net dose x decay(injection -> scan start) / weight.
-                        GE's SUV is decay-corrected to the scan start and uses
-                        the net dose (`quant.dose_bq`, `quant.scan_start_factor`).
-  B  counts per Bq/mL.mm = sum_k trues_k / sum_k sum_bins AF0_k * P(blur(C_k))
-                        per bed, where trues_k are the real prompts minus
-                        background rebinned to direct plane k (as `real.ssrb`),
-                        AF0_k is segment 0's attenuation for plane k, and C_k is
-                        GE's image of the bed in Bq/mL (its SUV times A). B
-                        therefore carries everything the 2D model leaves out:
-                        the oblique segments SSRB adds, crystal efficiency, dead
-                        time, the frame length and the decay to the bed.
-
-`s = mean(A) x mean(B)`. The randoms and scatter fractions of the prompts
-(inside the 371 tangential bins) are measured too; the simulation draws them
-from their range.
-
-The H108 data carry no dose or weight, so their SUV is scaled by this one mean
-A: an assumption about the population, written into `calib.json` with the
-cases it came from. The default case is fdg26081901, the adult (77 y, 40 kg);
-fdg26081008 is a child and is left out.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -37,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from utils.scanner import NSEG0, PSF_MM
+from utils.scanner import NSEG0
 
 from .scanner2d import TANG, Scanner2D
 
@@ -49,7 +19,6 @@ GRID = 256
 
 
 def bqml_per_suv(case) -> dict:
-    """`A` and what it is made of, from the case's own RDF headers."""
     from utils.quant import dose_bq, scan_start_factor
 
     beds = case.decoded_beds()
@@ -63,13 +32,12 @@ def bqml_per_suv(case) -> dict:
 
 
 def bed_factor(case, bed: int, a: float, sc: Scanner2D) -> dict:
-    """`B` of one bed, with the randoms and scatter fractions of its prompts."""
     from scipy.ndimage import gaussian_filter
 
     from utils.binmap import BinMap
 
     from .real import direct_plane_of, ge_planes, ssrb
-    from .simulate import FWHM
+    from .simulate import FWHM, SIM_PSF_MM
 
     bm = BinMap(case.prompt(bed))
     k = direct_plane_of(bm)
@@ -81,10 +49,11 @@ def bed_factor(case, bed: int, a: float, sc: Scanner2D) -> dict:
     r = float(np.memmap(w / "randoms.s", "<f4", "r", shape=bm.shape)[:, :, TANG].sum(dtype=np.float64))
     s = float(np.memmap(w / "scatter.s", "<f4", "r", shape=bm.shape)[:, :, TANG].sum(dtype=np.float64))
     c = ge_planes(case, bed, sc.grid) * np.float32(a)
-    sig = PSF_MM / FWHM / sc.voxel_mm
+    blur = ((lambda im: gaussian_filter(im, SIM_PSF_MM / FWHM / sc.voxel_mm, mode="constant"))
+            if SIM_PSF_MM > 0 else (lambda im: im))
     trues = (y - g).sum(axis=(1, 2), dtype=np.float64)
-    q = np.array([float((attn[p][:, TANG] * sc.fwd(gaussian_filter(c[p], sig, mode="constant")))
-                        .sum(dtype=np.float64)) for p in range(NSEG0)])
+    q = np.array([float((attn[p][:, TANG] * sc.fwd(blur(c[p]))).sum(dtype=np.float64))
+                  for p in range(NSEG0)])
     body = q > 0.05 * q.max()
     per_plane = trues[body] / q[body]
     prompts = float(y.sum(dtype=np.float64))
@@ -95,7 +64,7 @@ def bed_factor(case, bed: int, a: float, sc: Scanner2D) -> dict:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap = argparse.ArgumentParser(description="Measure SUV -> counts on real D710 beds.")
     ap.add_argument("--cases", nargs="+", default=list(DEFAULT_CASES))
     ap.add_argument("--out", default=str(CALIB_JSON))
     a = ap.parse_args(argv)

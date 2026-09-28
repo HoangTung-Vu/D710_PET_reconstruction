@@ -1,27 +1,3 @@
-"""Images reconstructed from simulated data against real ones, on the SUV scale.
-
-    python -m simulation.compare_images --case fdg26081008 --sim gate_s1 \
-        --lowcount fdg26081008_lowcount_time
-
-All images are resampled, by their affines, onto the grid of our full-dose
-reconstruction. The comparison is restricted to the planes the simulation
-covers, less `EDGE_PLANES` at each end of each simulated bed, where the
-scanner's sensitivity falls to 7-30 % of the centre and every reconstruction
-is noise.
-
-  full   our full-dose list-mode reconstruction of the real exam (reference)
-  ge     GE's clinical reconstruction -- the activity the simulation was fed
-  low    the real exam thinned to the same time (`d710 lowdose --window time`)
-  sim    the simulated exam, reconstructed by `d710 lm recon` with its own terms
-
-Per image, inside the body (full-dose SUV > 0.3): median SUV and its ratio to
-full dose, voxelwise Pearson r and NRMSE against full dose and against GE,
-p99 SUV, and noise -- the standard deviation of the image minus a 2-voxel
-Gaussian smoothing of itself, over its mean, in soft tissue (0.5 < GE SUV <
-1.5). A simulation that behaves like the real low-count scan should match
-`low` in noise and `full` in median SUV.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -52,7 +28,6 @@ def resample_onto(src, ref) -> np.ndarray:
 
 
 def sim_planes(sim_case: Case, ref_z0: float, n_ref: int, plane_mm: float) -> np.ndarray:
-    """`(n_ref,)` bool: reference planes inside a simulated bed, away from its edges."""
     keep = np.zeros(n_ref, bool)
     for b in sim_case.decoded_beds():
         tp = float(sim_case.header(b)["table_position_mm"])
@@ -62,7 +37,6 @@ def sim_planes(sim_case: Case, ref_z0: float, n_ref: int, plane_mm: float) -> np
 
 
 def frame_s(case: Case, bed: int) -> float:
-    """Frame length of `bed`: its sidecar, or the manifest a derived case keeps."""
     p = case.decoded / f"bed{bed}.json"
     if p.exists():
         return case.header(bed)["frame_duration_ms"] / 1000.0
@@ -126,7 +100,8 @@ def figure(images: dict, keep, path: Path, title: str) -> None:
 def main(argv=None) -> int:
     import nibabel as nib
 
-    ap = argparse.ArgumentParser(prog="simulation.compare_images", description=__doc__,
+    ap = argparse.ArgumentParser(prog="simulation.compare_images",
+                                 description="simulated against real images, SUV scale",
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--case", required=True)
     ap.add_argument("--sim", default="gate_s1", help="label: <case>_sim_<label>")

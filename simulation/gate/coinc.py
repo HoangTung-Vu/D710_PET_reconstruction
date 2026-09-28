@@ -1,23 +1,3 @@
-"""GATE's coincidences to the decoder's event table, and the terms it implies.
-
-Per coincidence:
-
-  crystals   `PostPosition` after readout is a crystal centre; it becomes a
-             GE id through `CrystalLookup` (nearest GE azimuth and ring)
-  TOF        `tof_bin = round(c (t2 - t1) / 2 / 13.38 mm)`: single 1 is
-             `xtal_a`, and a later second single means the pair was nearer
-             `xtal_a`, which is GE's positive bin (see `events_io`)
-  clock      `t_ms = bed_start_ticks + GlobalTime1 / 1 ms`
-  FOV        pairs outside the sinogram are dropped, as the scanner's own
-             FOV filter does (`cpm_fov_filtered` in the singles log)
-  norm       GATE's crystals are identical; GE's efficiency pattern is
-             imposed by keeping a pair in bin b with probability
-             `min(1, normdt_b / mean over views of normdt)` -- only the
-             relative losses, since GATE supplies the geometry itself
-  truth      random = EventID differs; scatter = a Compton or Rayleigh step
-             in the patient on either photon
-"""
-
 from __future__ import annotations
 
 import json
@@ -47,7 +27,6 @@ def _crystals(c: dict, lookup: CrystalLookup, k: str = "") -> np.ndarray:
 
 
 def _spelling(k: str) -> str:
-    """`PostPosition1_X` (online sorter) to `PostPosition_X1` (offline sorter)."""
     if k[-2:] in ("_X", "_Y", "_Z") and k[-3] in "12":
         return k[:-3] + k[-2:] + k[-3]
     return k
@@ -76,7 +55,6 @@ def iterate(root_file: Path, tree: str, step: str = "400 MB"):
 
 
 def norm_acceptance(normdt_flat, binmap: BinMap) -> np.ndarray:
-    """`min(1, normdt / its mean over views)` per bin; 0 where normdt is 0."""
     n = normdt_flat.reshape(binmap.shape).astype(np.float64)
     m = n.mean(axis=1, keepdims=True)
     with np.errstate(invalid="ignore", divide="ignore"):
@@ -85,7 +63,6 @@ def norm_acceptance(normdt_flat, binmap: BinMap) -> np.ndarray:
 
 
 def pairs_to_events(c: dict, lookup: CrystalLookup, bed_start_ticks: int):
-    """`(xa, xb, tof, t_ms, is_random, is_scatter)` for one chunk of coincidences."""
     xa, xb = _crystals(c, lookup, "1"), _crystals(c, lookup, "2")
     tof = eio.tof_bin_from_dt(c["GlobalTime2"] - c["GlobalTime1"])
     t_ms = bed_start_ticks + np.floor(c["GlobalTime1"] / 1e6).astype(np.int64)
@@ -98,7 +75,6 @@ def pairs_to_events(c: dict, lookup: CrystalLookup, bed_start_ticks: int):
 
 
 def convert(chunk_dirs, binmap: BinMap, accept, bed_start_ticks: int, rng, out=print):
-    """All prompts of all chunks as events, plus the delays count, after FOV and norm."""
     lookup = CrystalLookup()
     keep_cols = {k: [] for k in ("xa", "xb", "tof", "t", "rnd", "sc")}
     n_raw = n_fov = delays = delays_raw = 0
@@ -128,7 +104,6 @@ def convert(chunk_dirs, binmap: BinMap, accept, bed_start_ticks: int, rng, out=p
 
 
 def singles_rate(singles_dir: Path, seconds: float) -> np.ndarray:
-    """`(13824,)` singles per second per GE crystal, from the short singles run."""
     lookup = CrystalLookup()
     counts = np.zeros(NXTAL, np.int64)
     for c in iterate(Path(singles_dir) / "singles.root", "Singles"):
@@ -137,12 +112,6 @@ def singles_rate(singles_dir: Path, seconds: float) -> np.ndarray:
 
 
 def smooth_scatter(xa, xb, binmap: BinMap, scale: float, sigma=(1.5, 8.0, 5.0)):
-    """Scatter-flagged pairs to a smooth per-bin expectation, `(plane, view, tang)`.
-
-    Too few scatter events land in a bin to use raw, so the histogram is
-    smoothed within each segment's planes, circularly over views and along
-    the tangential axis, then scaled by `scale` (frame over simulated time).
-    """
     from scipy.ndimage import gaussian_filter
 
     b = binmap.flat(xa, xb)
@@ -161,12 +130,6 @@ def smooth_scatter(xa, xb, binmap: BinMap, scale: float, sigma=(1.5, 8.0, 5.0)):
 
 
 def tof_profile(xa, xb, tof, binmap: BinMap, n_tof: int = eio.TOF_HALF * 2 + 1):
-    """`(n_tang, n_tof)` TOF shape of a set of pairs per tangential bin, rows summing to 1.
-
-    The index is parallelproj's sinogram bin for the LOR run from det1 to det2
-    of the bin, `27 - tof_bin` when `xtal_a` is on det1 -- what `pp` multiplies
-    its scatter by.
-    """
     b, swap = binmap.flat(xa, xb, with_swap=True)
     ok = b >= 0
     t = np.where(swap, -tof, tof)[ok]

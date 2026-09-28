@@ -1,28 +1,3 @@
-"""The parallelproj model of one bed: expected counts per crystal pair and TOF bin.
-
-For the LOR between crystals `a` and `b`, which falls in sinogram bin `beta`,
-and TOF bin `t`:
-
-    y(a,b,t) = kappa * n_beta * exp(-int mu) * P_t[x](a,b)
-             + R_ab / 55 + S_beta * phi(u, t)
-
-  P_t      `parallelproj.joseph3d_fwd_tof_sino` of `x`, the positron decays
-           per mm^3 over the frame, from `a` to `b` -- the LOR ends are
-           `utils.geometry.crystal_positions(stir_frame=True)`, the frame the
-           reconstruction uses; sigma = c * 675 ps / 2 / 2.355, 55 bins of
-           89.2459 ps, cut at 3 sigma
-  mu       `joseph3d_fwd` through the CT's mu-map, 1/mm
-  n        GE's `normdt` per LOR (the bin's value over its ring-pair count)
-  kappa    the one absolute constant a line integral cannot supply: fitted so
-           that the trues equal GATE's on the same bed. Never fitted to the
-           real data, which are what the result is compared with
-  R        `2w S_a S_b`, singles-rate randoms with GATE's singles and window
-  S, phi   GATE's scatter-flagged coincidences, smoothed, and their TOF shape
-
-Each part is drawn from its own Poisson distribution, so every event carries a
-truth label (true, scatter, random) and the sum is Poisson in `y`.
-"""
-
 from __future__ import annotations
 
 import math
@@ -45,8 +20,6 @@ LABELS = ("true", "scatter", "random")
 
 
 class RingPairs:
-    """The crystal ids and bin of every LOR, one ring pair at a time."""
-
     def __init__(self, binmap: BinMap):
         self.binmap = binmap
         d1, d2 = det_pair_map(binmap.n_view, binmap.n_tang, binmap.ndet)
@@ -68,20 +41,17 @@ class RingPairs:
 
 
 def projector_image(arr_zyx, voxel_xyz=ph.VOXEL_XYZ):
-    """`(img, origin, voxel)` for parallelproj from a `(z, y, x)` array on the bed grid."""
     img = np.ascontiguousarray(np.asarray(arr_zyx).transpose(2, 1, 0), np.float32)
     return img, ph.world_origin(arr_zyx.shape), np.asarray(voxel_xyz, np.float32)
 
 
 def tof_kernel(n_tof: int = N_TOF_RAW):
-    """`(bin width, sigma, centre offset)` as parallelproj takes them."""
     width = eio.TOF_BIN_MM * (N_TOF_RAW / n_tof)
     return (float(width), np.array([SIGMA_TOF_MM], np.float32),
             np.array([0.0], np.float32))
 
 
 def sample_times(n: int, frame_s: float, half_life_s: float, rng) -> np.ndarray:
-    """Arrival times in ms over `[0, frame)`, with density decaying at `half_life_s`."""
     lam = math.log(2.0) / half_life_s
     u = rng.random(n)
     t = -np.log1p(-u * (1.0 - math.exp(-lam * frame_s))) / lam
@@ -89,12 +59,10 @@ def sample_times(n: int, frame_s: float, half_life_s: float, rng) -> np.ndarray:
 
 
 def per_lor(term_flat, binmap: BinMap) -> np.ndarray:
-    """A per-bin term divided by its bin's ring-pair count."""
     return (term_flat.reshape(binmap.shape) / binmap.mult[:, None, None]).reshape(-1)
 
 
 def attenuation_and_sensitivity(pairs: RingPairs, lut, mu, x, normdt_lor, out=print):
-    """Pass 1, non-TOF: `(af per bin, sum of n af P[x] over every LOR)`."""
     import parallelproj
 
     b = pairs.binmap
@@ -115,11 +83,6 @@ def attenuation_and_sensitivity(pairs: RingPairs, lut, mu, x, normdt_lor, out=pr
 
 def simulate(pairs: RingPairs, lut, mu, x, normdt_lor, kappa, rng,
              randoms_lor=None, scatter_lor=None, phi=None, n_tof=N_TOF_RAW, out=print):
-    """Pass 2, TOF: Poisson counts for every LOR and TOF bin, as events.
-
-    Returns `(xtal_a, xtal_b, tof_bin, label, expected)`, where `expected` is
-    the sum of the means of the three parts.
-    """
     import parallelproj
 
     width, sigma, offset = tof_kernel(n_tof)
@@ -155,8 +118,6 @@ def simulate(pairs: RingPairs, lut, mu, x, normdt_lor, kappa, rng,
                     f"ring pair {i} (plane {p}), part {LABELS[lab]}: mean has "
                     f"{int((~np.isfinite(mean)).sum())} non-finite and "
                     f"{int((mean < 0).sum())} negative values (min {np.nanmin(mean)})")
-            # joseph3d interpolation leaves values like -1.5e-21 where the
-            # image is zero; they are clipped above, before this check.
             expected[lab] += float(mean.sum(dtype=np.float64))
             n = rng.poisson(mean)
             li, ti = np.nonzero(n)
@@ -178,7 +139,6 @@ def simulate(pairs: RingPairs, lut, mu, x, normdt_lor, kappa, rng,
 
 
 def singles_randoms(rate_cps, window_ns: float, time_s: float, accept_flat):
-    """`f(a, b, bins)`: randoms per LOR, `2 w S_a S_b` times `time_s` and the norm acceptance."""
     r = np.asarray(rate_cps, np.float64)
     k = 2.0 * window_ns * 1e-9 * time_s
 
@@ -197,11 +157,6 @@ def crystal_lut() -> np.ndarray:
 
 def run_bed(real, dst, bed: int, gate_case, seconds: float | None, seed: int,
             n_tof: int = N_TOF_RAW, kappa: float | None = None, out=print) -> dict:
-    """Simulate one bed with parallelproj and write it as a case.
-
-    Without a GATE run of the same bed (`gate_case`), only the trues can be
-    drawn, and `kappa` must be given.
-    """
     from .gate import coinc
     from .gate.driver import attenuation_per_bin, randoms_per_bin, raw_dir
     from .gate.run import WINDOW_NS

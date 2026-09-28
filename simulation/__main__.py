@@ -1,16 +1,3 @@
-"""Command-line entry point for `d710 simulate`.
-
-    d710 simulate phantom --case C [--beds 1] [--ct X] [--pet X]
-                          [--pet-units suv|bqml|relative] [--activity MBq@UTC]
-    d710 simulate gate    --case C --beds 1 [--seconds T] [--chunk-seconds 10]
-    d710 simulate pp      --case C --beds 1 [--gate-seed 1]
-    d710 simulate compare --case C --beds 1 [--sims gate_s1 pp_s1]
-
-`phantom` runs first: both methods read the activity and CT it puts on the bed
-grid. `pp` takes its randoms, scatter and absolute scale from the `gate` run
-of the same bed, so `gate` runs before it. See simulation/README.md.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -107,7 +94,8 @@ def cmd_compare(C, a) -> int:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="d710 simulate", description=__doc__,
+    ap = argparse.ArgumentParser(prog="d710 simulate",
+                                 description="raw D710 data simulated from a case's CT and PET",
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
 

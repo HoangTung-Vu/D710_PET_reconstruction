@@ -1,26 +1,3 @@
-"""Simulated raw data against the real raw data of the same exam and bed.
-
-"Real" is what `d710 decode` made of `data/cases/<case>/raw`: GE's RDF can only
-be read through the vendor decoder, so `$D710_OUT/<case>/decoded/` is the
-reference. A simulation may cover a shorter time than the real frame (GATE
-often does); every count is then scaled to the real frame by the ratio of the
-two decay integrals, and that factor is reported.
-
-Per bed and per simulation:
-
-  counts     prompts, delays, delays/prompts; scatter fraction (GATE or pp
-             truth against GE's own scatter estimate)
-  singles    per crystal, real `bed<n>.singles.npy` against GATE's rates
-  shapes     axial (per plane), radial (per tangential bin) and angular (per
-             view) profiles of the prompt sinogram, and the view-summed
-             sinogram (plane x tang): Pearson r, and the relative L2 once
-             both totals are equal
-  TOF        the TOF bin of every event, oriented to its sinogram bin (det1 to
-             det2), so that the shape does not depend on which crystal the
-             decoder happens to list first
-  crystals   hits per crystal (24 x 576): per ring and per position in a block
-"""
-
 from __future__ import annotations
 
 import json
@@ -51,7 +28,6 @@ def pearson(a, b) -> float:
 
 
 def rel_l2(a, b) -> float:
-    """`|a' - b| / |b|` with `a'` scaled to `b`'s total."""
     a, b = np.asarray(a, np.float64).ravel(), np.asarray(b, np.float64).ravel()
     a = a * (b.sum() / max(a.sum(), 1e-30))
     return float(np.linalg.norm(a - b) / max(np.linalg.norm(b), 1e-30))
@@ -68,7 +44,6 @@ def profiles(s) -> dict:
 
 
 def oriented_tof(e, binmap: BinMap, n_max: int = 5_000_000, seed: int = 0):
-    """`(hist over -27..27, mean oriented bin per tangential bin)` from up to `n_max` events."""
     if len(e) > n_max:
         idx = np.sort(np.random.default_rng(seed).choice(len(e), n_max, replace=False))
         e = e[idx]
@@ -92,14 +67,12 @@ def crystal_hits(e) -> np.ndarray:
 
 
 def block_profile(per_crystal) -> np.ndarray:
-    """Mean over crystals of each of the 9 transaxial positions inside a block."""
     from utils.scanner import NDET, NRINGS
 
     return per_crystal.reshape(NRINGS, NDET // 9, 9).mean(axis=(0, 1))
 
 
 def compare_bed(real: Case, sims: dict, bed: int, out_dir: Path, out=print) -> dict:
-    """`sims` maps a label to a simulated `Case`; writes `bed<n>.json` and `bed<n>.png`."""
     binmap = BinMap(real.prompt(bed))
     hr = real.header(bed)
     half = float(hr["half_life_s"])

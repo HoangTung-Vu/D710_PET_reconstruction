@@ -1,17 +1,3 @@
-"""`d710 simulate gate`: run GATE for one bed in resumable chunks, then convert.
-
-The frame is simulated in chunks of `chunk_s` seconds, each its own process
-with its own seed and its own start time, so that decay across the frame is
-right and an interrupted run resumes at the first missing chunk. A separate
-short run (`singles_s`) also writes every single, for the per-crystal singles
-rates; writing them for the whole frame would cost ~25 GB per bed.
-
-Measured on this laptop (16 threads), fdg26081008 bed 1 with the whole GE
-image as the source (136 MBq of positrons) and the CT at 6.4 x 6.4 x 9.8 mm:
-81,000 decays/s, so one simulated second takes ~28 minutes of wall time and
-the full 90 s frame ~42 hours.
-"""
-
 from __future__ import annotations
 
 import json
@@ -43,14 +29,6 @@ def raw_dir(dst: Case, bed: int) -> Path:
 
 
 def gate_python() -> list[str]:
-    """How to start the interpreter that runs Geant4.
-
-    `D710_GATE_RUNNER` replaces it with a command prefix, for a host whose
-    glibc is too old for the opengate wheels: `./d710_apptainer` sets it to
-    `apptainer exec --bind ... d710_gate.sif python` (see
-    `simulation/gate/Dockerfile`). Everything else -- the conversion, the
-    reconstruction, the comparison -- stays on the host.
-    """
     runner = os.environ.get("D710_GATE_RUNNER", "").strip()
     return shlex.split(runner) if runner else [sys.executable]
 
@@ -129,7 +107,6 @@ def randoms_per_bin(pairs: pp.RingPairs, f) -> np.ndarray:
 
 def convert_bed(real: Case, dst: Case, bed: int, seconds: float | None,
                 seed: int, out=print) -> dict:
-    """Chunks to `decoded/bed<n>.*` and `work/bed<n>/*`, plus `summary.npz` for `pp`."""
     phantom_dir = ph.directory(eio.sim_root(real), bed)
     meta = ph.load(phantom_dir)
     raw = raw_dir(dst, bed)

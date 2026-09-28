@@ -1,10 +1,3 @@
-"""`simulation/`: inputs, crystal map, TOF convention, the case it writes.
-
-Nothing here runs GATE (a run takes minutes); the GATE-specific pieces that
-can be checked without it -- the crystal placement and its GE ids, the TOF
-formula, the coincidence branch names -- are.
-"""
-
 from __future__ import annotations
 
 import json
@@ -22,10 +15,7 @@ from utils.scanner import DR_MM, NDET, NRINGS, NSEG0, PLANE_MM, XY
 RINGS, NDET_MINI, NTANG = 6, 16, 9
 
 
-# --- inputs -----------------------------------------------------------------
-
 def _nifti(tmp_path, data_zyx, x0, y0, z0, px, dz, name="v.nii.gz"):
-    """Written exactly as `tools/dicom_suv.write_nifti` writes it."""
     import nibabel as nib
 
     aff = np.array([[-px, 0, 0, -x0], [0, -px, 0, -y0], [0, 0, dz, z0], [0, 0, 0, 1.0]])
@@ -58,7 +48,6 @@ def test_a_flipped_nifti_axis_is_undone(tmp_path):
 
 
 def test_resample_to_bed_is_what_mu_map_always_did():
-    """The refactor that split the resampler out of `mu_map` changed nothing."""
     from scipy.ndimage import map_coordinates
 
     from utils.attenuation import CTAC, hu_to_mu, mu_map, to_radiological
@@ -114,8 +103,6 @@ def test_mhd_round_trip(tmp_path):
     assert np.array_equal(ph.read_mhd(p), a)
 
 
-# --- crystals ---------------------------------------------------------------
-
 def test_gate_crystals_map_one_to_one_onto_ge_ids():
     c = cr.gate_crystal_centres()
     ids = cr.ge_ids(c)
@@ -152,8 +139,6 @@ def test_blocks_sit_inside_the_ring_without_touching():
     assert (gap > 2 * inner_half).all()
 
 
-# --- TOF --------------------------------------------------------------------
-
 def _point_image(xyz_mm, shape=(65, 65, 15), vox=(4.0, 4.0, 4.0)):
     img = np.zeros(shape, np.float32)
     idx = tuple(int(round(v / d + (n - 1) / 2)) for v, d, n in zip(xyz_mm, vox, shape))
@@ -176,7 +161,6 @@ def test_parallelproj_tof_bins_run_towards_the_lor_end():
 
 
 def test_the_tof_sign_is_the_one_the_reconstruction_reads():
-    """An event drawn by `pp` projects, through `lm`'s own mapping, onto the value it was drawn from."""
     import parallelproj
 
     from lm import events as lmev
@@ -200,7 +184,6 @@ def test_the_tof_sign_is_the_one_the_reconstruction_reads():
 
 
 def test_gate_timing_gives_the_same_sign():
-    """A pair nearer `xtal_a` reaches it first, so `t_b - t_a > 0` is a positive bin."""
     d_mm = 100.0
     dt_ns = 2 * d_mm / eio.C_MM_NS
     assert eio.tof_bin_from_dt(dt_ns) == round(d_mm / eio.TOF_BIN_MM)
@@ -222,8 +205,6 @@ def test_coincidence_branch_spellings_are_normalised():
     c = _normalise({"PostPosition1_X": [1.0], "PostPosition_Y2": [2.0], "EventID1": [3]})
     assert set(c) == {"PostPosition_X1", "PostPosition_Y2", "EventID1"}
 
-
-# --- the model on a miniature scanner ---------------------------------------
 
 @pytest.fixture(scope="module")
 def mini(mini_hs):
@@ -286,7 +267,6 @@ def test_sampled_times_stay_in_the_frame():
 
 
 def test_a_written_bed_reads_back_as_an_ordinary_case(tmp_path, mini, mini_hs):
-    """The sinogram on disk is the histogram of the event table on disk."""
     import shutil
 
     import synth_hs
@@ -329,7 +309,6 @@ def test_a_written_bed_reads_back_as_an_ordinary_case(tmp_path, mini, mini_hs):
 
 
 def test_a_crystal_named_by_volume_id_is_the_one_placed_there():
-    """`d710_crystal_rep_<c>-0_0_<block>_<c>`: block z-major, crystal as `crystal_offsets`."""
     look = cr.CrystalLookup()
     rng = np.random.default_rng(11)
     blocks, crys = rng.integers(0, 256, 500), rng.integers(0, 54, 500)
@@ -344,7 +323,6 @@ def test_a_crystal_named_by_volume_id_is_the_one_placed_there():
 
 
 def test_a_bed_plane_on_the_edge_of_the_series_is_not_emptied():
-    """Plane 0 exactly on the first slice, 2e-5 mm outside after float32 rounding."""
     from utils.attenuation import resample_to_bed
 
     vol = np.ones((60, 20, 20), np.float32)
@@ -358,7 +336,6 @@ def test_a_bed_plane_on_the_edge_of_the_series_is_not_emptied():
 
 
 def test_export_scales_a_simulated_case_like_a_thinned_one(tmp_path):
-    """`simulation.json` carries T_real / T_sim, and `quant.lowdose_k_scale` reads it."""
     from utils.paths import Case
     from utils.quant import lowdose_k_scale
 

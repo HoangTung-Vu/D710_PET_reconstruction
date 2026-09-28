@@ -1,31 +1,3 @@
-"""One GATE run for one bed: the D710 around the CT, with the PET as the source.
-
-Run as its own process (`python -m simulation.gate.run config.json`); the
-`d710 simulate gate` command writes the config and launches it, once for a
-short run that also writes the singles and once for the full frame, which
-writes coincidences only.
-
-Physics and digitizer, and where each number comes from:
-
-  source      VoxelSource over the PET in Bq/mL, `back_to_back` 511 keV pairs
-              with accolinearity (or `e+` on the F-18 spectrum), activity =
-              positrons in the grid at the bed's start, half-life F-18
-  patient     Image volume from the CT, HounsfieldUnit_to_material with the
-              Schneider 2000 tables shipped in opengate/data
-  readout     energy-weighted centroid per block, discretised to the crystal
-  energy      InverseSquare blur, 12 % FWHM at 511 keV (D690 paper: 10-20 %)
-  dead time   off by default (see DEADTIME_NS); 300 ns paralysable per
-              block in the D690 paper
-  window      425-650 keV (D690 paper, and `energy_window_*_kev` in bed.json)
-  timing      Gaussian, 675/sqrt(2) ps FWHM per single, so 675 ps per pair
-              (`TIMING_PS`, GE's coincidence timing resolution)
-  coincidence window 2.4545 ns: the real singles.log gives randoms as
-              `4.909 ns * S_i * S_j`, and a window `w` gives `2 w S_i S_j`
-  delays      the same sorter with its window offset by 500 ns (D690 paper)
-  scatter     truth flag: Compton / Rayleigh steps in the patient, counted per
-              photon and inherited by the electrons it sets moving in a crystal
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -94,7 +66,6 @@ class RunConfig:
 
 
 def _box(mask2d, pad: int, lim: tuple[int, int]):
-    """Index range `[lo, hi)` per axis of the true region of a 2-D mask, padded and clipped."""
     out = []
     for ax in (0, 1):
         idx = np.nonzero(mask2d.any(axis=1 - ax))[0]
@@ -105,7 +76,6 @@ def _box(mask2d, pad: int, lim: tuple[int, int]):
 
 
 def _centre_mm(lo: int, hi: int, n: int, step_mm: float) -> float:
-    """World coordinate of the centre of index range `[lo, hi)` on a centred `n` grid."""
     return ((lo + hi - 1) / 2.0 - (n - 1) / 2.0) * step_mm
 
 
@@ -116,17 +86,6 @@ def _block_mean(a, f: tuple[int, int, int]) -> np.ndarray:
 
 
 def cropped_inputs(cfg: RunConfig, shield: ShieldSpec) -> dict:
-    """Cut the phantom down to what GATE needs; write `ct.mhd` and `act.mhd`.
-
-    Every voxel boundary a photon crosses is a Geant4 step -- opengate builds an
-    image as nested replicas and does not merge equal materials -- so the CT is
-    (1) cropped to the body and couch (HU > -900) plus `pad` voxels, which also
-    keeps the box inside the bore, where it must stay since Geant4 volumes may
-    not overlap, and (2) averaged over `ct_step` voxels for the geometry only:
-    attenuation and scatter of 511 keV photons do not need 2 mm voxels. The
-    activity keeps the reconstruction's voxels, cropped to the same box.
-    What the crop cuts off is reported.
-    """
     src, out = Path(cfg.phantom_dir), Path(cfg.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     act = ph.read_mhd(src / "act_bqml.mhd")
@@ -181,7 +140,6 @@ def geometry_bore(shield: ShieldSpec) -> float:
 
 
 def build(cfg: RunConfig, meta: dict, crop: dict):
-    """The opengate `Simulation` for one run."""
     import opengate as gate
 
     u = gate.g4_units
@@ -292,7 +250,8 @@ def build(cfg: RunConfig, meta: dict, crop: dict):
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="simulation.gate.run", description=__doc__,
+    ap = argparse.ArgumentParser(prog="simulation.gate.run",
+                                 description="one GATE run for one bed",
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("config")
     a = ap.parse_args(argv)

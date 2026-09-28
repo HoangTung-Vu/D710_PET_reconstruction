@@ -1,30 +1,3 @@
-"""The simulation's inputs on one bed's grid: activity in Bq/mL and CT in HU.
-
-GATE and parallelproj both read what this module writes, so the two methods
-can differ in physics but never in where the patient is.
-
-The grid is the reconstruction's own -- `XY` x `XY` at `DR_MM`, planes at
-`PLANE_MM` -- extended by `margin_mm` beyond both ends of the bed so that
-activity outside the axial field of view still feeds scatter and randoms in
-GATE. Plane `p` of the bed sits at patient z `table_position_mm + p * PLANE_MM`
-and the result is flipped to the image's row order, exactly as
-`utils.attenuation.mu_map` does it; that orientation was verified on NEMA.
-
-The world frame is the one `utils.geometry.crystal_positions(stir_frame=True)`
-uses: x and y centred on the gantry axis, z = 0 at the middle of the bed. The
-extended grid is symmetric about that point, so its centre is the world origin
--- which is where GATE puts the centre of an image volume and of a voxel source.
-
-Activity may be given three ways (`UNITS`):
-
-  bqml      the image is Bq/mL already
-  suv       SUVbw, inverted with the dose, injection time, scan time and weight
-            from `decoded/bed<n>.json` -- the inverse of `tools/dicom_suv.py`
-            for an image whose DecayCorrection is START
-  relative  any map proportional to activity, plus one global activity
-            `A` at a stated time; the map is scaled so that it holds `A`
-"""
-
 from __future__ import annotations
 
 import datetime as dt
@@ -55,8 +28,6 @@ bed 1: the deficit is largest at ring 0)."""
 
 @dataclass
 class Volume:
-    """One input series as `[slice, row, col]` in DICOM (LPS) order."""
-
     data: np.ndarray
     z: np.ndarray
     x0: float
@@ -77,7 +48,6 @@ class Volume:
 
 
 def load_volume(path, modality: str) -> Volume:
-    """A NIfTI file or a DICOM folder, as a `Volume`. `modality` is CT or PT."""
     p = Path(os.path.expanduser(str(path)))
     if not p.exists():
         raise SystemExit(f"error: no {p}")
@@ -85,7 +55,6 @@ def load_volume(path, modality: str) -> Volume:
 
 
 def _load_nifti(path: Path) -> Volume:
-    """NIfTI in RAS, as `tools/ct_nifti.py` and `tools/dicom_suv.py` write it."""
     import nibabel as nib
 
     img = nib.load(str(path))
@@ -133,23 +102,11 @@ def _load_dicom(path: Path, modality: str) -> Volume:
 
 
 def utc_epoch(stamp: str) -> float:
-    """`YYYYmmddHHMMSS[.ff]` read as UTC, the RDF header's clock."""
     t = dt.datetime.strptime(str(stamp)[:14], "%Y%m%d%H%M%S")
     return t.replace(tzinfo=dt.timezone.utc).timestamp()
 
 
 def exam_timing(case) -> dict:
-    """Dose, weight, isotope and clock of the exam, from its bed sidecars.
-
-    `t_scan` is the start of the first bed. GE decay-corrects the image to it
-    (DecayCorrection START), so the Bq/mL in the image are activities then; it
-    equals the DICOM SeriesTime (local, +7 h) on fdg26081008.
-
-    The dose is net of the residual in the syringe: the DICOM
-    RadionuclideTotalDose, and so every SUV made from it, is `dose_mbq -
-    residual_dose_mbq` (281.2 = 284.9 - 3.7 MBq on fdg26081008). Using the
-    gross dose puts every activity 1.3 % high.
-    """
     beds = case.decoded_beds()
     if not beds:
         raise SystemExit(f"error: {case.decoded} has no bed<n>.json")
@@ -172,13 +129,11 @@ def decay(dt_s: float, half_life_s: float) -> float:
 
 
 def frame_integral_s(frame_s: float, half_life_s: float) -> float:
-    """`∫_0^T 2^(-t/T½) dt`, the decays per Bq present at the start of the frame."""
     lam = math.log(2.0) / half_life_s
     return (1.0 - math.exp(-lam * frame_s)) / lam
 
 
 def parse_activity(spec: str) -> tuple[float, float]:
-    """`MBq@YYYYmmddHHMMSS` (UTC) to `(Bq, epoch)`."""
     try:
         a, t = spec.split("@")
         return float(a) * 1e6, utc_epoch(t)
@@ -187,7 +142,6 @@ def parse_activity(spec: str) -> tuple[float, float]:
 
 
 def bqml_scale(pet: Volume, units: str, timing: dict, activity=None):
-    """`(factor, info)` turning the input's values into Bq/mL at `t_scan`."""
     if units not in UNITS:
         raise SystemExit(f"error: --pet-units must be one of {UNITS}")
     info = {"units": units}
@@ -227,20 +181,17 @@ def bqml_scale(pet: Volume, units: str, timing: dict, activity=None):
 
 
 def grid_planes(margin_mm: float) -> tuple[int, int]:
-    """`(first_plane, n_planes)` of the bed grid extended by `margin_mm` each side."""
     m = int(round(max(margin_mm, 0.0) / PLANE_MM))
     return -m, NSEG0 + 2 * m
 
 
 def world_origin(shape_zyx) -> np.ndarray:
-    """World `(x, y, z)` of voxel `[0, 0, 0]` of a centred `(z, y, x)` grid."""
     n = np.asarray(shape_zyx[::-1], np.float64)
     return ((-n / 2 + 0.5) * np.asarray(VOXEL_XYZ)).astype(np.float32)
 
 
 def on_bed_grid(vol: Volume, table_position_mm: float, margin_mm: float,
                 cval: float, what: str) -> np.ndarray:
-    """`vol` on the extended bed grid, `(n_planes, XY, XY)` in the image's order."""
     first, n = grid_planes(margin_mm)
     a = resample_to_bed(vol.data, vol.z, vol.x0, vol.y0, vol.pixel_mm,
                         table_position_mm, XY, DR_MM, first_plane=first,
@@ -249,13 +200,11 @@ def on_bed_grid(vol: Volume, table_position_mm: float, margin_mm: float,
 
 
 def bed_planes(arr, margin_mm: float) -> np.ndarray:
-    """The bed's own 47 planes out of an extended-grid array."""
     first, _ = grid_planes(margin_mm)
     return arr[-first:-first + NSEG0]
 
 
 def write_mhd(path, arr_zyx, spacing_xyz=VOXEL_XYZ, origin_xyz=None) -> Path:
-    """A MetaImage pair `<stem>.mhd` + `<stem>.raw`, float32, identity direction."""
     path = Path(path)
     a = np.ascontiguousarray(arr_zyx, dtype="<f4")
     if origin_xyz is None:
@@ -276,7 +225,6 @@ def write_mhd(path, arr_zyx, spacing_xyz=VOXEL_XYZ, origin_xyz=None) -> Path:
 
 
 def read_mhd(path) -> np.ndarray:
-    """The `(z, y, x)` float32 array of a MetaImage written by `write_mhd`."""
     path = Path(path)
     k = dict(ln.split(" = ", 1) for ln in path.read_text().splitlines() if " = " in ln)
     nx, ny, nz = (int(v) for v in k["DimSize"].split())
@@ -290,7 +238,6 @@ def directory(sim_root: Path, bed: int) -> Path:
 def build(case, bed: int, ct_path, pet_path, pet_units: str, out_dir: Path,
           activity=None, margin_mm: float = DEFAULT_MARGIN_MM,
           kvp: float | None = None, out=print) -> dict:
-    """Write `act_bqml.mhd`, `ct_hu.mhd`, `mu_bed.npy` and `phantom.json` for one bed."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     hdr = case.header(bed)
@@ -354,7 +301,6 @@ def load(out_dir: Path) -> dict:
 
 
 def decays_per_voxel(out_dir: Path, meta: dict) -> np.ndarray:
-    """Positron decays per voxel over the frame, on the bed's own 47 planes."""
     act = bed_planes(read_mhd(Path(out_dir) / "act_bqml.mhd"), meta["margin_mm"])
     k = (meta["decay_scan_to_bed"] * meta["timing"]["positron_fraction"]
          * meta["frame_integral_s"] * VOXEL_ML)

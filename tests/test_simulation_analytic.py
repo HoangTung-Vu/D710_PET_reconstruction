@@ -158,3 +158,24 @@ def test_shield_aperture_blocks_only_rays_that_leave_through_the_lead():
     t = (108.5 - 120.0) / (rdet[:, 2] - 120.0)
     rho = t * np.hypot(rdet[:, 0], rdet[:, 1])
     assert np.array_equal(ok[0], rho <= 350.0)
+
+
+def test_virtual_to_stir_keeps_layout_and_drops_the_template_exam(tmp_path):
+    import json
+
+    from simulation import virtual
+    from utils.paths import Case
+
+    T = Case("tmpl", tmp_path)
+    T.work_bed(4).mkdir(parents=True)
+    (T.work_bed(4) / "to_stir.json").write_text(json.dumps({
+        "mapping": "m", "sensitivity_term": "s", "background_term": "b",
+        "stats": {"randoms": {"sum": 1.0}},
+        "estimate": {"ct": "/their/ct", "raw": "/their/raw", "norm": "/cal/norm"}}))
+    w = tmp_path / "v"
+    w.mkdir()
+    virtual.write_to_stir(T, 4, w, "/new/ct.nii.gz", -500.0)
+    m = json.loads((w / "to_stir.json").read_text())
+    assert m["mapping"] == "m" and m["estimate"]["ct"] == "/new/ct.nii.gz"
+    assert "stats" not in m and "raw" not in m["estimate"]
+    assert m["virtual"] == {"template": "tmpl", "template_bed": 4}

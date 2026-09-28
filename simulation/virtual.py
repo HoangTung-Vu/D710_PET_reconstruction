@@ -18,6 +18,7 @@ IDENTITY = ("patient_name", "patient_id", "patient_birth_date", "accession_numbe
             "institution", "path", "patient_height_m")
 LINKED = ("normdt", "norm_only")
 HEADER_ONLY = ("randoms",)
+KEPT_TO_STIR = ("mapping", "sensitivity_term", "background_term")
 
 
 def table_positions(z0: float, z1: float, step: float) -> list[float]:
@@ -35,6 +36,16 @@ def _link(src: Path, dst: Path) -> None:
     if dst.exists() or dst.is_symlink():
         dst.unlink()
     dst.symlink_to(src.resolve())
+
+
+def write_to_stir(template: Case, template_bed: int, w: Path, ct, table_position_mm: float) -> None:
+    src = template.work_bed(template_bed) / "to_stir.json"
+    m = json.loads(src.read_text()) if src.exists() else {}
+    v = {k: m[k] for k in KEPT_TO_STIR if k in m}
+    v["estimate"] = {"ct": str(ct), "table_position_mm": float(table_position_mm),
+                     "norm": m.get("estimate", {}).get("norm")}
+    v["virtual"] = {"template": template.name, "template_bed": template_bed}
+    (w / "to_stir.json").write_text(json.dumps(v, indent=2, sort_keys=True))
 
 
 def build(template: Case, name: str, ct, pet, pet_units: str, root: Path,
@@ -77,6 +88,7 @@ def build(template: Case, name: str, ct, pet, pet_units: str, root: Path,
                 _link(src / f"{stem}{ext}", w / f"{stem}{ext}")
         for stem in HEADER_ONLY:
             eio.clone_header(src / f"{stem}.hs", w / f"{stem}.hs", f"{stem}.s")
+        write_to_stir(template, template_bed, w, ct, tp)
     info = {"template": template.name, "template_bed": template_bed, "ct": str(ct),
             "pet": str(pet), "pet_units": pet_units, "pet_z_mm": [float(z.min()), float(z.max())],
             "bed_step_mm": step, "table_positions_mm": [float(p) for p in pos]}

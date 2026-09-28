@@ -2,6 +2,7 @@
 *.u16
 *.i32
 *.npy
+!simulation/crystal_eff.npy
 *.npz
 *.nii
 *.nii.gz

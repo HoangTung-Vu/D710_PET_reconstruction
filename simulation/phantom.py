@@ -128,6 +128,11 @@ def decay(dt_s: float, half_life_s: float) -> float:
     return 2.0 ** (-dt_s / half_life_s)
 
 
+def decay_integral(t0: float, t1: float, half_life_s: float, power: int = 1) -> float:
+    lam = power * math.log(2.0) / half_life_s
+    return (math.exp(-lam * t0) - math.exp(-lam * t1)) / lam
+
+
 def frame_integral_s(frame_s: float, half_life_s: float) -> float:
     lam = math.log(2.0) / half_life_s
     return (1.0 - math.exp(-lam * frame_s)) / lam

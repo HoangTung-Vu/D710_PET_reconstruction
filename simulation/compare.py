@@ -10,6 +10,7 @@ from utils.binmap import BinMap
 from utils.paths import Case
 
 from . import events_io as eio
+from .singles import measured as measured_singles
 
 TARGETS = {"prompts_ratio": (0.9, 1.1), "delays_fraction_diff": (-0.05, 0.05),
            "profile_r": 0.98, "singles_ratio": (0.9, 1.1)}
@@ -83,7 +84,7 @@ def compare_bed(real: Case, sims: dict, bed: int, out_dir: Path, out=print) -> d
     tof_real = oriented_tof(e_real, binmap)
     hits_real = crystal_hits(e_real)
     sing_p = real.decoded / f"bed{bed}.singles.npy"
-    singles_real = np.load(sing_p).astype(np.float64) / fr if sing_p.exists() else None
+    singles_real = measured_singles(real, bed) / fr if sing_p.exists() else None
     ge_sc = float(np.fromfile(real.work_bed(bed) / "scatter.s", "<f4").sum(dtype=np.float64))
     ge_rn = float(np.fromfile(real.work_bed(bed) / "randoms.s", "<f4").sum(dtype=np.float64))
 

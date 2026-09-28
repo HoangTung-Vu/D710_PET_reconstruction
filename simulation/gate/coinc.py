@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import math
 from pathlib import Path
 
 import numpy as np
@@ -11,6 +10,7 @@ from utils.scanner import NXTAL
 
 from .. import events_io as eio
 from ..crystals import CrystalLookup
+from ..phantom import decay_integral  # noqa: F401
 
 BRANCHES = ("EventID", "GlobalTime", "PostPosition_X", "PostPosition_Y",
             "PostPosition_Z", "TotalEnergyDeposit", "PhantomCompton",
@@ -151,11 +151,6 @@ def save_summary(path: Path, **kw) -> None:
 def load_summary(path: Path) -> dict:
     z = np.load(path, allow_pickle=False)
     return {k: z[k] for k in z.files}
-
-
-def decay_integral(t0: float, t1: float, half_life_s: float, power: int = 1) -> float:
-    lam = power * math.log(2.0) / half_life_s
-    return (math.exp(-lam * t0) - math.exp(-lam * t1)) / lam
 
 
 def read_run(d: Path) -> dict:

@@ -1,9 +1,10 @@
 # simulation
 
-This package simulates D710 raw data, in list mode and as a sinogram, from a real exam's CT and its clinical PET. There are two methods:
+This package simulates D710 raw data, in list mode and as a sinogram, from a real exam's CT and its clinical PET. There are three methods:
 
 * **GATE 10** (opengate) is the formal one: a Monte Carlo of the scanner around the patient's CT, with the PET as the source.
 * **parallelproj** is its analytic twin, the forward model `y = S(Gx) + b` evaluated per crystal pair and TOF bin.
+* **analytic** needs no Monte Carlo at all: parallelproj trues, single-scatter simulation and randoms from modelled singles, calibrated once on a real exam. Non-TOF, ~1.5 min per bed once its scatter and singles are cached. See the next section.
 
 Each simulated bed is written as an ordinary case beside the real one. `d710 lm check`, `d710 lm recon` and `d710 osem` run on it unchanged. `d710 simulate compare` then puts it next to the real raw data of the same bed.
 
@@ -16,6 +17,36 @@ d710 simulate pp      --case fdg26081008 --bed 1 --seconds 3  # ~20 min per bed
 d710 simulate compare --case fdg26081008 --bed 1
 d710 lm check         --case fdg26081008_sim_gate_s1 --bed 1  # bit-exact, like a real case
 ```
+
+## Without GATE: `analytic`
+
+```bash
+d710 simulate calibrate --case fdg26081901          # once; writes analytic_calib.json + crystal_eff.npy (~50 min)
+d710 simulate phantom   --case fdg26081901
+d710 simulate analytic  --case fdg26081901          # -> fdg26081901_sim_an_s1
+d710 simulate check-terms --case fdg26081901        # simulated randoms/scatter vs GE's and vs the tails
+d710 lm check --case fdg26081901_sim_an_s1 --bed 1  # bit-exact
+d710 lm recon --case fdg26081901_sim_an_s1 --tof-bins 1
+
+# a PET/CT with no raw data: a header-only case built around it from a template exam
+d710 simulate virtual  --case h108_0002 --template fdg26081901 --ct X_0000.nii.gz --pet X_0001.nii.gz --pet-units suv
+d710 simulate analytic --case h108_0002
+```
+
+Per LOR `(a, b)` in bin `beta`: `y = kappa normdt AF P[x] + k_s normdt SSS + 2w I2 S_a S_b`.
+
+| part | how | constant (fitted on beds 2, 3, 5, 6 of fdg26081901) |
+|---|---|---|
+| trues | `joseph3d_fwd` through the PET (decays per mm^3) and the CT's mu | `kappa` |
+| scatter | PyTomography's single-scatter kernel (Watson 2007), summed over points, activity and mu 24 planes beyond each end of the bed | `k_s`, weight `normdt` |
+| singles | `eff_i (c_s G_i + c_0)`, `G_i` = attenuated solid angle of every voxel of the whole image | `c_s`, `c_0`, `crystal_eff.npy` |
+| out-of-FOV photons | pass the lead end shields only through the patient port (350 mm), shield plane 30 mm beyond the crystals | chosen among three |
+
+`decoded/bed<n>.singles.npy` is in GE's hardware order (modules of 2 x 4 blocks); `singles.measured()` puts it in crystal-id order. Without it, randoms from singles are 30-50 % wrong plane by plane.
+
+Measured on fdg26081901 (held-out beds 1, 4, 7), simulated / real: prompts 0.969, 1.023, 0.978; randoms / GE's 0.949, 1.026, 1.082; scatter / GE's 0.971, 1.061, 0.956. The weakest part is the singles' axial shape on the first and last bed. Details, and every number: `.claude/audit/simulation-analytic/ANALYTIC.md`.
+
+A virtual case borrows the template's bed 4 `normdt` (symlinked), its dose, weight and injection time for SUV -> Bq/mL, and its bed spacing; the beds are laid over the NIfTI's own z range. The template's identifying header fields are not copied.
 
 ## One night of GATE: `overnight.sh`
 
@@ -139,6 +170,9 @@ $D710_OUT/<case>_sim/phantom/bed<n>/     act_bqml.mhd, ct_hu.mhd, mu_bed.npy, ph
 $D710_OUT/<case>_sim/compare/            bed<n>.json, bed<n>.png
 $D710_OUT/<case>_sim_gate_s<seed>/       an ordinary case
 $D710_OUT/<case>_sim_pp_s<seed>/         an ordinary case
+$D710_OUT/<case>_sim_an_s<seed>/         an ordinary case; + raw_simulation/bed<n>_singles_rate.npy
+$D710_OUT/<case>_sim/{sss,singles}/      cached scatter and singles per bed, keyed by the phantom
+$D710_OUT/<case>_sim/calib/              report.json, profiles.npz, calib.png
     decoded/bed<n>.lm.npy                event table, the decoder's dtype
     decoded/bed<n>.{s,hs,json}           histogrammed by lm.events.histogram
     work/bed<n>/{normdt,norm_only}       GE's, copied

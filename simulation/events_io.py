@@ -123,8 +123,13 @@ def write_bed(real: Case, dst: Case, bed: int, ev: np.ndarray, terms: dict,
     for stem in COPIED_TERMS:
         for ext in (".hs", ".s"):
             p = real.work_bed(bed) / f"{stem}{ext}"
-            if p.exists():
-                shutil.copy2(p, w / p.name)
+            q = w / p.name
+            if p.is_symlink():
+                if q.exists() or q.is_symlink():
+                    q.unlink()
+                q.symlink_to(p.resolve())
+            elif p.exists():
+                shutil.copy2(p, q)
     sums = {k: write_term(real, dst, bed, k, v) for k, v in terms.items()
             if v is not None}
     if "randoms" in terms and "scatter" in terms:

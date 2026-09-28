@@ -98,13 +98,6 @@ def run_bed(real: Case, dst: Case, bed: int, seconds: float | None,
     return raw
 
 
-def randoms_per_bin(pairs: pp.RingPairs, f) -> np.ndarray:
-    acc = np.zeros(pairs.binmap.n_bin, np.float64)
-    for _p, a, c, bins in pairs:
-        acc[bins] += f(a, c, bins)
-    return acc.reshape(pairs.binmap.shape).astype(np.float32)
-
-
 def convert_bed(real: Case, dst: Case, bed: int, seconds: float | None,
                 seed: int, out=print) -> dict:
     phantom_dir = ph.directory(eio.sim_root(real), bed)
@@ -135,7 +128,7 @@ def convert_bed(real: Case, dst: Case, bed: int, seconds: float | None,
     rate = coinc.singles_rate(raw / "singles", run_s)
     i2 = coinc.decay_integral(0.0, t_sim, half, power=2)
     pairs = pp.RingPairs(binmap)
-    randoms = randoms_per_bin(pairs, pp.singles_randoms(rate, WINDOW_NS, i2, accept))
+    randoms = pp.randoms_per_bin(pairs, pp.singles_randoms(rate, WINDOW_NS, i2, accept))
     scatter = coinc.smooth_scatter(xa[sc], xb[sc], binmap, 1.0)
     phi = coinc.tof_profile(xa[sc], xb[sc], tof[sc], binmap)
 

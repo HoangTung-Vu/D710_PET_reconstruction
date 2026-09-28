@@ -82,7 +82,8 @@ def attenuation_and_sensitivity(pairs: RingPairs, lut, mu, x, normdt_lor, out=pr
 
 
 def simulate(pairs: RingPairs, lut, mu, x, normdt_lor, kappa, rng,
-             randoms_lor=None, scatter_lor=None, phi=None, n_tof=N_TOF_RAW, out=print):
+             randoms_lor=None, scatter_lor=None, phi=None, n_tof=N_TOF_RAW, out=print,
+             af_out=None):
     import parallelproj
 
     width, sigma, offset = tof_kernel(n_tof)
@@ -93,6 +94,8 @@ def simulate(pairs: RingPairs, lut, mu, x, normdt_lor, kappa, rng,
     for i, (p, a, c, bins) in enumerate(pairs):
         xs, xe = lut[a], lut[c]
         af = np.exp(-parallelproj.joseph3d_fwd(xs, xe, *mu))
+        if af_out is not None:
+            af_out[bins] += af
         if n_tof > 1:
             proj = parallelproj.joseph3d_fwd_tof_sino(xs, xe, *x, width, sigma,
                                                       offset, N_SIGMAS, n_tof)
@@ -151,6 +154,13 @@ def singles_randoms(rate_cps, window_ns: float, time_s: float, accept_flat):
     return f
 
 
+def randoms_per_bin(pairs: RingPairs, f) -> np.ndarray:
+    acc = np.zeros(pairs.binmap.n_bin, np.float64)
+    for _p, a, c, bins in pairs:
+        acc[bins] += f(a, c, bins)
+    return acc.reshape(pairs.binmap.shape).astype(np.float32)
+
+
 def crystal_lut() -> np.ndarray:
     return crystal_positions().astype(np.float32)
 
@@ -158,7 +168,7 @@ def crystal_lut() -> np.ndarray:
 def run_bed(real, dst, bed: int, gate_case, seconds: float | None, seed: int,
             n_tof: int = N_TOF_RAW, kappa: float | None = None, out=print) -> dict:
     from .gate import coinc
-    from .gate.driver import attenuation_per_bin, randoms_per_bin, raw_dir
+    from .gate.driver import raw_dir
     from .gate.run import WINDOW_NS
 
     phantom_dir = ph.directory(eio.sim_root(real), bed)

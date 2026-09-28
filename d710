@@ -46,7 +46,8 @@ COMMANDS
   d710 lowdose  --case N --drf D                 a thinned copy of a case
                 [--mode low-count|low-dose]      shorter scan / less activity
                 [--sinogram derived|binomial]    -> <case>/raw_simulation/
-  d710 simulate phantom|gate|pp|compare --case N [--bed n]
+  d710 simulate phantom|gate|pp|compare|calibrate|analytic|check-terms --case N [--bed n]
+  d710 simulate virtual --case N --template C --ct X --pet Y --pet-units suv
                                                  simulated list mode + sinogram
                                                  from the case's CT and PET
                                                  (GATE 10 or parallelproj);

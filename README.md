@@ -70,6 +70,10 @@ SRC=~/UET/Handson_PET_CT_Reconstruction/data/cases/20260819_FDG26081901_ok
 | 3 | `d710 lm recon` | the list-mode reconstruction, all 55 TOF bins, to `recon_lm.npz` |
 | 4 | `d710 export` | Bq/mL and SUV, as NIfTI and DICOM |
 
+`--ct` takes a DICOM series directory or a single `.nii`/`.nii.gz` volume in
+HU. A NIfTI carries no FrameOfReferenceUID, so the exam's own UID is written
+into GE's PIFA and `attn` skips the same-exam UID check.
+
 Step 1 runs inside `d710:full` and needs nothing but bash, a container runtime
 and any `python3`. Steps 2 to 4 run on the host, in `petct_recon`. **No step
 needs SIRF.**

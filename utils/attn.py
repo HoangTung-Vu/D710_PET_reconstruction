@@ -1,10 +1,3 @@
-"""Per-bed attenuation factors, the one term not taken from GE's kernel.
-
-Nothing here needs SIRF: the mu-map comes from the CT with scipy, the line
-integrals from parallelproj (`utils.attn_proj`), and the result is written in
-the same plane-major Interfile layout as every other term in `work/bed<n>/`.
-"""
-
 from __future__ import annotations
 
 import numpy as np
@@ -13,16 +6,11 @@ from . import attenuation, attn_proj, interfile
 from .scanner import DR_MM, PLANE_MM, XY
 
 PROVENANCE = "; d710 attn ring pairing := utils.binmap"
-"""Stamped into every `attn.hs` written here, and required to read one.
-
-Until 2026-09-18 this file was built with the ring pairing mirrored against
-every other term in `work/bed<n>/`, and nothing about its name, size or shape
-said so. Requiring the line makes those rebuild themselves.
-"""
 
 
 def check_same_exam(ct, hdr) -> None:
-    """Require the CT and the exam to agree by UID, not by adjacency on disk."""
+    if ct.meta.get("format") == "nifti":
+        return
     got, want = ct.meta["frame_of_reference_uid"], hdr["sop_instance_uid"]
     if got != want:
         raise SystemExit(
@@ -32,8 +20,6 @@ def check_same_exam(ct, hdr) -> None:
 
 
 class Attenuation:
-    """`af` for each bed of a case, cached on disk and in memory."""
-
     def __init__(self, case, ct_dir: str, xy: int = XY, dr_mm: float = DR_MM,
                  device: str = "auto", verbose: bool = True):
         self.case = case
@@ -48,7 +34,6 @@ class Attenuation:
         return self.ct.describe()
 
     def af(self, n: int) -> np.ndarray:
-        """`(1, n_plane, n_view, n_tang)`, the shape every other term has."""
         if n in self._cache:
             return self._cache[n]
 
@@ -87,7 +72,6 @@ class Attenuation:
 
 
 def read(hs) -> np.ndarray:
-    """An `attn.hs` written here, as `(1, n_plane, n_view, n_tang)`."""
     h = interfile.Header(hs)
     h.require_plane_major()
     a = np.fromfile(h.data_file(), "<f4")

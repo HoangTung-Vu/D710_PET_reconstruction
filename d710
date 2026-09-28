@@ -301,7 +301,7 @@ estimate)
     need_case; need_image
     [[ -n "$RAW" && -n "$CT" ]] || die "--raw and --ct are both required"
     [[ -d "$RAW" ]] || die "no such raw directory: $RAW"
-    [[ -d "$CT"  ]] || die "no such CT directory: $CT"
+    [[ -d "$CT" || -f "$CT" ]] || die "no such CT directory or NIfTI file: $CT"
     O="$(resolve_out)"; DEC="$O/$CASE/decoded"
     [[ -d "$DEC" ]] || die "case $CASE has not been decoded; run: d710 decode --raw ... --case $CASE"
 

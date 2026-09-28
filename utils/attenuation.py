@@ -1,5 +1,3 @@
-"""CT series to a mu-map on the bed's image grid."""
-
 from __future__ import annotations
 
 import glob
@@ -13,7 +11,6 @@ from .scanner import NSEG0 as PLANES_PER_BED
 
 
 def hu_to_mu(hu: np.ndarray, kvp: float = 120.0) -> np.ndarray:
-    """Carney bilinear conversion from HU to mu at 511 keV, in 1/mm."""
     b = CARNEY_B.get(int(round(kvp)), 0.837)
     hu = np.asarray(hu, dtype=np.float32)
     soft = MU_WATER_511 * (1.0 + hu / 1000.0)
@@ -22,13 +19,10 @@ def hu_to_mu(hu: np.ndarray, kvp: float = 120.0) -> np.ndarray:
 
 
 def to_radiological(arr: np.ndarray) -> np.ndarray:
-    """Flip STIR's y axis to DICOM patient y; the operation is its own inverse."""
     return np.flip(np.asarray(arr), axis=1)
 
 
 class CTAC:
-    """One CT series: an HU volume `[slice, row, col]` in DICOM order, with its geometry."""
-
     def __init__(self, hu, z, x0, y0, pixel_mm, kvp, meta):
         self.hu, self.z, self.x0, self.y0 = hu, z, x0, y0
         self.pixel_mm, self.kvp, self.meta = pixel_mm, kvp, meta
@@ -44,8 +38,14 @@ class CTAC:
                 f"step {self.dz:.4f} mm")
 
 
+LPS_STEP_SIGN = np.array([-1.0, -1.0, 1.0])
+
+
 def load(path: str) -> CTAC:
-    """Read one CT series directory."""
+    path = str(path)
+    if os.path.isfile(path):
+        return load_nifti(path)
+
     import pydicom
 
     ds = []
@@ -88,12 +88,46 @@ def load(path: str) -> CTAC:
                       "series_description": str(getattr(ds[0], "SeriesDescription", "?")),
                       "frame_of_reference_uid":
                           str(getattr(ds[0], "FrameOfReferenceUID", "")),
-                      "num_slices": len(ds)})
+                      "num_slices": len(ds), "format": "dicom"})
+
+
+def load_nifti(path: str) -> CTAC:
+    from . import nifti
+
+    arr, aff = nifti.read(path)
+    cols = np.abs(aff[:3, :3])
+    world = cols.argmax(axis=0)
+    if (sorted(world.tolist()) != [0, 1, 2]
+            or np.any(cols.sum(axis=0) - cols.max(axis=0) > 1e-4 * cols.max(axis=0))):
+        raise SystemExit(f"error: {path} is tilted or oblique (affine\n{aff[:3, :3]});"
+                         f" resample it onto the scanner axes first")
+    order = [int(np.flatnonzero(world == w)[0]) for w in range(3)]
+    vol = np.transpose(np.asarray(arr, dtype=np.float32), order)
+    step = np.array([aff[w, order[w]] for w in range(3)])
+    corner = aff[:3, 3].copy()
+    for w in range(3):
+        if np.sign(step[w]) != LPS_STEP_SIGN[w]:
+            vol = np.flip(vol, axis=w)
+            corner[w] += step[w] * (vol.shape[w] - 1)
+            step[w] = -step[w]
+    px, py, dz = np.abs(step)
+    if abs(px - py) > 1e-4 * px:
+        raise SystemExit(f"error: {path} has {px:.4f} x {py:.4f} mm pixels; "
+                         f"the CT must have square pixels")
+    hu = np.ascontiguousarray(np.transpose(vol, (2, 1, 0)))
+    if hu.min() > -500.0:
+        raise SystemExit(f"error: {path} has no air (minimum {hu.min():.1f}); "
+                         f"it does not look like a CT in HU")
+    return CTAC(hu=hu, z=corner[2] + np.arange(hu.shape[0]) * dz,
+                x0=float(-corner[0]), y0=float(-corner[1]), pixel_mm=float(px),
+                kvp=120.0,
+                meta={"path": path, "series_description": os.path.basename(path),
+                      "frame_of_reference_uid": "", "num_slices": hu.shape[0],
+                      "format": "nifti"})
 
 
 def mu_map(ct: CTAC, table_position_mm: float, xy: int, dr_mm: float,
            edge_tol_planes: float = 1.5) -> np.ndarray:
-    """The bed's mu-map in 1/cm, as `(47, xy, xy)` in the image's `(plane, y, x)` order."""
     from scipy.ndimage import map_coordinates
 
     vy = float(dr_mm)

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""One command: raw sinogram and CT series to randoms, scatter, sensitivity and dead time."""
 from __future__ import annotations
 
 import argparse
@@ -21,7 +20,6 @@ TOF_OUTPUT = "scatter_tof.f32"
 
 
 def raw_header(raw):
-    """Table position and related fields, straight from the RDF header."""
     out = container.rdf_info(raw)
     info = {}
     for key, pat in (("table_position_mm", r"table_position_mm\s*:\s*(-?[\d.]+)"),
@@ -46,8 +44,30 @@ def raw_header(raw):
     return info
 
 
+def ct_mount(ct):
+    if os.path.isfile(ct):
+        return (os.path.dirname(ct), "/ct", "ro"), "/ct/" + os.path.basename(ct), True
+    return (ct, "/ct", "ro"), "/ct", False
+
+
+def exam_frame_of_reference(raw):
+    d, name = os.path.dirname(raw), os.path.basename(raw)
+    p = container.python(["/opt/custom_tool/ge_rdf_tool.py", "info", "--json",
+                          "/raw/" + name],
+                         mounts=[(d, "/raw", "ro")], capture=True, check=False,
+                         verbose=False)
+    try:
+        uid = json.loads(p.stdout[p.stdout.find("{"):]).get("sop_instance_uid")
+    except ValueError:
+        uid = None
+    if not uid:
+        raise SystemExit("error: could not read sop_instance_uid from %s; a NIfTI CT "
+                         "needs it for the PIFA frame_of_reference\n%s"
+                         % (raw, (p.stderr or p.stdout)[:1000]))
+    return uid
+
+
 def resolve_norm(norm_cal_uid, raw):
-    """Find the norm scan this exam declares."""
     if not norm_cal_uid:
         return None
     got = container.cal_tags(norm_cal_uid, "3dnorm",
@@ -83,7 +103,6 @@ def resolve_norm(norm_cal_uid, raw):
 
 
 def bundled_source(record):
-    """The (0017,1007) tag of a `.3dnorm` kept in `vendor/cal/`, or an empty string."""
     d, name = os.path.dirname(record), os.path.basename(record)
     code = ("import json,pydicom\n"
             "d=pydicom.dcmread('/cal/%s', force=True)\n"
@@ -98,7 +117,6 @@ def bundled_source(record):
 
 
 def write_job(dst, emission, transmission, normalization):
-    """Copy the vendor's XR job, replacing only the three input paths."""
     swaps = {"inputEmissionFileName[0]": emission,
              "inputTransmissionFileName[0]": transmission,
              "normalizationSinogramFile": normalization}
@@ -119,9 +137,12 @@ def write_job(dst, emission, transmission, normalization):
 
 def main():
     ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+        description="One command: raw sinogram and CT (DICOM series or NIfTI) to "
+                    "randoms, scatter, sensitivity and dead time.",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--raw", required=True, help="emission SINO* (one bed)")
-    ap.add_argument("--ct", required=True, help="CT DICOM series directory")
+    ap.add_argument("--ct", required=True,
+                    help="CT: a DICOM series directory or a .nii/.nii.gz file")
     ap.add_argument("--norm", help="normalisation SINO*. Normally unnecessary: "
                                    "the exam's own header names its norm cal "
                                    "and that is resolved automatically.")
@@ -181,11 +202,14 @@ def main():
               % selftest_norm, file=sys.stderr)
 
     print("== CT -> mu-map -> PIFA")
+    ct_mnt, ct_in, ct_nifti = ct_mount(ct)
+    forf = exam_frame_of_reference(raw) if ct_nifti else None
     container.python(
-        ["/d710/vendor/ct_to_pifa.py", "/ct", "/out/data/mu.pifa",
-         "--table-location", table],
+        ["/d710/vendor/ct_to_pifa.py", ct_in, "/out/data/mu.pifa",
+         "--table-location", table]
+        + (["--frame-of-reference", forf] if forf else []),
         mounts=container.d710_mounts(os.path.dirname(HERE))
-        + [(ct, "/ct", "ro"), (out, "/out", "rw")])
+        + [ct_mnt, (out, "/out", "rw")])
     pifa = os.path.join(data, "mu.pifa")
     if not os.path.exists(pifa):
         raise SystemExit("error: ct_to_pifa wrote no %s" % pifa)
@@ -223,6 +247,8 @@ def main():
 
     with open(os.path.join(out, "estimate.json"), "w") as f:
         json.dump({"raw": raw, "ct": ct,
+                   "ct_format": "nifti" if ct_nifti else "dicom",
+                   "pifa_frame_of_reference": forf or "from the CT series",
                    "norm": norm or selftest_norm,
                    "norm_source": ("--norm" if args.norm else
                                    "resolved from norm_cal_uid" if norm else

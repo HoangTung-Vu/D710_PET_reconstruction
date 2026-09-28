@@ -46,6 +46,11 @@ COMMANDS
   d710 lowdose  --case N --drf D                 a thinned copy of a case
                 [--mode low-count|low-dose]      shorter scan / less activity
                 [--sinogram derived|binomial]    -> <case>/raw_simulation/
+  d710 simulate phantom|gate|pp|compare --case N [--bed n]
+                                                 simulated list mode + sinogram
+                                                 from the case's CT and PET
+                                                 (GATE 10 or parallelproj);
+                                                 see simulation/README.md
   d710 export   --case N [--format nifti|dicom] [--lm]
                                                  Bq/mL and SUV -> NIfTI/DICOM
                                                  --lm reads recon_lm.npz
@@ -54,7 +59,8 @@ COMMANDS
 
 TWO RUNTIMES, AND A THIRD KEPT ONLY FOR COMPARISON
   d710:full        decode estimate tostir exam read shell -- GE's own software
-  host python      attn lm lowdose export -- PyTomography and parallelproj
+  host python      attn lm lowdose simulate export -- PyTomography,
+                   parallelproj and opengate
   sirf-local:0.1   osem, and nothing else.  The sinogram path is kept for
                    comparison against the list-mode one; it needs docker and
                    ./d710_isolate_stir.sh, and the workstation never runs it.
@@ -406,6 +412,15 @@ lowdose)
     O="$(resolve_out)"
     exec env D710_OUT="$O" PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}" \
         "$PY" -u -m lowdose --case "$CASE" "${REST[@]+"${REST[@]}"}"
+    ;;
+
+simulate)
+    need_case; need_py "numpy, scipy, nibabel, parallelproj" \
+        "simulate runs in the host environment (and 'simulate gate' needs opengate):"
+    O="$(resolve_out)"
+    exec env D710_OUT="$O" PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}" \
+        "$PY" -u -m simulation "${REST[@]+"${REST[@]}"}" --case "$CASE" \
+        ${BED:+--beds "$BED"} ${CT:+--ct "$CT"}
     ;;
 
 export)

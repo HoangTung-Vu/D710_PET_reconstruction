@@ -23,3 +23,8 @@ __pycache__/
 .pytest_cache/
 .ipynb_checkpoints/
 .venv/
+graphify-out/
+# Geant4 datasets copied in for the GATE image build (2.2 GB); see
+# simulation/gate/Dockerfile.
+simulation/gate/geant4_data/*
+!simulation/gate/geant4_data/.keep

@@ -126,31 +126,46 @@ def load_nifti(path: str) -> CTAC:
                       "format": "nifti"})
 
 
-def mu_map(ct: CTAC, table_position_mm: float, xy: int, dr_mm: float,
-           edge_tol_planes: float = 1.5) -> np.ndarray:
+def resample_to_bed(vol, z, x0: float, y0: float, pixel_mm: float,
+                    table_position_mm: float, xy: int, dr_mm: float,
+                    first_plane: int = 0, n_planes: int = PLANES_PER_BED,
+                    cval: float = -1000.0, edge_tol_planes: float = 1.5,
+                    what: str = "CT", clamp_edges: bool = False) -> np.ndarray:
     from scipy.ndimage import map_coordinates
 
+    z = np.asarray(z, np.float64)
+    dz = float(np.diff(z).mean())
     vy = float(dr_mm)
-    zc = table_position_mm + np.arange(PLANES_PER_BED) * PLANE_MM
-    gz = (zc - ct.z[0]) / ct.dz
-    out_mm = max(ct.z[0] - zc.min(), zc.max() - ct.z[-1], 0.0)
-    over = max(out_mm - ct.dz / 2, 0.0) / PLANE_MM
+    zc = table_position_mm + np.arange(first_plane, first_plane + n_planes) * PLANE_MM
+    gz = (zc - z[0]) / dz
+    own = (np.arange(first_plane, first_plane + n_planes) >= 0) & \
+        (np.arange(first_plane, first_plane + n_planes) < PLANES_PER_BED)
+    zo = zc[own]
+    out_mm = max(z[0] - zo.min(), zo.max() - z[-1], 0.0)
+    over = max(out_mm - dz / 2, 0.0) / PLANE_MM
     if over > edge_tol_planes:
         raise SystemExit(
-            f"error: bed at {table_position_mm:.2f} mm needs CT z "
-            f"{zc[0]:.1f}..{zc[-1]:.1f} mm, the series only covers "
-            f"{ct.z[0]:.1f}..{ct.z[-1]:.1f} mm "
+            f"error: bed at {table_position_mm:.2f} mm needs {what} z "
+            f"{zo[0]:.1f}..{zo[-1]:.1f} mm, the series only covers "
+            f"{z[0]:.1f}..{z[-1]:.1f} mm "
             f"(overhang {out_mm:.1f} mm = {over:.2f} planes > tolerance "
             f"{edge_tol_planes})")
     if over > 0:
-        print(f"  warning: bed {table_position_mm:.2f} mm overhangs the CT by "
-              f"{out_mm:.1f} mm; clamping to the outermost CT slice")
-        gz = np.clip(gz, 0.0, len(ct.z) - 1.0)
+        print(f"  warning: bed {table_position_mm:.2f} mm overhangs the {what} by "
+              f"{out_mm:.1f} mm; clamping to the outermost {what} slice")
+    if over > 0 or clamp_edges:
+        gz[own] = np.clip(gz[own], 0.0, len(z) - 1.0)
 
     c = (np.arange(xy) - xy // 2) * vy
-    g = np.meshgrid(gz, (c - ct.y0) / ct.pixel_mm, (c - ct.x0) / ct.pixel_mm,
-                    indexing="ij")
-    hu = map_coordinates(ct.hu, [x.ravel() for x in g], order=1,
-                         mode="constant", cval=-1000.0).reshape(PLANES_PER_BED, xy, xy)
+    g = np.meshgrid(gz, (c - y0) / pixel_mm, (c - x0) / pixel_mm, indexing="ij")
+    return map_coordinates(vol, [x.ravel() for x in g], order=1,
+                           mode="constant", cval=cval).reshape(n_planes, xy, xy)
+
+
+def mu_map(ct: CTAC, table_position_mm: float, xy: int, dr_mm: float,
+           edge_tol_planes: float = 1.5) -> np.ndarray:
+    hu = resample_to_bed(ct.hu, ct.z, ct.x0, ct.y0, ct.pixel_mm,
+                         table_position_mm, xy, dr_mm,
+                         edge_tol_planes=edge_tol_planes)
     mu = hu_to_mu(hu, ct.kvp) * 10.0
     return np.ascontiguousarray(to_radiological(mu), dtype=np.float32)

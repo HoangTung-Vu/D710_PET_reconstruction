@@ -33,6 +33,13 @@ changes, then runs the real `d710`:
 
 WHAT RUNS WHERE
   decode tostir read shell   apptainer and the d710 .sif; nothing else.
+  simulate gate              apptainer and a SECOND .sif, d710:gate: the
+                             opengate wheels need glibc >= 2.34 and this host
+                             has 2.31, so Geant4 runs in a container while the
+                             conversion afterwards stays on the host.  Build it
+                             with simulation/gate/Dockerfile (instructions in
+                             the file, and in the error if it is missing).
+  simulate phantom|pp|compare   no container: conda activate petct_recon.
   estimate                   the same, plus --fakeroot, because GE's pet_recon
                              opens /usr/PET/systemConfig/cmcfg.xml read-write
                              and docker ran that step as root. `doctor` checks
@@ -59,6 +66,9 @@ $D710_OUT/sif and ~/sif.
 
 ADDITIONAL ENVIRONMENT, beyond everything ./d710 --help lists:
   D710_SIF                 the image
+  D710_GATE_SIF            the GATE image, for `simulate gate`
+  D710_GATE_RUNNER         how to start Geant4, if the default
+                           `apptainer exec --bind ... <sif> python` is wrong
   D710_SIF_DIR             where to look for it
   D710_APPTAINER_BIN       the apptainer binary, if not on $PATH
   D710_APPTAINER_FAKEROOT  1 / 0 / auto           (see apptainer_shim/docker)
@@ -73,6 +83,10 @@ USAGE
         ;;
     decode|estimate|tostir|exam|read|shell)
         _apt_need "d710:full" "${D710_SIF:-}" D710_SIF ;;
+    simulate)
+        # Only the Geant4 half needs a container, and only `simulate gate`
+        # starts it.  phantom, pp and compare are host python.
+        [[ "${2:-}" == gate ]] && _apt_need_gate ;;
     osem)
         echo ">> note: 'osem' is the sinogram path and still needs SIRF, which" >&2
         echo ">>       is not on this machine.  It is kept for comparison only:" >&2

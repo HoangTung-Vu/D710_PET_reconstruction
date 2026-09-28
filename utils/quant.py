@@ -19,14 +19,25 @@ def k_export(lm: bool = False):
 
 
 def lowdose_k_scale(case) -> float:
-    """`1/f` for a case built by `d710 lowdose`, otherwise 1."""
+    """`1/f` for a case built by `d710 lowdose` or `d710 simulate`, otherwise 1.
+
+    A simulated case records `T_real / T_sim` in `simulation.json`; it is
+    `null` when its beds were simulated for different lengths of time, which
+    one K cannot serve.
+    """
     import json
 
-    p = case.root / "lowdose.json"
-    if not p.exists():
-        return 1.0
-    with open(p) as f:
-        return float(json.load(f)["k_scale"])
+    for name in ("lowdose.json", "simulation.json"):
+        p = case.root / name
+        if not p.exists():
+            continue
+        with open(p) as f:
+            k = json.load(f).get("k_scale")
+        if k is None:
+            raise SystemExit(f"error: {p} has no single k_scale -- its beds were "
+                             "simulated for different lengths of time")
+        return float(k)
+    return 1.0
 
 
 def dose_bq(hdr) -> float:

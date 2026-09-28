@@ -1,5 +1,26 @@
 # Tham số đọc từ `pet_recon` **lúc chạy**
 
+> ## ⚠ ĐÍNH CHÍNH 2026-09-08 — hai mục dưới đây SAI
+>
+> Đọc `presentation/00-petsw-verification.md` §2 trước khi dùng §1 của file này.
+>
+> 1. **`k₁`, `k₂` KHÔNG phải `normDeadtimeSlopeInnerRing/OuterRing` (4.74/4.57).**
+>    Kernel lấy `m_pDeadtimeStruct+0x78` = `intCorrFactor3d` (= 1.85) và
+>    `+0x80` = `timingCorrFactor3d` (= 0.20); `+0x7c` = `muxCorrFactor3d` (0.0)
+>    được truyền vào nhưng **không dùng**. Cặp 4.74/4.57 đi vào
+>    `sharcApNormDeadtimeFactors` @0x4ed860, gọi từ `CAL2d::CreateTaskList`
+>    (CAL2d.cpp:176) — nhánh **hiệu chuẩn 2D**, một phép khác hẳn.
+> 2. **Scalar `(a+b+c)/a` KHÔNG phải hằng số cấu hình.** `a,b,c` là
+>    `exSorterInputCoincCount`, `exSorterOverrunLosses`,
+>    `exCoincProcessorLosses` — ba `double` do `rdfReadDeadTime` ghi vào từ
+>    **header RDF của chính ca chụp**, không phải
+>    `dt_3d{int,mux,timing}CorrectionConstant`. Nên **1.1081 không phải con số
+>    kernel tính ra**.
+>
+> Ngoài ra: `A` và `B` là **hai mảng khác nhau** (`dt_3dpileUp_factors` theo
+> trục ring, và bảng 6×9 `dt_3dcrystalpileUp_factors` trong block), không phải
+> một bảng đọc hai lần.
+
 Nguồn: `apcfg_live.txt`, dump bằng `probes/dump_cfg.gdb` trong container `d710`,
 sau khi `sharcCmpOpenDataFiles(&IgJobReq)` trả 0 trên job XR thật
 (`selftest_kh_3dir.job` = D710).

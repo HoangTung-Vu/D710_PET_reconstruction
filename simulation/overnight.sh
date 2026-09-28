@@ -5,6 +5,9 @@
 #   export D710_PYTHON=~/miniconda3/envs/petct_recon/bin/python
 #   nohup D710/simulation/overnight.sh > ~/overnight_nohup.out 2>&1 &
 #
+# On the workstation add D710_CLI=<repo>/d710_apptainer, so that GATE runs in
+# its container (see $D710_GATE_SIF).
+#
 # Keep that redirect: anything the script says before its own log exists (a
 # missing D710_OUT, say) goes only there.
 #
@@ -33,7 +36,11 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-D710="$HERE/d710"
+# On a host that runs GATE in a container -- the workstation, whose glibc is
+# too old for the opengate wheels -- point this at ./d710_apptainer, which
+# sets D710_GATE_RUNNER for the Geant4 step:
+#     D710_CLI=$HERE/d710_apptainer BEDS=7 ... simulation/overnight.sh
+D710="${D710_CLI:-$HERE/d710}"
 
 CASE="${CASE:-fdg26081008}"
 LOWCOUNT="${LOWCOUNT:-${CASE}_lowcount_time}"

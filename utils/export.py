@@ -1,4 +1,3 @@
-"""Export of the reconstructed PET volume to NIfTI and DICOM."""
 from __future__ import annotations
 
 import datetime as dt
@@ -14,17 +13,14 @@ UID_ROOT = "1.2.826.0.1.3680043.10.1338"
 
 
 def to_dicom_order(vol: np.ndarray) -> np.ndarray:
-    """STIR image `(z, y, x)` to DICOM patient order, flipping y only."""
     return np.ascontiguousarray(to_radiological(vol))
 
 
 def grid_origin(nx: int, ny: int, vx: float, vy: float) -> tuple[float, float]:
-    """DICOM (x, y) coordinate of voxel `[0, 0]` within a slice."""
     return -(nx // 2) * vx, -(ny // 2) * vy
 
 
 def write_nifti(vol, path, vx, vy, vz, z0):
-    """Write a `.nii.gz`."""
     import nibabel as nib
 
     d = to_dicom_order(vol)
@@ -48,7 +44,6 @@ def _dcm_dt(epoch: float) -> tuple[str, str]:
 
 def write_dicom(vol, out_dir, hdr, vx, vy, vz, z0, series_desc="OSEM SIRF BQML",
                 units="BQML", series_number=901):
-    """Write one PET DICOM series, one file per slice."""
     from pydicom.dataset import Dataset, FileDataset
     from pydicom.uid import ExplicitVRLittleEndian, generate_uid
 
@@ -142,7 +137,6 @@ def write_dicom(vol, out_dir, hdr, vx, vy, vz, z0, series_desc="OSEM SIRF BQML",
 
 
 def main(argv=None) -> int:
-    """Entry point for `python3 -m utils.export`."""
     import argparse
 
     from . import quant
@@ -156,20 +150,26 @@ def main(argv=None) -> int:
     ap.add_argument("--format", choices=("nifti", "dicom", "both"), default="both")
     ap.add_argument("--K", type=float,
                     help="(Bq/mL)/(count/voxel), at the GE time reference. "
-                         "Default: export's own K ($D710_K[_LM] or "
-                         "quant.K_EXPORT[_LM]); failing that, the exam's own "
-                         "WCC; failing that, the dose-based UPPER BOUND.")
-    ap.add_argument("--lm", action="store_true",
-                    help="export recon_lm.npz (d710 lm recon) instead of recon.npz")
+                         "Default: export's own K ($D710_K[_LM|_SINO] or "
+                         "quant.K_EXPORT[_LM|_SINO]); failing that, the exam's "
+                         "own WCC; failing that, the dose-based UPPER BOUND.")
+    which = ap.add_mutually_exclusive_group()
+    which.add_argument("--lm", action="store_true",
+                       help="export recon_lm.npz (d710 lm recon) instead of "
+                            "recon.npz")
+    which.add_argument("--sino", action="store_true",
+                       help="export recon_sino.npz (d710 sino) instead of "
+                            "recon.npz")
     args = ap.parse_args(argv)
 
     C = get_case(args.case, args.out)
-    src = C.recon_lm if args.lm else C.recon
+    src = C.recon_lm if args.lm else C.recon_sino if args.sino else C.recon
     if not src.exists():
         how = ("d710 lm recon --case %s" % C.name if args.lm else
-               "./d710_isolate_stir.sh osem --case %s  (the sinogram path, "
-               "docker only)\n  or, for the list-mode one, which is the "
-               "default:  d710 lm recon --case %s && d710 export --lm --case %s"
+               "d710 sino --case %s" % C.name if args.sino else
+               "./d710_isolate_stir.sh osem --case %s  (the SIRF sinogram "
+               "path, docker only)\n  or, without SIRF:  d710 sino --case %s "
+               "&& d710 export --sino --case %s"
                % (C.name, C.name, C.name))
         raise SystemExit("error: %s does not exist -- run:\n  %s" % (src, how))
 
@@ -189,12 +189,12 @@ def main(argv=None) -> int:
     if K is not None:
         print(f"K from --K = {K:,.2f}")
     if K is None:
-        K = quant.k_export(lm=args.lm)
+        K = quant.k_export(lm=args.lm, sino=args.sino)
         if K is not None:
-            var = "D710_K_LM" if args.lm else "D710_K"
-            const = "quant.K_EXPORT_LM" if args.lm else "quant.K_EXPORT"
+            var, const = quant.k_source(lm=args.lm, sino=args.sino)
             print(f"export's own K = {K:,.2f}"
-                  + (f"   ({var})" if os.environ.get(var) else f"   ({const})"))
+                  + (f"   ({var})" if os.environ.get(var)
+                     else f"   (quant.{const})"))
     if K is None:
         f = quant.wcc_activity_factor(C, ref_bed)
         if f is not None:
@@ -214,7 +214,7 @@ def main(argv=None) -> int:
 
     r = quant.report(vol, K, hdr, vox, dose=dose)
 
-    tag = "_lm" if args.lm else ""
+    tag = "_lm" if args.lm else "_sino" if args.sino else ""
     C.export.mkdir(parents=True, exist_ok=True)
     if args.format in ("nifti", "both"):
         for name, arr in (("bqml", r["bqml"]), ("suvbw", r["suv"])):
@@ -223,11 +223,13 @@ def main(argv=None) -> int:
             print(f"wrote {p}")
     if args.format in ("dicom", "both"):
         n_it, n_sub = int(z["n_iterations"]), int(z["n_subsets"])
-        engine = "LM-OSEM PyTomography" if args.lm else "OSEM SIRF"
+        engine = ("LM-OSEM PyTomography" if args.lm else
+                  "OSEM PyTomography" if args.sino else "OSEM SIRF")
         paths = write_dicom(r["bqml"], str(C.export / f"dicom{tag}"), hdr,
                             vox[2], vox[1], vox[0], z0,
                             series_desc=f"{engine} {n_it}x{n_sub} BQML",
-                            series_number=902 if args.lm else 901)
+                            series_number=(902 if args.lm else
+                                           903 if args.sino else 901))
         print(f"wrote {len(paths)} DICOM files -> {C.export / ('dicom' + tag)}")
         print("   Units=BQML + dose + weight + DecayCorrection=START -> "
               "the viewer computes SUV itself;\n   FrameOfReferenceUID = the "

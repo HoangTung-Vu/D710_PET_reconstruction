@@ -1,17 +1,26 @@
-"""Conversion from counts per voxel to Bq/mL and SUV."""
-
 from __future__ import annotations
 
 import os
 
 import numpy as np
 
-from .scanner import K_EXPORT, K_EXPORT_LM, WCC_UNIT_SCALE
+from .scanner import K_EXPORT, K_EXPORT_LM, K_EXPORT_SINO, WCC_UNIT_SCALE
 
 
-def k_export(lm: bool = False):
-    """Export's own `K`: the environment variable, then the `scanner.py` constant, then `None`."""
-    var, const = (("D710_K_LM", K_EXPORT_LM) if lm else ("D710_K", K_EXPORT))
+def k_source(lm: bool = False, sino: bool = False) -> tuple[str, str]:
+    if lm and sino:
+        raise ValueError("a reconstruction is list-mode or sinogram, not both")
+    if lm:
+        return "D710_K_LM", "K_EXPORT_LM"
+    if sino:
+        return "D710_K_SINO", "K_EXPORT_SINO"
+    return "D710_K", "K_EXPORT"
+
+
+def k_export(lm: bool = False, sino: bool = False):
+    var, name = k_source(lm, sino)
+    const = {"K_EXPORT": K_EXPORT, "K_EXPORT_LM": K_EXPORT_LM,
+             "K_EXPORT_SINO": K_EXPORT_SINO}[name]
     raw = os.environ.get(var)
     if raw:
         return float(raw)
@@ -19,12 +28,6 @@ def k_export(lm: bool = False):
 
 
 def lowdose_k_scale(case) -> float:
-    """`1/f` for a case built by `d710 lowdose` or `d710 simulate`, otherwise 1.
-
-    A simulated case records `T_real / T_sim` in `simulation.json`; it is
-    `null` when its beds were simulated for different lengths of time, which
-    one K cannot serve.
-    """
     import json
 
     for name in ("lowdose.json", "simulation.json"):
@@ -41,17 +44,14 @@ def lowdose_k_scale(case) -> float:
 
 
 def dose_bq(hdr) -> float:
-    """Dose that entered the patient: injected minus syringe residual, in Bq."""
     return (hdr["dose_mbq"] - hdr.get("residual_dose_mbq", 0.0)) * 1e6
 
 
 def voxel_ml(vox) -> float:
-    """`(z, y, x)` in mm to a volume in mL."""
     return float(vox[0] * vox[1] * vox[2]) / 1000.0
 
 
 def scan_start_factor(case, beds) -> tuple[float, int, dict]:
-    """`(exp(-lambda*dt), reference bed, its header)`: our time reference to GE's."""
     from osem.stitch import injection_epoch
 
     hdrs = {n: case.header(n) for n in beds}
@@ -63,7 +63,6 @@ def scan_start_factor(case, beds) -> tuple[float, int, dict]:
 
 
 def wcc_activity_factor(case, bed: int, verbose: bool = True):
-    """This scanner's own `hrActivityFactor`, or `None`."""
     from . import container, terms
 
     try:
@@ -94,39 +93,32 @@ def wcc_activity_factor(case, bed: int, verbose: bool = True):
 
 
 def k_from_wcc(factor):
-    """`hrActivityFactor` to `K`, via the assumed unit convention."""
     return None if factor is None else float(factor) * WCC_UNIT_SCALE
 
 
 def k_from_dose(vol, vox, dose: float) -> float:
-    """An upper bound on `K`, assuming the whole dose is inside the FOV."""
     total = float(np.asarray(vol).sum(dtype=np.float64))
     return dose / (total * voxel_ml(vox))
 
 
 def body_mask(vol, frac: float = 0.02, pct: float = 99.9):
-    """Body mask obtained by percentile threshold rather than an absolute value."""
     v = np.asarray(vol)
     return v > frac * np.percentile(v, pct)
 
 
 def suv_bw(bqml, dose: float, weight_kg: float):
-    """Body-weight SUV."""
     return np.asarray(bqml) / (dose / (weight_kg * 1000.0))
 
 
 def bsa_m2(weight_kg: float, height_m: float) -> float:
-    """Du Bois body-surface area: 0.007184 * W(kg)^0.425 * H(cm)^0.725."""
     return 0.007184 * weight_kg ** 0.425 * (height_m * 100) ** 0.725
 
 
 def suv_bsa(bqml, dose: float, weight_kg: float, height_m: float):
-    """Body-surface-area SUV."""
     return np.asarray(bqml) * (bsa_m2(weight_kg, height_m) * 1e4) / dose
 
 
 def suv_table(bqml, mask, hdr, out=print) -> dict:
-    """SUVbw, and SUVbsa where height is known: median, p90, p99 and maximum inside the body."""
     dose = dose_bq(hdr)
     w = hdr["patient_weight_kg"]
     h = hdr.get("patient_height_m") or 0.0
@@ -149,7 +141,6 @@ def suv_table(bqml, mask, hdr, out=print) -> dict:
 
 
 def report(vol, K: float, hdr, vox, dose: float | None = None, out=print) -> dict:
-    """Apply `K`, print the numbers it depends on, and return `{bqml, suv, ...}`."""
     dose = dose_bq(hdr) if dose is None else float(dose)
     vml = voxel_ml(vox)
     bqml = np.asarray(vol) * K

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Compare a reconstruction with GE's own BQML series, and measure `K`."""
 from __future__ import annotations
 
 import argparse
@@ -18,7 +17,6 @@ from utils.paths import case as get_case
 
 
 def read_vendor(d):
-    """Read a PET DICOM series as `(volume Bq/mL [z, y, x], z, x0, y0, px, py, meta)`."""
     import pydicom
 
     sl = []
@@ -49,7 +47,6 @@ def read_vendor(d):
 
 
 def resample_to(vol, z0, vox, zt, x0t, y0t, pxt, pyt, nzt, nyt, nxt):
-    """Resample a STIR-order volume of counts per voxel onto the target grid, in DICOM order."""
     from scipy.ndimage import map_coordinates
 
     d = np.ascontiguousarray(to_radiological(vol))
@@ -74,8 +71,12 @@ def main(argv=None) -> int:
     ap.add_argument("--case", required=True)
     ap.add_argument("--vendor", required=True, help="thư mục series PET BQML của GE")
     ap.add_argument("--out", help="gốc đầu ra; mặc định $D710_OUT")
-    ap.add_argument("--lm", action="store_true",
-                    help="đo trên recon_lm.npz (list-mode) thay vì recon.npz")
+    which = ap.add_mutually_exclusive_group()
+    which.add_argument("--lm", action="store_true",
+                       help="đo trên recon_lm.npz (list-mode) thay vì recon.npz")
+    which.add_argument("--sino", action="store_true",
+                       help="đo trên recon_sino.npz (d710 sino, PyTomography) "
+                            "thay vì recon.npz")
     ap.add_argument("--thresh", type=float, default=1000.0,
                     help="ngưỡng Bq/mL để lấy voxel vào phép khớp (mặc định 1000)")
     ap.add_argument("--save", help="ghi thể tích đã căn lưới ra .npz để xem sau")
@@ -84,12 +85,13 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     C = get_case(args.case, args.out)
-    src = C.recon_lm if args.lm else C.recon
-    path = "lm" if args.lm else "sino"
+    src = C.recon_lm if args.lm else C.recon_sino if args.sino else C.recon
+    path = "lm" if args.lm else "sino_pyt" if args.sino else "sino"
+    cmd = "lm recon" if args.lm else "sino" if args.sino else "osem"
+    flag = " --lm" if args.lm else " --sino" if args.sino else ""
     if not src.exists():
         raise SystemExit(
-            f"error: chưa có {src} — chạy "
-            f"`d710 {'lm recon' if args.lm else 'osem'} --case {C.name}` trước")
+            f"error: chưa có {src} — chạy `d710 {cmd} --case {C.name}` trước")
 
     z = np.load(src, allow_pickle=False)
     vol, z0, vox = z["vol"], float(z["z0"]), [float(v) for v in z["vox"]]
@@ -147,8 +149,7 @@ def main(argv=None) -> int:
     resid = v / (o * k_ls)
     print(f"\n  vendor/(pipeline·K): trung vị {np.median(resid):.3f}  "
           f"p05 {np.percentile(resid,5):.3f}  p95 {np.percentile(resid,95):.3f}")
-    print(f"\n  dùng:  d710 export --case {C.name}"
-          f"{' --lm' if args.lm else ''} --K {k_ls:.1f}")
+    print(f"\n  dùng:  d710 export --case {C.name}{flag} --K {k_ls:.1f}")
 
     if args.save:
         np.savez_compressed(args.save, vendor=ven, pipeline=ours,

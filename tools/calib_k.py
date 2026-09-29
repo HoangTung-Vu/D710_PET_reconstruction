@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Combine the per-case measurements of `K` into one constant per reconstruction path."""
 from __future__ import annotations
 
 import argparse
@@ -17,12 +16,13 @@ OUTLIER_PCT = 15.0
 
 MIN_R = 0.90
 
-PATHS = (("sino", "K_EXPORT", "d710 osem (sinogram, non-TOF)"),
-         ("lm", "K_EXPORT_LM", "d710 lm recon (list-mode, TOF)"))
+PATHS = (("sino", "K_EXPORT", "d710 osem (sinogram, non-TOF, SIRF)"),
+         ("lm", "K_EXPORT_LM", "d710 lm recon (list-mode, TOF)"),
+         ("sino_pyt", "K_EXPORT_SINO",
+          "d710 sino (sinogram, non-TOF, PyTomography)"))
 
 
 def load(root, cases=None) -> dict:
-    """`{path: [record, ...]}`, read from the sidecars on disk."""
     got = {p: [] for p, _, _ in PATHS}
     names = cases or sorted(d.name for d in root.iterdir() if d.is_dir())
     for name in names:
@@ -35,7 +35,6 @@ def load(root, cases=None) -> dict:
 
 
 def summarise(recs, label, out=print) -> dict | None:
-    """Print the table for one reconstruction path and return `{K, spread_pct, n_cases, ...}`."""
     out(f"\n=== {label}")
     if not recs:
         out("  (chưa có ca nào)")
@@ -111,6 +110,9 @@ def main(argv=None) -> int:
     if res["sino"] and res["lm"]:
         print(f"\nsinogram / list-mode = {res['sino']['K'] / res['lm']['K']:.3f}"
               "   [hai đường không cùng thang — đó là lý do có hai hằng số]")
+    if res["sino_pyt"] and res["sino"]:
+        print(f"sinogram PyTomography / SIRF = "
+              f"{res['sino_pyt']['K'] / res['sino']['K']:.3f}")
     return 0
 
 

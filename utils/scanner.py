@@ -53,22 +53,25 @@ MU_BONE_511 = 0.0166
 
 CARNEY_B = {80: 0.681, 100: 0.755, 120: 0.837, 140: 1.0}
 
+#==========================================================
+# Not used anymore
 WCC_UNIT_SCALE = 1e4
 
+
+#Calib K
 K_EXPORT = 66_907.5
 K_EXPORT_LM = 133_139.5
+K_EXPORT_SINO = None
 
 
 def fov_radius_mm(n_tang: int, ndet: int = NDET,
                   r_mm: float = R_MM + DOI_MM) -> float:
-    """How far off axis a LOR reaches, in mm."""
     import math
 
     return r_mm * math.sin(math.pi * (n_tang - 1) / (2 * ndet))
 
 
 def fov_mask(xy: int, n_tang: int, dr_mm: float = DR_MM):
-    """`(xy, xy)` bool, true inside `fov_radius_mm`."""
     import numpy as np
 
     y, x = np.mgrid[0:xy, 0:xy] - (xy - 1) / 2.0
@@ -76,7 +79,6 @@ def fov_mask(xy: int, n_tang: int, dr_mm: float = DR_MM):
 
 
 def sirf_grid(acq, xy: int = XY, dr_mm: float = DR_MM, out=print):
-    """A uniform image with `dr_mm` transverse voxels, in either SIRF build."""
     x = acq.create_uniform_image(1.0, xy)
     got = float(x.voxel_sizes()[1])
     if abs(got - dr_mm) <= 1e-3:

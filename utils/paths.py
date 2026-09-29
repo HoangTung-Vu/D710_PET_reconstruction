@@ -1,5 +1,3 @@
-"""The single place that knows where run-time output goes."""
-
 from __future__ import annotations
 
 import json
@@ -13,8 +11,6 @@ _BED_RE = re.compile(r"bed(\d+)$")
 
 
 class NoOutputRoot(SystemExit):
-    """Raised when there is nowhere to write."""
-
     def __init__(self) -> None:
         super().__init__(
             "error: no idea where to write the output.\n"
@@ -24,7 +20,6 @@ class NoOutputRoot(SystemExit):
 
 
 def out_root(explicit: str | os.PathLike | None = None) -> Path:
-    """The output root: `--out`, then `$D710_OUT`, then an error."""
     p = explicit or os.environ.get("D710_OUT")
     if not p:
         raise NoOutputRoot()
@@ -32,8 +27,6 @@ def out_root(explicit: str | os.PathLike | None = None) -> Path:
 
 
 class Case:
-    """One exam and all of its directories."""
-
     def __init__(self, name: str, root: Path) -> None:
         self.name = name
         self.root = root / name
@@ -80,6 +73,10 @@ class Case:
     def recon_lm(self) -> Path:
         return self.root / "recon_lm.npz"
 
+    @property
+    def recon_sino(self) -> Path:
+        return self.root / "recon_sino.npz"
+
     def vendor_bed(self, n: int) -> Path:
         return self.vendor / f"bed{n}"
 
@@ -113,12 +110,10 @@ class Case:
 
 
 def case(name: str, out: str | os.PathLike | None = None) -> Case:
-    """Case `name` under `--out` or `$D710_OUT`."""
     return Case(name, out_root(out))
 
 
 def cases(out: str | os.PathLike | None = None) -> list[Case]:
-    """Every case already present under the output root."""
     root = out_root(out)
     if not root.is_dir():
         return []

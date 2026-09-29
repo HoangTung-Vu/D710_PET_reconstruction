@@ -39,6 +39,8 @@ COMMANDS
                 [--listmode --lists D]           forwarded to decode, so one
                                                  exam feeds both paths
   d710 attn     --case N [--device cuda]         CT -> work/bed<n>/attn.hs
+  d710 sino     --case N [--beds ...] [--iters]  OSEM on sinograms, non-TOF
+                                                 (PyTomography + parallelproj)
   d710 osem     --case N [--beds ...] [--iters]  OSEM on sinograms (SIRF; see
                                                  ./d710_isolate_stir.sh)
   d710 lm       check|tofcheck|recon --case N    list-mode OSEM (PyTomography)
@@ -52,19 +54,20 @@ COMMANDS
                                                  from the case's CT and PET
                                                  (GATE 10 or parallelproj);
                                                  see simulation/README.md
-  d710 export   --case N [--format nifti|dicom] [--lm]
+  d710 export   --case N [--format nifti|dicom] [--lm|--sino]
                                                  Bq/mL and SUV -> NIfTI/DICOM
-                                                 --lm reads recon_lm.npz
+                                                 --lm reads recon_lm.npz,
+                                                 --sino recon_sino.npz
   d710 read     <file.f32>                       read one vendor dump
   d710 shell    [--case N]                       a shell inside the container
 
 TWO RUNTIMES, AND A THIRD KEPT ONLY FOR COMPARISON
   d710:full        decode estimate tostir exam read shell -- GE's own software
-  host python      attn lm lowdose simulate export -- PyTomography,
+  host python      attn sino lm lowdose simulate export -- PyTomography,
                    parallelproj and opengate
-  sirf-local:0.1   osem, and nothing else.  The sinogram path is kept for
-                   comparison against the list-mode one; it needs docker and
-                   ./d710_isolate_stir.sh, and the workstation never runs it.
+  sirf-local:0.1   osem, and nothing else.  `d710 sino` is the same sinogram
+                   OSEM without SIRF and is replacing it; osem needs docker
+                   and ./d710_isolate_stir.sh, and the workstation never runs it.
 
 The reconstruction the project uses is `d710 lm`. Nothing on that path imports
 sirf or stir, attenuation included: `attn` projects the CT mu-map with
@@ -206,7 +209,7 @@ need_py() {
       conda activate ${env}
   or point straight at one that can:
       export D710_PYTHON=/path/to/python
-  (only \`attn\`, \`osem\`, \`export\`, \`lm\` and \`lowdose\` need more than the
+  (only \`attn\`, \`sino\`, \`osem\`, \`export\`, \`lm\` and \`lowdose\` need more than the
   standard library; decode/estimate/tostir/exam run on any python3.)"
 }
 
@@ -385,6 +388,15 @@ osem)
     O="$(resolve_out)"
     exec env D710_OUT="$O" PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}" \
         "$PY" -u -m osem --case "$CASE" \
+        ${BED:+--beds "$BED"} ${CT:+--ct "$CT"} "${REST[@]+"${REST[@]}"}"
+    ;;
+
+sino)
+    need_case; need_py "numpy, scipy, torch, pytomography, parallelproj" \
+        "PyTomography is required (SIRF is NOT -- see sino/README.md):"
+    O="$(resolve_out)"
+    exec env D710_OUT="$O" PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}" \
+        "$PY" -u -m sino --case "$CASE" \
         ${BED:+--beds "$BED"} ${CT:+--ct "$CT"} "${REST[@]+"${REST[@]}"}"
     ;;
 

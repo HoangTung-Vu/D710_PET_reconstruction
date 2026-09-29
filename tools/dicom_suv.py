@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""One PET DICOM series in BQML to a NIfTI volume in SUVbw."""
 from __future__ import annotations
 
 import argparse
@@ -20,7 +19,6 @@ UPTAKE_MIN_OK = (5.0, 300.0)
 
 
 def read_series(d: str):
-    """`(volume Bq/mL [z, y, x], meta)`, ordered by z with the rescale applied."""
     import pydicom
 
     files = sorted(glob.glob(os.path.join(d, "*")))
@@ -77,7 +75,6 @@ def _dt(date: str, time: str) -> dt.datetime:
 
 
 def scan_and_injection(ds, which: str = "series"):
-    """`(scan time, injection time, half-life s, dose Bq, weight kg)`, all from one file."""
     date = str(getattr(ds, "SeriesDate", "") or getattr(ds, "AcquisitionDate", ""))
     tmap = {"series": "SeriesTime", "acquisition": "AcquisitionTime",
             "content": "ContentTime"}
@@ -110,7 +107,6 @@ def scan_and_injection(ds, which: str = "series"):
 
 
 def to_suv(vol, ds, which: str = "series", out=print):
-    """Bq/mL to SUVbw."""
     scan, inj, half, dose, w = scan_and_injection(ds, which)
     uptake = (scan - inj).total_seconds()
     decay_tag = str(getattr(ds, "DecayCorrection", "?"))
@@ -143,7 +139,6 @@ def to_suv(vol, ds, which: str = "series", out=print):
 
 
 def write_nifti(data_zyx, path, m):
-    """Write a `.nii.gz`."""
     import nibabel as nib
 
     data = np.transpose(np.ascontiguousarray(data_zyx), (2, 1, 0))
@@ -158,29 +153,33 @@ def write_nifti(data_zyx, path, m):
     return path
 
 
-def convert(dicom_dir: str, out_path: str, which: str = "series") -> dict:
+def convert(dicom_dir: str, out_path: str, which: str = "series",
+            unit: str = "suvbw") -> dict:
     print(f"\n{dicom_dir}")
     vol, m = read_series(dicom_dir)
     print(f"  {m['n']} lát {m['shape'][1]}x{m['shape'][2]} @ "
           f"{m['px']:.4f} mm, dz {m['dz']:.4f}   '{m['desc']}'  {m['recon']}")
-    suv, info = to_suv(vol, m["ds"], which)
+    if unit == "bqml":
+        img, info = vol, {"decay_correction": m["decay"]}
+    else:
+        img, info = to_suv(vol, m["ds"], which)
 
-    body = suv > 0.02 * np.percentile(suv, 99.9)
-    print(f"  SUVbw  trung vị thân {np.median(suv[body]):.3f}   "
-          f"p95 {np.percentile(suv[body], 95):.2f}   max {suv.max():.1f}")
-    p = write_nifti(suv, out_path, m)
+    body = img > 0.02 * np.percentile(img, 99.9)
+    label = "Bq/mL" if unit == "bqml" else "SUVbw"
+    print(f"  {label}  trung vị thân {np.median(img[body]):,.3f}   "
+          f"p95 {np.percentile(img[body], 95):,.2f}   max {img.max():,.1f}")
+    p = write_nifti(img, out_path, m)
     print(f"  -> {p}")
     info.update({"dicom": os.path.abspath(dicom_dir), "nifti": os.path.abspath(p),
-                 "shape": list(m["shape"]), "series_description": m["desc"],
-                 "reconstruction": m["recon"],
-                 "suv_body_median": float(np.median(suv[body])),
-                 "suv_max": float(suv.max())})
+                 "unit": unit, "shape": list(m["shape"]),
+                 "series_description": m["desc"], "reconstruction": m["recon"],
+                 f"{unit}_body_median": float(np.median(img[body])),
+                 f"{unit}_max": float(img.max())})
     return info
 
 
 def vendor_dir(root, case: str) -> str:
-    """GE's BQML series for a case, from the sidecar `tools.compare_vendor` leaves."""
-    for name in ("calib_sino.json", "calib_lm.json"):
+    for name in ("calib_sino.json", "calib_lm.json", "calib_sino_pyt.json"):
         p = root / case / name
         if p.exists():
             with open(p) as f:
@@ -194,14 +193,17 @@ def vendor_dir(root, case: str) -> str:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="dicom_suv", description=__doc__,
+    ap = argparse.ArgumentParser(prog="dicom_suv",
+                                 description="One PET DICOM series in BQML to a "
+                                             "NIfTI volume in SUVbw, or Bq/mL with --bqml",
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--dicom", help="một series PET DICOM bất kỳ")
     g.add_argument("--case", help="ảnh GE của ca này (đường dẫn lấy từ calib_*.json)")
     g.add_argument("--all", action="store_true", help="ảnh GE của mọi ca trong $D710_OUT")
     ap.add_argument("--out", help="file .nii.gz ra; mặc định "
-                                  "<case>/export/<case>_ge_suvbw.nii.gz")
+                                  "<case>/export/<case>_ge_suvbw.nii.gz "
+                                  "(_ge_bqml với --bqml)")
     ap.add_argument("--out-root", help="gốc đầu ra; mặc định $D710_OUT")
     ap.add_argument("--ours", action="store_true",
                     help="chuyển cả export/dicom và export/dicom_lm của mình — "
@@ -210,22 +212,26 @@ def main(argv=None) -> int:
                     default="series",
                     help="tag nào là mốc quy đổi phân rã (mặc định SeriesTime, "
                          "đúng cho GE và cho ảnh của mình)")
+    ap.add_argument("--bqml", action="store_true",
+                    help="ghi Bq/mL đúng như trong DICOM (cùng mốc DecayCorrection), "
+                         "không quy ra SUV")
     args = ap.parse_args(argv)
+    unit = "bqml" if args.bqml else "suvbw"
     if args.out and (args.all or args.ours):
         ap.error("--out chỉ dùng cho MỘT series; bỏ nó đi để mỗi ca tự đặt tên")
 
     if args.dicom:
         out = args.out or os.path.join(os.path.dirname(
-            os.path.abspath(args.dicom)), "suvbw.nii.gz")
-        convert(args.dicom, out, args.time)
+            os.path.abspath(args.dicom)), f"{unit}.nii.gz")
+        convert(args.dicom, out, args.time, unit)
         return 0
 
     root = out_root(args.out_root)
     if args.all:
-        cases = sorted(os.path.basename(os.path.dirname(p))
-                       for p in glob.glob(str(root / "*" / "calib_sino.json")))
+        cases = sorted({os.path.basename(os.path.dirname(p))
+                        for p in glob.glob(str(root / "*" / "calib_*.json"))})
         if not cases:
-            raise SystemExit(f"error: không ca nào dưới {root} có calib_sino.json")
+            raise SystemExit(f"error: không ca nào dưới {root} có calib_*.json")
     else:
         cases = [args.case]
 
@@ -233,20 +239,20 @@ def main(argv=None) -> int:
     for c in cases:
         exp = root / c / "export"
         made.append(convert(vendor_dir(root, c),
-                            args.out or str(exp / f"{c}_ge_suvbw.nii.gz"),
-                            args.time))
+                            args.out or str(exp / f"{c}_ge_{unit}.nii.gz"),
+                            args.time, unit))
         if args.ours:
             for tag, sub in (("", "dicom"), ("_lm", "dicom_lm")):
                 d = exp / sub
                 if d.is_dir():
                     made.append(convert(str(d),
-                                        str(exp / f"{c}{tag}_suvbw_fromdicom.nii.gz"),
-                                        args.time))
+                                        str(exp / f"{c}{tag}_{unit}_fromdicom.nii.gz"),
+                                        args.time, unit))
 
-    print(f"\n{len(made)} file SUV. So sánh trong cùng một thư mục export/:")
+    print(f"\n{len(made)} file {unit}. So sánh trong cùng một thư mục export/:")
     for c in cases:
         print(f"  {c}:")
-        for f in sorted(glob.glob(str(root / c / "export" / "*suvbw*.nii.gz"))):
+        for f in sorted(glob.glob(str(root / c / "export" / f"*{unit}*.nii.gz"))):
             print(f"    {os.path.basename(f)}")
     return 0
 

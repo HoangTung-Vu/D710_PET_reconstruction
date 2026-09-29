@@ -67,8 +67,8 @@ WCC_UNIT_SCALE = 1e4
 
 #Calib K
 K_EXPORT = 66_907.5
-K_EXPORT_LM = 133_139.5
-K_EXPORT_SINO = None
+K_EXPORT_LM = 134_424.6
+K_EXPORT_SINO = 141_637.7
 
 
 def fov_radius_mm(n_tang: int, ndet: int = NDET,

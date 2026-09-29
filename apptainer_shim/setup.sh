@@ -164,7 +164,7 @@ _apt_doctor() {
             rc=1
         fi
     fi
-    echo "== the host runtime  (attn, lm, lowdose, export: no container)"
+    echo "== the host runtime  (attn, sino, lm, lowdose, export: no container)"
     local py
     py="$(_apt_host_python)"
     if [[ -z "$py" ]]; then

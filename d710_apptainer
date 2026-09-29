@@ -45,16 +45,17 @@ WHAT RUNS WHERE
                              and docker ran that step as root. `doctor` checks
                              it; apptainer_shim/docker prints the fallback if
                              it is missing.
-  attn lm lowdose export     no container: conda activate petct_recon. This is
+  attn sino lm lowdose export
+                             no container: conda activate petct_recon. This is
                              where a GPU pays off.
-  osem                       not here. The sinogram path still needs SIRF and
-                             is kept for comparison only, on a machine with
-                             docker: ./d710_isolate_stir.sh osem --case N
+  osem                       not here: it needs SIRF, on a machine with docker
+                             (./d710_isolate_stir.sh osem --case N). `d710 sino`
+                             is the same sinogram OSEM, on the host, without it.
 
 THE GPU. The shim adds --nv whenever /dev/nvidiactl exists, but nothing inside
 d710:full uses it: pet_recon's GPU path is forced off in vendor/boot.gdb, GE
 never having shipped the .cl kernels. The GPU is worth having for the host
-half -- `d710 attn --device cuda` and `d710 lm` -- which needs a CUDA torch and
+half -- `d710 attn --device cuda`, `d710 sino` and `d710 lm` -- which needs a CUDA torch and
 a cuda* build of libparallelproj in petct_recon. `doctor` reports both.
 
 BUILDING THE .sif FILE, on the machine holding the docker image:
@@ -88,9 +89,9 @@ USAGE
         # starts it.  phantom, pp and compare are host python.
         [[ "${2:-}" == gate ]] && _apt_need_gate ;;
     osem)
-        echo ">> note: 'osem' is the sinogram path and still needs SIRF, which" >&2
-        echo ">>       is not on this machine.  It is kept for comparison only:" >&2
+        echo ">> note: 'osem' needs SIRF, which is not on this machine:" >&2
         echo ">>       ./d710_isolate_stir.sh osem --case ...  (needs docker)" >&2
+        echo ">>       'd710_apptainer sino --case ...' is the same sinogram OSEM without SIRF" >&2
         ;;
 esac
 

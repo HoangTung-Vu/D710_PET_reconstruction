@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from simulation import pp, singles, sss
-from utils.scanner import NDET, NRINGS, NXTAL
+from utils.scanner import GANTRY_XY_MM, NDET, NRINGS, NXTAL
 
 
 def _ellipse_phantom(shape=(40, 40, 6), dr=(6.0, 6.0, 6.0), seed=3):
@@ -122,7 +122,8 @@ def test_geometric_singles_of_a_centred_point_are_uniform_round_each_ring():
     pytest.importorskip("parallelproj")
     A = np.zeros((5, 9, 9))
     A[2, 4, 4] = 1.0
-    mu = (np.zeros((9, 9, 5), np.float32), np.array([-40, -40, -20], np.float32),
+    gx, gy = GANTRY_XY_MM
+    mu = (np.zeros((9, 9, 5), np.float32), np.array([-40 + gx, -40 + gy, -20], np.float32),
           np.array([10, 10, 10], np.float32))
     G = singles.geometric_singles(A, mu, pp.crystal_lut(), crystal_step=3,
                                   out=lambda s: None).reshape(NRINGS, NDET)

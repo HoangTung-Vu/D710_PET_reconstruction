@@ -9,7 +9,14 @@ XTAL0_OFFSET_DEG = -5.0210
 
 XTAL_PITCH_DEG = 360.0 / NDET
 
-VIEW_OFFSET_DEG = -(XTAL0_OFFSET_DEG + XTAL_PITCH_DEG)
+VIEW_OFFSET_DEG = XTAL_PITCH_DEG - XTAL0_OFFSET_DEG
+
+VQC_X_MM = -1.9028150
+VQC_Y_MM = -2.3659301
+GANTRY_XY_MM = (VQC_X_MM, VQC_Y_MM)
+
+GEOMETRY = (f"view offset {VIEW_OFFSET_DEG:.4f} deg, "
+            f"gantry {VQC_X_MM:+.4f} {VQC_Y_MM:+.4f} mm")
 
 DOI_MM = 8.4
 
@@ -72,10 +79,13 @@ def fov_radius_mm(n_tang: int, ndet: int = NDET,
 
 
 def fov_mask(xy: int, n_tang: int, dr_mm: float = DR_MM):
+    import math
+
     import numpy as np
 
     y, x = np.mgrid[0:xy, 0:xy] - (xy - 1) / 2.0
-    return np.hypot(x, y) * dr_mm <= fov_radius_mm(n_tang)
+    return (np.hypot(x, y) * dr_mm
+            <= fov_radius_mm(n_tang) - math.hypot(*GANTRY_XY_MM))
 
 
 def sirf_grid(acq, xy: int = XY, dr_mm: float = DR_MM, out=print):

@@ -1,5 +1,3 @@
-"""`utils/scanner.py` against itself, and against every copy of it in the tree."""
-
 from __future__ import annotations
 
 import importlib
@@ -15,7 +13,6 @@ GERDF = ROOT.parent / "custom_tool" / "gerdf" / "interfile.py"
 
 
 def gerdf_interfile():
-    """`custom_tool/gerdf/interfile.py` as a module, or a skip."""
     if not GERDF.exists():
         pytest.skip(f"no {GERDF}; the decoder source is not in this checkout")
     root = str(GERDF.parent.parent)
@@ -29,8 +26,14 @@ def gerdf_interfile():
 
 def test_the_view_offset_is_derived_from_the_crystal_offset():
     assert scanner.VIEW_OFFSET_DEG == pytest.approx(
-        -(scanner.XTAL0_OFFSET_DEG + scanner.XTAL_PITCH_DEG), abs=1e-12)
-    assert scanner.VIEW_OFFSET_DEG == pytest.approx(4.3960, abs=1e-4)
+        scanner.XTAL_PITCH_DEG - scanner.XTAL0_OFFSET_DEG, abs=1e-12)
+    assert scanner.VIEW_OFFSET_DEG == pytest.approx(5.6460, abs=1e-4)
+
+
+def test_the_gantry_sits_at_the_vqc_translation():
+    assert scanner.GANTRY_XY_MM == (scanner.VQC_X_MM, scanner.VQC_Y_MM)
+    assert scanner.GANTRY_XY_MM == pytest.approx((-1.9028, -2.3659), abs=1e-4)
+    assert f"{scanner.VIEW_OFFSET_DEG:.4f}" in scanner.GEOMETRY
 
 
 def test_the_effective_radius_is_the_ring_plus_the_doi():

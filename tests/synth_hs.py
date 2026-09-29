@@ -1,5 +1,3 @@
-"""A miniature scanner obeying the same michelogram rules as the D710."""
-
 from __future__ import annotations
 
 import os
@@ -8,19 +6,12 @@ import numpy as np
 
 PLANE_MM = 3.2699997
 BIN_SIZE_CM = 0.21306
-VIEW_OFFSET_DEG = 4.3960
+VIEW_OFFSET_DEG = 5.6460
 
 AVG_DOI_CM = 0.84
 
 
 def segments(num_rings: int) -> list[tuple[int, int, int, int]]:
-    """`(segment, min_rd, max_rd, num_axial_poss)` in STIR storage order.
-
-    The negative block comes first, exactly as
-    `custom_tool/gerdf/interfile.py::ordered_segments` emits it -- the miniature
-    scanner has to declare its ring differences the way the real decoder does,
-    or `BinMap` reads it with one convention and the tests assert another.
-    """
     n0 = 2 * num_rings - 1
     out = [(0, -1, 1, n0)]
     k = 1
@@ -88,7 +79,6 @@ def num_planes(num_rings: int = 6) -> int:
 
 def write(stem: str, num_rings: int = 6, num_det: int = 16, num_tang: int = 9,
           data: np.ndarray | None = None) -> str:
-    """Write the `<stem>.hs` and `<stem>.s` pair; returns the header path."""
     stem = str(stem)
     base = os.path.basename(stem)
     shape = (1, num_planes(num_rings), num_det // 2, num_tang)

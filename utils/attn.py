@@ -3,9 +3,11 @@ from __future__ import annotations
 import numpy as np
 
 from . import attenuation, attn_proj, interfile
-from .scanner import DR_MM, PLANE_MM, XY
+from .scanner import DR_MM, GEOMETRY, PLANE_MM, XY
 
 PROVENANCE = "; d710 attn ring pairing := utils.binmap"
+
+GEOMETRY_STAMP = f"; d710 attn geometry := {GEOMETRY}"
 
 
 def check_same_exam(ct, hdr) -> None:
@@ -48,9 +50,11 @@ class Attenuation:
                       f"af mean {self._cache[n].mean():.4f}")
             return self._cache[n]
         if path.exists() and self.verbose:
+            txt = path.read_text(errors="replace")
             why = ("was built before the ring pairing was corrected on "
-                   "2026-09-18" if PROVENANCE not in
-                   path.read_text(errors="replace") else
+                   "2026-09-18" if PROVENANCE not in txt else
+                   "was built for another scanner geometry than "
+                   f"{GEOMETRY}" if GEOMETRY_STAMP not in txt else
                    "is missing its data file or the wrong size")
             print(f"  bed {n}: attn.hs {why} -- rebuilding")
 
@@ -86,7 +90,8 @@ def _complete(hs) -> bool:
     s = hs.with_suffix(".s")
     if not (hs.exists() and s.exists()):
         return False
-    if PROVENANCE not in hs.read_text(errors="replace"):
+    txt = hs.read_text(errors="replace")
+    if PROVENANCE not in txt or GEOMETRY_STAMP not in txt:
         return False
     want = hs.parent / "normdt.s"
     if want.exists():
@@ -110,6 +115,6 @@ def _write_like_the_others(a, case, n: int, path) -> None:
     hdr = re.sub(r"(?im)^(\s*name of data file\s*:=).*$", r"\1 attn.s", hdr)
     hdr = re.sub(r"(?im)^(\s*!?\s*number format\s*:=).*$", r"\1 float", hdr)
     hdr = re.sub(r"(?im)^(\s*!?\s*number of bytes per pixel\s*:=).*$", r"\1 4", hdr)
-    hdr = hdr.rstrip("\n") + "\n" + PROVENANCE + "\n"
+    hdr = hdr.rstrip("\n") + "\n" + PROVENANCE + "\n" + GEOMETRY_STAMP + "\n"
     np.ascontiguousarray(a, "<f4").tofile(path.with_suffix(".s"))
     path.write_text(hdr)

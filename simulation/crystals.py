@@ -31,7 +31,7 @@ BLOCK_CENTRE_R_MM = R_MM + CRYSTAL_MM[0] / 2.0
 
 
 def ge_azimuth() -> np.ndarray:
-    p = crystal_positions()[:NDET]
+    p = crystal_positions(centre_mm=(0.0, 0.0))[:NDET]
     return np.arctan2(p[:, 1], p[:, 0])
 
 

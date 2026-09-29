@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
-from utils.scanner import TIMING_PS
+from utils.scanner import GANTRY_XY_MM, TIMING_PS
 
 from .. import phantom as ph
 from .geometry import ShieldSpec, add_d710, patient_half_width_mm
@@ -63,6 +63,10 @@ class RunConfig:
 
     def save(self, path) -> None:
         Path(path).write_text(json.dumps(asdict(self), indent=2))
+
+
+def in_gantry(c):
+    return [c[0] - GANTRY_XY_MM[0], c[1] - GANTRY_XY_MM[1], c[2]]
 
 
 def _box(mask2d, pad: int, lim: tuple[int, int]):
@@ -163,7 +167,7 @@ def build(cfg: RunConfig, meta: dict, crop: dict):
     patient = sim.add_volume("Image", "patient")
     patient.image = str(out / "ct.mhd")
     patient.material = "G4_AIR"
-    patient.translation = [v * mm for v in crop["ct_centre_mm"]]
+    patient.translation = [v * mm for v in in_gantry(crop["ct_centre_mm"])]
     data = Path(gate.__file__).parent / "data"
     patient.voxel_materials, _ = gate.geometry.materials.HounsfieldUnit_to_material(
         sim, 0.05 * u.g_cm3, str(data / "Schneider2000MaterialsTable.txt"),
@@ -182,7 +186,7 @@ def build(cfg: RunConfig, meta: dict, crop: dict):
         float(ph.read_mhd(Path(cfg.phantom_dir) / "act_bqml.mhd").sum(dtype=np.float64)), 1e-30)
     src = sim.add_source("VoxelSource", "pet")
     src.image = str(out / "act.mhd")
-    src.position.translation = [v * mm for v in crop["act_centre_mm"]]
+    src.position.translation = [v * mm for v in in_gantry(crop["act_centre_mm"])]
     src.direction.type = "iso"
     if cfg.positron:
         src.particle = "e+"

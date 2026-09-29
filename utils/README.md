@@ -36,7 +36,10 @@ is measured, read from a vendor header, or derived from one that is.
 | `R_MM` | 405.10 | header `Inner ring diameter (cm) := 81.02`, halved |
 | `XTAL0_OFFSET_DEG` | −5.0210 | azimuth of GE crystal 0 in the gantry frame; `cmcfg.XR.xml` and every RDF |
 | `XTAL_PITCH_DEG` | 360/576 | GE's own `deltaAngle` |
-| `VIEW_OFFSET_DEG` | +4.3960 | STIR's `psi_offset`, a different quantity in a different frame from `XTAL0_OFFSET_DEG` |
+| `VIEW_OFFSET_DEG` | +5.6460 | `XTAL_PITCH_DEG - XTAL0_OFFSET_DEG`: STIR's `psi_offset`, the azimuth of STIR detector 0 in the image frame |
+| `VQC_X_MM`, `VQC_Y_MM` | −1.9028, −2.3659 | `sysGeometry.vqc_X/YaxisTranslation` of every RDF of this scanner: where the PET gantry axis sits in the CT frame |
+| `GANTRY_XY_MM` | (VQC_X_MM, VQC_Y_MM) | added to every crystal position in `utils/geometry.py`, so the image grid stays in the CT frame |
+| `GEOMETRY` | text | the two above as one string; stamped into `attn.hs` and the `lm`/`sino`/`lmnet` cache keys so nothing built with another geometry is reused |
 | `DOI_MM` | 8.4 | depth of interaction |
 | `PLANE_MM` | 3.2699997 | axial plane pitch |
 | `NSEG0` | 47 | axial positions in segment 0 |
@@ -47,11 +50,11 @@ is measured, read from a vendor header, or derived from one that is.
 | `PSF_FWHM_MM` | (4.87, 4.87, 4.45) | the two above in PyTomography's object order (x, y, z), the default of `lm` |
 | `POST_FILTER_FWHM_MM` | 6.4 | `(0009,10BB) post_filt_parm`: GE's post-filter, not a PSF |
 
-`VIEW_OFFSET_DEG` is provisional and is not the same quantity as
-`XTAL0_OFFSET_DEG`; copying one into the other costs 10.04° of image rotation on
-both reconstruction paths, since they share the header. Only a NEMA scan
-separates +4.396 from +5.021. The derivation and the open conflict are recorded
-in `GEOMETRY_AUDIT.md`.
+`VIEW_OFFSET_DEG` and the gantry offset were fixed together on 2026-09-29
+(branch `hotfix`). The old +4.396 left every image rotated about 1.2° against
+GE's own reconstruction, and the missing VQC left it about 3 mm off the CT.
+Neither correction helps alone. The derivation, the measurements and the
+validation are in `.claude/audit/hotfix-geometry/HOTFIX.md`.
 
 ## Code that is retained but currently uncalled
 

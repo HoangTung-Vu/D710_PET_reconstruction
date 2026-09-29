@@ -127,7 +127,7 @@ def _tangential_mm(n_tang: int):
     from utils.geometry import det_pair_map, detector_xy_mm
 
     d1, d2 = det_pair_map(scanner.NDET // 2, n_tang, scanner.NDET)
-    xy = detector_xy_mm().astype(np.float64)
+    xy = detector_xy_mm(centre_mm=(0.0, 0.0)).astype(np.float64)
     a, b = xy[d1[0]], xy[d2[0]]
     return (a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]) / np.linalg.norm(b - a, axis=1)
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from lm.recon import psf_fwhm
-from utils.scanner import NSEG0, PSF_FWHM_MM, XY
+from utils.scanner import GEOMETRY, NSEG0, PSF_FWHM_MM, XY
 
 NAME = "sens_lm.npz"
 
@@ -35,6 +35,7 @@ def stamp(case, bed: int) -> str:
             raise SystemExit(f"error: no {p}\n  run: {how}")
         st = p.stat()
         out.append(f"{n}:{st.st_size}:{int(st.st_mtime)}")
+    out.append(GEOMETRY)
     return "|".join(out)
 
 

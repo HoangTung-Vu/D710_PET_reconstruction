@@ -5,7 +5,7 @@ import argparse
 import numpy as np
 
 from utils.paths import case as get_case
-from utils.scanner import DR_MM, PLANE_MM, PSF_FWHM_MM, XY
+from utils.scanner import DR_MM, GEOMETRY, PLANE_MM, PSF_FWHM_MM, XY
 
 from . import events as ev
 from utils import interfile
@@ -108,6 +108,7 @@ def _bed_key(C, n: int, args, tof_scatter) -> str:
                "n_splits", "beta")]
     if tof_scatter is not None:
         parts.append(f"tof_scatter={float(np.sum(tof_scatter)):.12e}")
+    parts.append(f"geometry={GEOMETRY}")
     return hashlib.sha256("|".join(parts).encode()).hexdigest()[:32]
 
 
@@ -167,7 +168,8 @@ def cmd_recon(C, args) -> int:
                         tangential_lors=0, psf_fwhm_mm=psf,
                         post_filter_fwhm_mm=args.post_filter,
                         post_filter_z_ratio=args.z_ratio,
-                        tof_scatter=(args.tof_scatter or "per-bed"))
+                        tof_scatter=(args.tof_scatter or "per-bed"),
+                        geometry=GEOMETRY)
     print(f"\nwrote {out}  ({vol.shape}, count/voxel referred to the injection time)")
     return 0
 

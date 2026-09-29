@@ -1,5 +1,3 @@
-"""`utils/attenuation.py`: CT series to mu-map on the bed grid."""
-
 from __future__ import annotations
 
 import pathlib
@@ -142,11 +140,6 @@ def _bed_start(ct):
     return float(ct.z[0] + (ct.z[-1] - ct.z[0] - span) / 2)
 
 
-# The grid `mu_map` is asked for.  It used to come from a SIRF `ImageData`, and
-# the whole file needed the `bed24` fixture for it; the mu-map is plain numpy
-# now, so these run everywhere.  1.3672 mm over 32 voxels reaches +-21.9 mm,
-# inside synth_ct's 26.25 mm water cylinder except at the corners, which is
-# what gives both water and air in one map.
 XY, DR_MM = 32, synth_ct.DEFAULT_PIXEL_MM
 
 
@@ -171,7 +164,6 @@ def test_mu_map_is_radiological_so_y_is_flipped(ct_dir):
 
 
 def test_mu_map_is_always_a_whole_bed(ct_dir):
-    """The grid cannot be wrong any more; it is built, not accepted."""
     ct = attenuation.load(ct_dir)
     for xy in (16, 32, 64):
         assert attenuation.mu_map(ct, _bed_start(ct), xy, DR_MM).shape == \
@@ -209,7 +201,6 @@ def test_overhang_tolerance_is_counted_in_pet_planes(ct_dir, tmp_path):
 
 
 def test_ct_to_attenuation_factors_end_to_end(ct_dir, mini_hs):
-    """CT -> mu -> af, with no SIRF anywhere in the chain."""
     from utils import attn_proj
 
     pytest.importorskip("parallelproj")
@@ -222,11 +213,6 @@ def test_ct_to_attenuation_factors_end_to_end(ct_dir, mini_hs):
 
 
 def test_an_unstamped_attn_hs_is_rebuilt_not_reused(tmp_path):
-    """An `attn.hs` from before 2026-09-18 has a mirrored segment axis.
-
-    Nothing about its name, size or shape says so, so the only way not to
-    reuse it silently is to require the provenance line. See `utils/binmap.py`.
-    """
     from utils import attn
 
     hs = tmp_path / "attn.hs"
@@ -237,6 +223,10 @@ def test_an_unstamped_attn_hs_is_rebuilt_not_reused(tmp_path):
 
     hs.write_text("!INTERFILE :=\nname of data file := attn.s\n"
                   + attn.PROVENANCE + "\n")
+    assert not attn._complete(hs), "a file from the old scanner geometry was reused"
+
+    hs.write_text("!INTERFILE :=\nname of data file := attn.s\n"
+                  + attn.PROVENANCE + "\n" + attn.GEOMETRY_STAMP + "\n")
     assert attn._complete(hs), "a stamped file was rejected"
 
 
@@ -268,7 +258,7 @@ def test_a_header_without_its_data_is_not_a_cache(tmp_path):
 
     hs = tmp_path / "attn.hs"
     hs.write_text("!INTERFILE :=\nname of data file := attn.s\n"
-                  + attn.PROVENANCE + "\n")
+                  + attn.PROVENANCE + "\n" + attn.GEOMETRY_STAMP + "\n")
     assert not attn._complete(hs), "a lone header was accepted as a cache"
 
     hs.with_suffix(".s").write_bytes(b"\x00" * 16)
@@ -279,7 +269,7 @@ def test_a_truncated_term_is_not_a_cache_either(tmp_path):
     from utils import attn
 
     hs = tmp_path / "attn.hs"
-    hs.write_text("!INTERFILE :=\n" + attn.PROVENANCE + "\n")
+    hs.write_text("!INTERFILE :=\n" + attn.PROVENANCE + "\n" + attn.GEOMETRY_STAMP + "\n")
     (tmp_path / "normdt.s").write_bytes(b"\x00" * 64)
 
     hs.with_suffix(".s").write_bytes(b"\x00" * 32)

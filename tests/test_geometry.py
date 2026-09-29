@@ -1,5 +1,3 @@
-"""`utils/geometry.py` and the derived michelogram, against STIR itself."""
-
 from __future__ import annotations
 
 import numpy as np
@@ -118,8 +116,19 @@ def test_fov_mask_is_a_centred_disc():
     assert m[scanner.XY // 2, scanner.XY // 2]
     assert not m[0, 0] and not m[-1, -1]
     assert np.array_equal(m, m[::-1]) and np.array_equal(m, m[:, ::-1])
-    r = scanner.fov_radius_mm(381) / scanner.DR_MM
+    gx, gy = scanner.GANTRY_XY_MM
+    r = (scanner.fov_radius_mm(381) - np.hypot(gx, gy)) / scanner.DR_MM
     assert m.sum() == pytest.approx(np.pi * r * r, rel=0.01)
+
+
+def test_fov_mask_stays_inside_the_lors_of_the_offset_gantry():
+    from utils import scanner
+
+    m = scanner.fov_mask(scanner.XY, 381)
+    y, x = (np.mgrid[0:scanner.XY, 0:scanner.XY] - (scanner.XY - 1) / 2.0) * scanner.DR_MM
+    gx, gy = scanner.GANTRY_XY_MM
+    assert np.hypot(x - gx, y - gy)[m].max() <= scanner.fov_radius_mm(381)
+    assert np.hypot(x - gx, y - gy)[m].max() > scanner.fov_radius_mm(381) - scanner.DR_MM
 
 
 def test_tangential_s_mm_is_not_arc_corrected(stir, mini_hs):

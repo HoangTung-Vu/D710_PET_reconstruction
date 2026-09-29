@@ -7,8 +7,8 @@ import time
 import numpy as np
 
 from utils.paths import case as get_case
-from utils.scanner import (DR_MM, N_ITERATIONS, N_SUBSETS, PLANE_MM,
-                           POST_FILTER_FWHM_MM, POST_FILTER_Z_RATIO,
+from utils.scanner import (DR_MM, GEOMETRY, N_ITERATIONS, N_SUBSETS,
+                           PLANE_MM, POST_FILTER_FWHM_MM, POST_FILTER_Z_RATIO,
                            PSF_FWHM_MM, XY)
 
 from . import terms
@@ -26,7 +26,7 @@ def bed_key(C, n: int, args) -> str:
             parts.append(f"{p.name}:{st.st_size}:{int(st.st_mtime)}")
     parts += [f"xy={args.xy!r}", f"subsets={args.subsets!r}",
               f"iters={args.iters!r}", f"psf={psf_fwhm(args.psf)!r}",
-              f"engine={ENGINE}"]
+              f"engine={ENGINE}", f"geometry={GEOMETRY}"]
     return hashlib.sha256("|".join(parts).encode()).hexdigest()[:32]
 
 
@@ -114,7 +114,8 @@ def main(argv=None) -> int:
                         n_subsets=args.subsets, n_iterations=args.iters,
                         ct=ct_dir, n_tof=1, tangential_lors=0, psf_fwhm_mm=psf,
                         post_filter_fwhm_mm=args.post_filter,
-                        post_filter_z_ratio=args.z_ratio, engine=ENGINE)
+                        post_filter_z_ratio=args.z_ratio, engine=ENGINE,
+                        geometry=GEOMETRY)
     print(f"\nwrote {C.recon_sino}  ({vol.shape}, count/voxel referred to the "
           f"injection time)")
     print(f"next:  d710 export --case {C.name} --sino")

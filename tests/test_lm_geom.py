@@ -1,5 +1,3 @@
-"""`lm.geom`: the crystal and bin maps, on the miniature scanner."""
-
 from __future__ import annotations
 
 import numpy as np
@@ -16,7 +14,6 @@ RINGS, NDET, NTANG = 6, 16, 9
 
 @pytest.fixture(scope="module")
 def binmap(mini_hs):
-    """A `BinMap` built from the header by `utils.interfile`, without the `stir` fixture."""
     return geom.BinMap(mini_hs)
 
 
@@ -82,13 +79,6 @@ def test_flat_inverts_det_pair_map(binmap):
 
 
 def test_ring_order_follows_stirs_ring2_minus_ring1(binmap, mini_info):
-    """`pl[ring1, ring2]` must land in the segment of `ring2 - ring1`.
-
-    An earlier form asserted only that the two orders fall in opposite-signed
-    segments, which holds under BOTH conventions and so constrained nothing.
-    The sign decides which ring sits on `det1`; `tests/test_lm_data.py` proves
-    the choice against GE's own data.
-    """
     _pd, info = mini_info
     order = stir_oracle.segment_order(info)
     seg_of = np.concatenate([[s] * info.get_num_axial_poss(s) for s in order])
@@ -112,13 +102,11 @@ def test_ring_order_follows_stirs_ring2_minus_ring1(binmap, mini_info):
 
 
 def test_ring_pairs_read_back_out_of_pl_agree_with_the_header(binmap):
-    """`ring_pairs_by_plane` is what everything geometric must go through."""
     r1, r2, planes = binmap.ring_pairs_by_plane()
     assert np.array_equal(binmap.pl[r1, r2], planes)
     assert np.array_equal(np.bincount(planes, minlength=binmap.n_plane),
                           binmap.mult)
 
-    # pl stores (ring on det1, ring on det2), which is ring_pairs reversed
     want = {p: sorted((b, a) for a, b in prs) for p, prs in
             enumerate(binmap.hdr.ring_pairs())}
     got = {p: [] for p in range(binmap.n_plane)}
@@ -145,7 +133,8 @@ def test_out_of_range_pairs_are_dropped(binmap):
 def test_scanner_lut_is_a_cylinder():
     lut = geom.scanner_lut()
     assert lut.shape == (geom.NXTAL, 3)
-    r = np.hypot(lut[:, 0], lut[:, 1])
+    gx, gy = scanner.GANTRY_XY_MM
+    r = np.hypot(lut[:, 0] - gx, lut[:, 1] - gy)
     assert np.allclose(r, geom.R_EFF_MM, atol=1e-3)
     z = lut[:, 2].reshape(geom.NRINGS, geom.NDET)
     assert np.allclose(np.diff(z[:, 0]), geom.RING_PITCH_MM)
@@ -156,7 +145,10 @@ def test_scanner_lut_is_a_cylinder():
 def test_scanner_lut_is_in_stirs_frame():
     lut = geom.scanner_lut(offset_deg=0.0)
     d0 = int(np.argsort(geometry.crystal_to_det(geom.NDET))[0])
-    assert np.allclose(lut[d0, :2], [0.0, -geom.R_EFF_MM], atol=1e-3)
+    gx, gy = scanner.GANTRY_XY_MM
+    assert np.allclose(lut[d0, :2], [gx, gy - geom.R_EFF_MM], atol=1e-3)
+    centred = geometry.crystal_positions(offset_deg=0.0, centre_mm=(0.0, 0.0))
+    assert np.allclose(lut[:, :2] - centred[:, :2], [gx, gy], atol=1e-3)
     ge = geom.scanner_lut(offset_deg=0.0, stir_frame=False)
     assert not np.allclose(ge[:, :2], lut[:, :2])
 

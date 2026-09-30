@@ -76,7 +76,7 @@ def fit_singles(G: dict, S: dict, beds, iters: int = 200):
 def run(case, beds=None, train=TRAIN_BEDS, image_step: int = sss.IMAGE_STEP,
         crystal_step: int = sss.CRYSTAL_STEP, ring_step: int = sss.RING_STEP,
         margin_planes: int = an.SSS_MARGIN_PLANES, use_shield: bool = True,
-        out_json: Path = an.CALIB_JSON, out=print) -> dict:
+        out_json: Path = an.CALIB_JSON, out=print, device=None) -> dict:
     beds = list(beds or case.decoded_beds())
     train = [b for b in train if b in beds]
     test = [b for b in beds if b not in train]
@@ -92,11 +92,12 @@ def run(case, beds=None, train=TRAIN_BEDS, image_step: int = sss.IMAGE_STEP,
         r_ge, s_ge = term(case, bed, "randoms"), term(case, bed, "scatter")
         t_bin, _ = an.trues(b, out)
         f, info = an.sss_sparse(b, image_step, crystal_step, ring_step,
-                                margin_planes=margin_planes, use_shield=use_shield, out=out)
+                                margin_planes=margin_planes, use_shield=use_shield,
+                                device=device, out=out)
         sss_bin = an.sss_bins(b, f, info)
         rate = an.measured_rate(b)
         r_meas = an.randoms_bins(b, rate)
-        G[bed], S[bed] = an.geometric(b, use_shield, out), rate
+        G[bed], S[bed] = an.geometric(b, use_shield, out, device), rate
         real_trues = prompts - r_ge - s_ge
         row = {"prompts": float(prompts.sum()), "randoms_ge": float(r_ge.sum()),
                "scatter_ge": float(s_ge.sum()), "trues_real": float(real_trues.sum()),

@@ -288,3 +288,110 @@ def test_virtual_build_lands_in_sim_virtual_with_the_patient_exam(tmp_path, monk
     assert cli.resolve("tmpl", tmp_path).root == T.root
     assert eio.sim_case(cli.resolve("lympho2_x", tmp_path), "an", 1).root == \
         tmp_path / "lympho2_x" / "sim_an_s1"
+
+
+def _needs_cuda():
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("no CUDA here")
+
+
+def _sss_run(batch=None, device="cpu", shield=None):
+    act, mu, origin, vox = _ellipse_phantom(shape=(40, 40, 10))
+    return sss.simulate_sparse((act, origin, vox), (mu, origin, vox), pp.crystal_lut(),
+                               sss.sample_rings(8), sss.sample_crystals(16), image_step=3,
+                               seed=0, batch=batch, shield=shield, device=device,
+                               out=lambda s: None)
+
+
+def _singles_numpy_reference(A, mu, lut, crystal_step, shield):
+    import parallelproj
+
+    crystals = np.arange(0, NDET, crystal_step)
+    det = (np.arange(NRINGS)[:, None] * NDET + crystals[None, :]).ravel()
+    rdet = lut[det].astype(np.float64)
+    rxy = rdet[:, :2] / np.linalg.norm(rdet[:, :2], axis=1, keepdims=True)
+    zyx = np.argwhere(A > 0)
+    act = A[tuple(zyx.T)]
+    p = mu[1][None, :].astype(np.float64) + zyx[:, ::-1] * mu[2][None, :]
+    xe = np.ascontiguousarray(rdet, np.float32)
+    T = parallelproj.joseph3d_fwd(np.repeat(p.astype(np.float32), len(det), axis=0),
+                                  np.tile(xe, (len(p), 1)), *mu).reshape(len(p), len(det))
+    d = rdet[None] - p[:, None]
+    r2 = (d ** 2).sum(-1)
+    cos = np.clip((d[..., :2] * rxy[None]).sum(-1) / np.sqrt(r2), 0.0, None)
+    g = act[:, None] * cos / r2 * np.exp(-T) * singles.aperture(p, rdet, *shield)
+    return g.sum(0)
+
+
+def _singles_phantom():
+    rng = np.random.default_rng(5)
+    A = np.zeros((6, 8, 8))
+    A[1:5, 2:6, 2:6] = rng.random((4, 4, 4))
+    gx, gy = GANTRY_XY_MM
+    mu = (np.full((8, 8, 6), 0.0096, np.float32),
+          np.array([-35 + gx, -35 + gy, -60], np.float32), np.array([10, 10, 24], np.float32))
+    return A, mu
+
+
+def test_sss_does_not_depend_on_the_batch_size():
+    f8, i8 = _sss_run(batch=8, shield=(108.5, 350.0))
+    f37, i37 = _sss_run(batch=37, shield=(108.5, 350.0))
+    assert i8["batch"] == 8 and i37["batch"] == 37 and i8["device"] == "cpu"
+    assert np.max(np.abs(f8 - f37)) <= 1e-6 * np.max(np.abs(f8))
+
+
+def test_torch_geometric_singles_equal_the_numpy_formula():
+    pytest.importorskip("parallelproj")
+    A, mu = _singles_phantom()
+    lut, shield = pp.crystal_lut(), (60.0, 350.0)
+    ref = _singles_numpy_reference(A, mu, lut, 3, shield)
+    G = singles.geometric_singles(A, mu, lut, crystal_step=3, keep=1.0, shield=shield,
+                                  device="cpu", chunk=7, out=lambda s: None)
+    got = G.reshape(NRINGS, NDET)[:, ::3].reshape(-1)
+    assert np.allclose(got, ref, rtol=1e-6, atol=0.0)
+
+
+def test_aperture_gives_the_same_answer_for_numpy_and_torch():
+    torch = pytest.importorskip("torch")
+    rng = np.random.default_rng(2)
+    p = rng.uniform(-400, 400, (50, 3))
+    rdet = pp.crystal_lut().astype(np.float64)[::97]
+    a = singles.aperture(p, rdet, 108.5, 350.0)
+    b = singles.aperture(torch.from_numpy(p), torch.from_numpy(rdet), 108.5, 350.0)
+    assert a.dtype == bool and np.array_equal(a, b.numpy())
+
+
+def test_device_choice(monkeypatch):
+    torch = pytest.importorskip("torch")
+    from simulation import gpu
+
+    monkeypatch.delenv(gpu.ENV, raising=False)
+    assert gpu.device("cpu").type == "cpu"
+    monkeypatch.setenv(gpu.ENV, "cpu")
+    assert gpu.device(None).type == "cpu"
+    assert gpu.batch_for(torch.device("cpu"), 1e6, 8, 256) == 8
+    with pytest.raises(SystemExit):
+        gpu.device("tpu")
+    if not torch.cuda.is_available():
+        with pytest.raises(SystemExit):
+            gpu.device("cuda")
+        monkeypatch.delenv(gpu.ENV)
+        assert gpu.device(None).type == "cpu"
+
+
+def test_sss_on_gpu_matches_cpu():
+    _needs_cuda()
+    fc, _ = _sss_run(device="cpu", shield=(108.5, 350.0))
+    fg, ig = _sss_run(device="cuda", shield=(108.5, 350.0))
+    assert ig["device"].startswith("cuda") and ig["batch"] >= 8
+    assert np.max(np.abs(fg - fc)) <= 1e-5 * np.max(np.abs(fc))
+
+
+def test_geometric_singles_on_gpu_match_cpu():
+    _needs_cuda()
+    A, mu = _singles_phantom()
+    kw = dict(crystal_step=3, keep=1.0, shield=(60.0, 350.0), out=lambda s: None)
+    gc = singles.geometric_singles(A, mu, pp.crystal_lut(), device="cpu", **kw)
+    gg = singles.geometric_singles(A, mu, pp.crystal_lut(), device="cuda", **kw)
+    assert np.allclose(gg, gc, rtol=1e-6, atol=0.0)

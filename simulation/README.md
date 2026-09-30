@@ -38,6 +38,8 @@ d710 simulate virtual  --case lympho2_fdg26031106 --template fdg26081008 --pet-u
     --ct source/CT.nii.gz --pet export/lympho2_fdg26031106_ge_suvbw.nii.gz --exam source/manifest.json
 ```
 
+Scatter (SSS) and the singles model run on the GPU whenever torch sees one: `--device auto` is the default, `cpu` or `cuda` forces it, and so does `D710_SIM_DEVICE`. On sslab's Z820, SSS on the CPU took 580-700 s of the ~900 s a bed needed; the GPU batch is sized from free memory (up to 256 scatter points, 8192 singles voxels). The result does not depend on the device or the batch beyond float rounding (`tests/test_simulation_analytic.py`), so the caches, which are keyed by the phantom and the parameters only, are shared between the two.
+
 Per LOR `(a, b)` in bin `beta`: `y = kappa normdt AF P[x] + k_s normdt SSS + 2w I2 S_a S_b`.
 
 | part | how | constant (fitted on beds 2, 3, 5, 6 of fdg26081901) |

@@ -8,12 +8,15 @@ from utils.attenuation import hu_to_mu
 from utils.scanner import NDET, NRINGS
 
 from . import phantom as ph
+from .gpu import is_torch
 
 DOWN_ZYX = (3, 4, 4)
 BLOCK_T, BLOCK_Z = 9, 6
 MODULE_T, N_BLOCKS_Z = 2, 4
 CRYSTAL_STEP = 3
 CHUNK = 1000
+CHUNK_GPU_MAX = 8192
+POINT_BYTES_PER_CRYSTAL = 160
 KEEP_FRACTION = 0.999
 
 
@@ -42,10 +45,16 @@ def coarse_phantom(pdir, meta, down=DOWN_ZYX):
     return A.astype(np.float64), mu
 
 
-def geometric_singles(A, mu, lut, crystal_step: int = CRYSTAL_STEP, chunk: int = CHUNK,
-                      keep: float = KEEP_FRACTION, shield=None, out=print) -> np.ndarray:
+def geometric_singles(A, mu, lut, crystal_step: int = CRYSTAL_STEP, chunk: int | None = None,
+                      keep: float = KEEP_FRACTION, shield=None, device=None,
+                      out=print) -> np.ndarray:
     import parallelproj
+    import torch
 
+    from .gpu import batch_for
+    from .gpu import device as pick_device
+
+    dev = pick_device(device)
     crystals = np.arange(0, NDET, crystal_step)
     det = (np.arange(NRINGS)[:, None] * NDET + crystals[None, :]).ravel()
     rdet = lut[det].astype(np.float64)
@@ -57,8 +66,12 @@ def geometric_singles(A, mu, lut, crystal_step: int = CRYSTAL_STEP, chunk: int =
     zyx = np.column_stack(np.unravel_index(order[:n], A.shape))
     act = flat[order[:n]]
     pts = mu[1][None, :].astype(np.float64) + zyx[:, ::-1] * mu[2][None, :]
-    G = np.zeros(det.size, np.float64)
     D = det.size
+    chunk = int(chunk or batch_for(dev, POINT_BYTES_PER_CRYSTAL * D, CHUNK, CHUNK_GPU_MAX))
+    G = torch.zeros(D, dtype=torch.float64, device=dev)
+    rdet_t = torch.from_numpy(rdet).to(dev)
+    rxy_t = torch.from_numpy(rxy).to(dev)
+    act_t = torch.from_numpy(np.ascontiguousarray(act)).to(dev)
     xe_one = np.ascontiguousarray(rdet, np.float32)
     t0 = time.time()
     for s in range(0, len(pts), chunk):
@@ -66,15 +79,17 @@ def geometric_singles(A, mu, lut, crystal_step: int = CRYSTAL_STEP, chunk: int =
         B = len(p)
         xs = np.repeat(p.astype(np.float32), D, axis=0)
         T = parallelproj.joseph3d_fwd(xs, np.tile(xe_one, (B, 1)), *mu).reshape(B, D)
-        d = rdet[None, :, :] - p[:, None, :]
+        pt = torch.from_numpy(p).to(dev)
+        d = rdet_t[None, :, :] - pt[:, None, :]
         r2 = (d ** 2).sum(-1)
-        cos = np.clip((d[..., :2] * rxy[None]).sum(-1) / np.sqrt(r2), 0.0, None)
-        g = act[s:s + B, None] * cos / r2 * np.exp(-T)
+        cos = torch.clamp((d[..., :2] * rxy_t[None]).sum(-1) / torch.sqrt(r2), min=0.0)
+        g = act_t[s:s + B, None] * cos / r2 * torch.exp(-torch.from_numpy(T).to(dev))
         if shield is not None:
-            g *= aperture(p, rdet, *shield)
+            g = g * aperture(pt, rdet_t, *shield)
         G += g.sum(0)
-    out(f"    singles: {len(pts):,} voxels x {D} crystals in {time.time() - t0:.0f} s")
-    g = G.reshape(NRINGS, len(crystals))
+    out(f"    singles: {len(pts):,} voxels x {D} crystals in {time.time() - t0:.0f} s "
+        f"({dev}, {chunk} per chunk)")
+    g = G.cpu().numpy().reshape(NRINGS, len(crystals))
     full = np.empty((NRINGS, NDET), np.float64)
     t = np.arange(NDET)
     i0 = t // crystal_step
@@ -84,13 +99,17 @@ def geometric_singles(A, mu, lut, crystal_step: int = CRYSTAL_STEP, chunk: int =
     return full.reshape(-1)
 
 
-def aperture(p, rdet, z_shield: float, r_open: float) -> np.ndarray:
+def aperture(p, rdet, z_shield: float, r_open: float):
+    if is_torch(p):
+        import torch as xp
+    else:
+        xp = np
     zv = p[:, None, 2]
-    zs = np.sign(zv) * z_shield
-    outside = np.abs(zv) > z_shield
-    t = np.where(outside, (zs - zv) / np.where(outside, rdet[None, :, 2] - zv, 1.0), 0.0)
+    zs = xp.sign(zv) * z_shield
+    outside = xp.abs(zv) > z_shield
+    t = xp.where(outside, (zs - zv) / xp.where(outside, rdet[None, :, 2] - zv, 1.0), 0.0)
     xy = p[:, None, :2] + t[..., None] * (rdet[None, :, :2] - p[:, None, :2])
-    return (~outside) | (np.hypot(xy[..., 0], xy[..., 1]) <= r_open)
+    return (~outside) | (xp.hypot(xy[..., 0], xy[..., 1]) <= r_open)
 
 
 def rate_at_bed_start(counts, frame_s: float, half_life_s: float) -> np.ndarray:

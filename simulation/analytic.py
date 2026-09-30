@@ -101,7 +101,8 @@ def sss_images(b: Bed, margin_planes: int):
 
 def sss_sparse(b: Bed, image_step: int = sss.IMAGE_STEP, crystal_step: int = sss.CRYSTAL_STEP,
                ring_step: int = sss.RING_STEP, seed: int = 0,
-               margin_planes: int = SSS_MARGIN_PLANES, use_shield: bool = False, out=print):
+               margin_planes: int = SSS_MARGIN_PLANES, use_shield: bool = False, device=None,
+               out=print):
     sh = shield(b) if use_shield else None
     params = {"image_step": image_step, "crystal_step": crystal_step, "ring_step": ring_step,
               "seed": seed, "e_low": b.e_low, "e_res": sss.E_RES, "cutoff": sss.MU_CUTOFF}
@@ -115,7 +116,8 @@ def sss_sparse(b: Bed, image_step: int = sss.IMAGE_STEP, crystal_step: int = sss
     x, mu = sss_images(b, margin_planes)
     f, info = sss.simulate_sparse(x, mu, b.lut, sss.sample_rings(ring_step),
                                   sss.sample_crystals(crystal_step), image_step,
-                                  sss.MU_CUTOFF, b.e_low, sss.E_RES, seed, shield=sh, out=out)
+                                  sss.MU_CUTOFF, b.e_low, sss.E_RES, seed, shield=sh,
+                                  device=device, out=out)
     info["margin_planes"] = int(margin_planes)
     d.mkdir(parents=True, exist_ok=True)
     np.savez(p, f=f, info=json.dumps(info))
@@ -133,7 +135,7 @@ def scatter_weight(b: Bed, w: str) -> np.ndarray:
     return np.ones(b.binmap.n_bin, np.float64)
 
 
-def geometric(b: Bed, use_shield: bool = True, out=print) -> np.ndarray:
+def geometric(b: Bed, use_shield: bool = True, out=print, device=None) -> np.ndarray:
     sh = shield(b) if use_shield else None
     params = {"down": singles.DOWN_ZYX, "crystal_step": singles.CRYSTAL_STEP,
               "keep": singles.KEEP_FRACTION}
@@ -144,7 +146,7 @@ def geometric(b: Bed, use_shield: bool = True, out=print) -> np.ndarray:
     if p.exists():
         return np.load(p)
     A, mu = singles.coarse_phantom(b.pdir, b.meta)
-    G = singles.geometric_singles(A, mu, b.lut, shield=sh, out=out)
+    G = singles.geometric_singles(A, mu, b.lut, shield=sh, device=device, out=out)
     d.mkdir(parents=True, exist_ok=True)
     np.save(p, G)
     return G
@@ -159,23 +161,23 @@ def measured_rate(b: Bed) -> np.ndarray:
     return singles.rate_at_bed_start(singles.measured(b.case, b.bed), fr, b.half)
 
 
-def model_rate(b: Bed, calib: dict, out=print) -> np.ndarray:
+def model_rate(b: Bed, calib: dict, out=print, device=None) -> np.ndarray:
     s = calib["singles"]
-    G = geometric(b, s.get("shield", False), out)
+    G = geometric(b, s.get("shield", False), out, device)
     return singles.model(G, calib["eff"], s["c_s"], s["c_0"])
 
 
 def run_bed(case, dst, bed: int, seconds: float | None, seed: int, calib: dict,
-            singles_mode: str = "model", out=print) -> dict:
+            singles_mode: str = "model", out=print, device=None) -> dict:
     t0 = time.time()
     b = Bed(case, bed, seconds)
     rng = np.random.default_rng(seed)
     sc = calib["scatter"]
     f, info = sss_sparse(b, sc["image_step"], sc["crystal_step"], sc["ring_step"],
                          margin_planes=sc.get("margin_planes", 0),
-                         use_shield=sc.get("shield", False), out=out)
+                         use_shield=sc.get("shield", False), device=device, out=out)
     scatter_bin = sc["k_s"] * scatter_weight(b, sc["w"]) * sss_bins(b, f, info)
-    rate = measured_rate(b) if singles_mode == "measured" else model_rate(b, calib, out)
+    rate = measured_rate(b) if singles_mode == "measured" else model_rate(b, calib, out, device)
     randoms_fn = pp.singles_randoms(rate, WINDOW_NS, b.i2, None)
     randoms_bin = pp.randoms_per_bin(b.pairs, randoms_fn)
     af_acc = np.zeros(b.binmap.n_bin, np.float64)

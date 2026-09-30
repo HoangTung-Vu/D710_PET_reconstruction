@@ -8,6 +8,7 @@ from utils.paths import Case
 from utils.paths import case as get_case
 
 from . import events_io as eio
+from . import gpu
 from . import phantom as ph
 
 
@@ -104,7 +105,7 @@ def cmd_calibrate(C, a) -> int:
     from . import calibrate
 
     calibrate.run(C, a.beds, a.train, a.sss_step, a.sss_crystal_step, a.sss_ring_step,
-                  a.sss_margin, not a.no_shield)
+                  a.sss_margin, not a.no_shield, device=a.device)
     return 0
 
 
@@ -115,7 +116,7 @@ def cmd_analytic(C, a) -> int:
     dst = eio.sim_case(C, analytic.METHOD, a.seed)
     for bed in _beds(C, a.beds):
         print(f"analytic bed {bed}")
-        analytic.run_bed(C, dst, bed, a.seconds, a.seed, calib, a.singles)
+        analytic.run_bed(C, dst, bed, a.seconds, a.seed, calib, a.singles, device=a.device)
     print(f"-> {dst.root}")
     return 0
 
@@ -215,6 +216,8 @@ def main(argv=None) -> int:
                    help="planes of activity and mu beyond each end of the bed for SSS")
     p.add_argument("--no-shield", action="store_true",
                    help="no end-shield aperture for out-of-FOV photons")
+    p.add_argument("--device", choices=gpu.DEVICES, default=None,
+                   help=f"scatter and singles on cpu or cuda (default ${gpu.ENV}, else auto)")
 
     p = common(sub.add_parser("analytic", help="analytic model, calibrated; no GATE"))
     p.add_argument("--seconds", type=float, default=None, help="default: the real frame")
@@ -222,6 +225,8 @@ def main(argv=None) -> int:
     p.add_argument("--singles", choices=("model", "measured"), default="model",
                    help="randoms from modelled singles, or from the case's own")
     p.add_argument("--calib", default=None, help="default: simulation/analytic_calib.json")
+    p.add_argument("--device", choices=gpu.DEVICES, default=None,
+                   help=f"scatter and singles on cpu or cuda (default ${gpu.ENV}, else auto)")
 
     p = common(sub.add_parser("check-terms",
                               help="simulated randoms and scatter against the real case's"))

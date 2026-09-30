@@ -6,7 +6,7 @@ This package simulates D710 raw data, in list mode and as a sinogram, from a rea
 * **parallelproj** is its analytic twin, the forward model `y = S(Gx) + b` evaluated per crystal pair and TOF bin.
 * **analytic** needs no Monte Carlo at all: parallelproj trues, single-scatter simulation and randoms from modelled singles, calibrated once on a real exam. Non-TOF, ~1.5 min per bed once its scatter and singles are cached. See the next section.
 
-Each simulated bed is written as an ordinary case beside the real one. `d710 lm check`, `d710 lm recon` and `d710 osem` run on it unchanged. `d710 simulate compare` then puts it next to the real raw data of the same bed.
+Each simulated bed is written as an ordinary case **inside** the real one, `<case>/sim_<method>_s<seed>/`, with the phantom and the caches in `<case>/sim_cache/`. `d710 lm check`, `d710 lm recon`, `d710 sino` and `d710 export` run on it unchanged, given the case directory as the output root: `--out $D710_OUT/<case> --case sim_an_s1`. `d710 simulate compare` then puts it next to the real raw data of the same bed.
 
 ```bash
 conda activate petct_recon
@@ -15,7 +15,7 @@ d710 simulate phantom --case fdg26081008 --bed 1              # CT + PET on the 
 d710 simulate gate    --case fdg26081008 --bed 1 --seconds 3  # ~28 min per simulated second
 d710 simulate pp      --case fdg26081008 --bed 1 --seconds 3  # ~20 min per bed
 d710 simulate compare --case fdg26081008 --bed 1
-d710 lm check         --case fdg26081008_sim_gate_s1 --bed 1  # bit-exact, like a real case
+d710 lm check --out $D710_OUT/fdg26081008 --case sim_gate_s1 --bed 1  # bit-exact, like a real case
 ```
 
 ## Without GATE: `analytic`
@@ -23,14 +23,19 @@ d710 lm check         --case fdg26081008_sim_gate_s1 --bed 1  # bit-exact, like 
 ```bash
 d710 simulate calibrate --case fdg26081901          # once; writes analytic_calib.json + crystal_eff.npy (~50 min)
 d710 simulate phantom   --case fdg26081901
-d710 simulate analytic  --case fdg26081901          # -> fdg26081901_sim_an_s1
+d710 simulate analytic  --case fdg26081901          # -> fdg26081901/sim_an_s1
 d710 simulate check-terms --case fdg26081901        # simulated randoms/scatter vs GE's and vs the tails
-d710 lm check --case fdg26081901_sim_an_s1 --bed 1  # bit-exact
-d710 lm recon --case fdg26081901_sim_an_s1 --tof-bins 1
+d710 lm check --out $D710_OUT/fdg26081901 --case sim_an_s1 --bed 1   # bit-exact
+d710 sino     --out $D710_OUT/fdg26081901 --case sim_an_s1           # non-TOF, like the simulation
+d710 export   --out $D710_OUT/fdg26081901 --case sim_an_s1 --sino --format nifti
 
-# a PET/CT with no raw data: a header-only case built around it from a template exam
-d710 simulate virtual  --case h108_0002 --template fdg26081901 --ct X_0000.nii.gz --pet X_0001.nii.gz --pet-units suv
-d710 simulate analytic --case h108_0002
+# a PET/CT with no raw data: a header-only case, <case>/sim_virtual/, built around it from a template exam
+d710 simulate virtual  --case thyr_trainset_0002_20191016 --template fdg26081008 \
+    --ct CT.nii.gz --pet SUV.nii.gz --pet-units suv
+d710 simulate analytic --case thyr_trainset_0002_20191016        # finds sim_virtual/ by itself
+# lympho2: the patient's own dose, weight and times instead of the template's
+d710 simulate virtual  --case lympho2_fdg26031106 --template fdg26081008 --pet-units suv \
+    --ct source/CT.nii.gz --pet export/lympho2_fdg26031106_ge_suvbw.nii.gz --exam source/manifest.json
 ```
 
 Per LOR `(a, b)` in bin `beta`: `y = kappa normdt AF P[x] + k_s normdt SSS + 2w I2 S_a S_b`.
@@ -46,7 +51,7 @@ Per LOR `(a, b)` in bin `beta`: `y = kappa normdt AF P[x] + k_s normdt SSS + 2w 
 
 Measured on fdg26081901 (held-out beds 1, 4, 7), simulated / real: prompts 0.969, 1.023, 0.978; randoms / GE's 0.949, 1.026, 1.082; scatter / GE's 0.971, 1.061, 0.956. The weakest part is the singles' axial shape on the first and last bed. Details, and every number: `.claude/audit/simulation-analytic/ANALYTIC.md`.
 
-A virtual case borrows the template's bed 4 `normdt` (symlinked), its dose, weight and injection time for SUV -> Bq/mL, and its bed spacing; the beds are laid over the NIfTI's own z range. The template's identifying header fields are not copied.
+A virtual case borrows the template's bed 4 `normdt` (symlinked by absolute path: keep the template unpruned, and build the virtual case on the machine that runs it), its dose, weight and injection time for SUV -> Bq/mL, and its bed spacing; the beds are laid over the NIfTI's own z range. The template's identifying header fields are not copied. `--exam manifest.json` replaces the dose, weight, half-life, injection and scan-start times with the patient's own, read from a lympho2 manifest's `SUV` block; its local times are shifted to UTC by `--utc-offset-h` (7), and the decayed dose it recomputes must match the manifest's.
 
 ## One night of GATE: `overnight.sh`
 
@@ -166,13 +171,14 @@ A bed takes ~20 min: 576 ring pairs × 1.8 s for the TOF projection, measured.
 ## Output
 
 ```
-$D710_OUT/<case>_sim/phantom/bed<n>/     act_bqml.mhd, ct_hu.mhd, mu_bed.npy, phantom.json
-$D710_OUT/<case>_sim/compare/            bed<n>.json, bed<n>.png
-$D710_OUT/<case>_sim_gate_s<seed>/       an ordinary case
-$D710_OUT/<case>_sim_pp_s<seed>/         an ordinary case
-$D710_OUT/<case>_sim_an_s<seed>/         an ordinary case; + raw_simulation/bed<n>_singles_rate.npy
-$D710_OUT/<case>_sim/{sss,singles}/      cached scatter and singles per bed, keyed by the phantom
-$D710_OUT/<case>_sim/calib/              report.json, profiles.npz, calib.png
+$D710_OUT/<case>/sim_virtual/            a case without raw data: headers only, from the template
+$D710_OUT/<case>/sim_cache/phantom/bed<n>/  act_bqml.mhd, ct_hu.mhd, mu_bed.npy, phantom.json
+$D710_OUT/<case>/sim_cache/compare/      bed<n>.json, bed<n>.png, terms_<label>.json
+$D710_OUT/<case>/sim_gate_s<seed>/       an ordinary case
+$D710_OUT/<case>/sim_pp_s<seed>/         an ordinary case
+$D710_OUT/<case>/sim_an_s<seed>/         an ordinary case; + raw_simulation/bed<n>_singles_rate.npy
+$D710_OUT/<case>/sim_cache/{sss,singles}/  cached scatter and singles per bed, keyed by the phantom
+$D710_OUT/<case>/sim_cache/calib/        report.json, profiles.npz, calib.png
     decoded/bed<n>.lm.npy                event table, the decoder's dtype
     decoded/bed<n>.{s,hs,json}           histogrammed by lm.events.histogram
     work/bed<n>/{normdt,norm_only}       GE's, copied

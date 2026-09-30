@@ -24,6 +24,13 @@ def _default_input(C: Case, kind: str) -> Path:
                      + "\n  ".join(map(str, cands)) + f"\n  pass --{kind} <NIfTI or DICOM dir>")
 
 
+def resolve(name: str, out=None) -> Case:
+    C = get_case(name, out)
+    if not C.decoded.is_dir() and (C.root / eio.VIRTUAL / "decoded").is_dir():
+        return Case(eio.VIRTUAL, C.root)
+    return C
+
+
 def _beds(C: Case, beds) -> list[int]:
     have = C.decoded_beds()
     if not beds:
@@ -76,11 +83,11 @@ def cmd_pp(C, a) -> int:
 def cmd_compare(C, a) -> int:
     from . import compare
 
-    labels = a.sims or [p.name[len(C.name) + 5:] for p in sorted(C.root.parent.glob(
-        f"{C.name}_sim_*_s*")) if (p / "decoded").is_dir()]
+    labels = a.sims or [p.name[len("sim_"):] for p in sorted(eio.owner(C).glob("sim_*_s*"))
+                        if (p / "decoded").is_dir()]
     if not labels:
         raise SystemExit(f"error: no simulated case of {C.name} yet")
-    sims = {lab: Case(f"{C.name}_sim_{lab}", C.root.parent) for lab in labels}
+    sims = {lab: eio.sim_named(C, lab) for lab in labels}
     out = eio.sim_root(C) / "compare"
     for bed in _beds(C, a.beds):
         have = {k: S for k, S in sims.items() if bed in S.decoded_beds()}
@@ -126,8 +133,10 @@ def cmd_virtual(a) -> int:
     from . import virtual
 
     T = get_case(a.template, a.out)
-    V = virtual.build(T, a.name, Path(a.ct), Path(a.pet), a.pet_units, out_root(a.out),
-                      a.template_bed, a.margin_mm, a.kvp)
+    exam = virtual.exam_from_manifest(Path(a.exam), a.utc_offset_h) if a.exam else None
+    V = virtual.build(T, eio.VIRTUAL, Path(a.ct), Path(a.pet), a.pet_units,
+                      out_root(a.out) / a.name, a.template_bed, a.margin_mm, a.kvp,
+                      exam=exam)
     print(f"-> {V.root}")
     return 0
 
@@ -189,6 +198,11 @@ def main(argv=None) -> int:
     p.add_argument("--template-bed", type=int, default=4)
     p.add_argument("--margin-mm", type=float, default=ph.DEFAULT_MARGIN_MM)
     p.add_argument("--kvp", type=float, default=None)
+    p.add_argument("--exam", default=None,
+                   help="the patient's dose, weight and times from a lympho2 manifest.json "
+                        "(default: the template's)")
+    p.add_argument("--utc-offset-h", type=float, default=7.0,
+                   help="hours the manifest's local times are ahead of UTC")
     p.add_argument("--out", default=None, help="output root (default $D710_OUT)")
 
     p = common(sub.add_parser("calibrate", help="fit the analytic model to a real case"))
@@ -211,7 +225,7 @@ def main(argv=None) -> int:
 
     p = common(sub.add_parser("check-terms",
                               help="simulated randoms and scatter against the real case's"))
-    p.add_argument("--sim", default="an_s1", help="label: <case>_sim_<label>")
+    p.add_argument("--sim", default="an_s1", help="label: <case>/sim_<label>")
 
     p = common(sub.add_parser("compare", help="simulated against real raw data"))
     p.add_argument("--sims", nargs="*", help="labels such as gate_s1 pp_s1 (default: all)")
@@ -219,7 +233,7 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     if a.cmd == "virtual":
         return cmd_virtual(a)
-    C = get_case(a.case, a.out)
+    C = resolve(a.case, a.out)
     if not C.decoded.is_dir():
         raise SystemExit(f"error: {C.root} is not a decoded case")
     return {"phantom": cmd_phantom, "gate": cmd_gate, "pp": cmd_pp,

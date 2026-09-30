@@ -25,13 +25,25 @@ COPIED_TERMS = ("normdt", "norm_only")
 
 TERM_TEMPLATE = "randoms"
 
+VIRTUAL = "sim_virtual"
+
+CACHE = "sim_cache"
+
+
+def owner(c: Case) -> Path:
+    return c.root.parent if c.name == VIRTUAL else c.root
+
+
+def sim_named(real: Case, label: str) -> Case:
+    return Case(f"sim_{label}", owner(real))
+
 
 def sim_case(real: Case, method: str, seed: int) -> Case:
-    return Case(f"{real.name}_sim_{method}_s{seed}", real.root.parent)
+    return sim_named(real, f"{method}_s{seed}")
 
 
 def sim_root(real: Case) -> Path:
-    return real.root.parent / f"{real.name}_sim"
+    return owner(real) / CACHE
 
 
 def events(xa, xb, tof_bin, t_ms) -> np.ndarray:

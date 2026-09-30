@@ -10,6 +10,8 @@ import numpy as np
 from utils.paths import Case
 from utils.paths import case as get_case
 
+from . import events_io as eio
+
 EDGE_PLANES = 3
 
 BODY_SUV = 0.3
@@ -104,13 +106,13 @@ def main(argv=None) -> int:
                                  description="simulated against real images, SUV scale",
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--case", required=True)
-    ap.add_argument("--sim", default="gate_s1", help="label: <case>_sim_<label>")
+    ap.add_argument("--sim", default="gate_s1", help="label: <case>/sim_<label>")
     ap.add_argument("--lowcount", required=True, help="the real case thinned to the same time")
     ap.add_argument("--out", default=None)
     a = ap.parse_args(argv)
 
     C = get_case(a.case, a.out)
-    S = Case(f"{C.name}_sim_{a.sim}", C.root.parent)
+    S = eio.sim_named(C, a.sim)
     L = Case(a.lowcount, C.root.parent)
     paths = {"ge": C.export / f"{C.name}_ge_suvbw.nii.gz",
              "full": C.export / f"{C.name}_lm_suvbw.nii.gz",
@@ -133,7 +135,7 @@ def main(argv=None) -> int:
 
     b0 = S.decoded_beds()[0]
     frames = {"full": frame_s(C, b0), "low": frame_s(L, b0), "sim": frame_s(S, b0)}
-    out_dir = C.root.parent / f"{C.name}_sim" / "compare"
+    out_dir = eio.sim_root(C) / "compare"
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = f"images_{a.sim}_vs_{L.name}"
     (out_dir / f"{stem}.json").write_text(json.dumps(

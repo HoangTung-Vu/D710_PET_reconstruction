@@ -93,7 +93,7 @@ def check_bed(real: Case, sim: Case, bed: int, calib_beds: set, out=print):
 
 
 def run(real: Case, label: str = "an_s1", beds=None, out=print) -> dict:
-    sim = Case(f"{real.name}_sim_{label}", real.root.parent)
+    sim = eio.sim_named(real, label)
     if not sim.decoded.is_dir():
         raise SystemExit(f"error: no simulated case {sim.root}\n"
                          f"  run: d710 simulate analytic --case {real.name}")

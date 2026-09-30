@@ -180,3 +180,111 @@ def test_virtual_to_stir_keeps_layout_and_drops_the_template_exam(tmp_path):
     assert m["mapping"] == "m" and m["estimate"]["ct"] == "/new/ct.nii.gz"
     assert "stats" not in m and "raw" not in m["estimate"]
     assert m["virtual"] == {"template": "tmpl", "template_bed": 4}
+
+
+def test_simulated_cases_and_caches_live_inside_the_case(tmp_path):
+    from simulation import events_io as eio
+    from utils.paths import Case
+
+    R = Case("fdg1", tmp_path)
+    assert eio.sim_case(R, "an", 1).root == tmp_path / "fdg1" / "sim_an_s1"
+    assert eio.sim_case(R, "an", 1).name == "sim_an_s1"
+    assert eio.sim_root(R) == tmp_path / "fdg1" / "sim_cache"
+    V = Case(eio.VIRTUAL, tmp_path / "lympho2_x")
+    assert eio.sim_case(V, "an", 2).root == tmp_path / "lympho2_x" / "sim_an_s2"
+    assert eio.sim_root(V) == tmp_path / "lympho2_x" / "sim_cache"
+    assert eio.sim_named(V, "gate_s1").root == tmp_path / "lympho2_x" / "sim_gate_s1"
+
+
+def _lympho2_manifest(tmp_path, **suv):
+    import json
+
+    s = {"patient_weight_kg": 48.0, "radionuclide_total_dose_Bq": 262700000.0,
+         "radionuclide_half_life_s": 6586.2001953125, "decay_correction": "START",
+         "injection_time": "2026-03-11T10:00:00", "scan_time": "2026-03-11T11:05:16",
+         "decayed_dose_Bq": 173970136.88729987, "suv_factor": 0.0002759094224952816}
+    s.update(suv)
+    p = tmp_path / "manifest.json"
+    p.write_text(json.dumps({"SUV": s}))
+    return p
+
+
+def test_exam_from_manifest_is_utc_and_inverts_the_manifest_suv(tmp_path):
+    import datetime as dt
+
+    from simulation import phantom as ph
+    from simulation import virtual
+
+    e = virtual.exam_from_manifest(_lympho2_manifest(tmp_path), 7.0)
+    assert e["radiopharm_start_datetime"] == "20260311030000.00"
+    scan = dt.datetime(2026, 3, 11, 4, 5, 16, tzinfo=dt.timezone.utc).timestamp()
+    assert e["bed_start_time"] == scan
+    assert e["dose_mbq"] == 262.7 and e["residual_dose_mbq"] == 0.0
+    assert np.isclose(e["bqml_per_suv"] * 0.0002759094224952816, 1.0, rtol=1e-6)
+    timing = {"t_scan": e["bed_start_time"], "dose_bq": e["dose_mbq"] * 1e6,
+              "t_inj": ph.utc_epoch(e["radiopharm_start_datetime"]),
+              "weight_kg": e["patient_weight_kg"], "half_life_s": e["half_life_s"]}
+    f, info = ph.bqml_scale(ph.Volume(np.ones((2, 2, 2), np.float32), np.array([0.0, 1.0]),
+                                      0.0, 0.0, 1.0, "t"), "suv", timing)
+    assert np.isclose(f, e["bqml_per_suv"], rtol=1e-9)
+    assert np.isclose(info["uptake_min"], 65 + 16 / 60)
+
+
+def test_exam_from_manifest_refuses_a_disagreeing_or_non_start_manifest(tmp_path):
+    from simulation import virtual
+
+    with pytest.raises(SystemExit):
+        virtual.exam_from_manifest(_lympho2_manifest(tmp_path, decayed_dose_Bq=1.8e8))
+    with pytest.raises(SystemExit):
+        virtual.exam_from_manifest(_lympho2_manifest(tmp_path, decay_correction="ADMIN"))
+    with pytest.raises(SystemExit):
+        virtual.exam_from_manifest(_lympho2_manifest(tmp_path, scan_time="2026-03-11T09:00:00"))
+
+
+def test_virtual_build_lands_in_sim_virtual_with_the_patient_exam(tmp_path, monkeypatch):
+    import json
+
+    from simulation import __main__ as cli
+    from simulation import events_io as eio
+    from simulation import phantom as ph
+    from simulation import virtual
+    from utils.paths import Case
+
+    T = Case("tmpl", tmp_path)
+    T.decoded.mkdir(parents=True)
+    w = T.work_bed(4)
+    w.mkdir(parents=True)
+    for b in (3, 4):
+        (T.decoded / f"bed{b}.json").write_text(json.dumps({
+            "bed_start_time": 1.0e9 + 100.0 * b, "table_position_mm": 120.0 * b,
+            "bed_start_ticks": 7, "dose_mbq": 185.0, "residual_dose_mbq": 3.7,
+            "patient_weight_kg": 25.0, "half_life_s": 6586.2, "patient_name": "X",
+            "radiopharm_start_datetime": "20260728024500.00"}))
+        (T.decoded / f"bed{b}.hs").write_text(f"name of data file := bed{b}.s\n")
+    for stem in ("normdt", "norm_only", "randoms"):
+        (w / f"{stem}.hs").write_text(f"name of data file := {stem}.s\n")
+        (w / f"{stem}.s").write_bytes(b"")
+    z = np.arange(0.0, 400.0, 3.27)
+    monkeypatch.setattr(ph, "load_volume",
+                        lambda p, m: ph.Volume(np.zeros((len(z), 2, 2), np.float32), z,
+                                               0.0, 0.0, 2.0, "stub"))
+    monkeypatch.setattr(ph, "build", lambda *a, **k: None)
+    exam = virtual.exam_from_manifest(_lympho2_manifest(tmp_path))
+    V = virtual.build(T, eio.VIRTUAL, "ct.nii.gz", "pet.nii.gz", "suv",
+                      tmp_path / "lympho2_x", exam=exam, out=lambda *a: None)
+    assert V.root == tmp_path / "lympho2_x" / "sim_virtual"
+    beds = V.decoded_beds()
+    assert len(beds) >= 2
+    for n in beds:
+        h = V.header(n)
+        assert h["dose_mbq"] == 262.7 and h["patient_weight_kg"] == 48.0
+        assert h["residual_dose_mbq"] == 0.0
+        assert h["radiopharm_start_datetime"] == "20260311030000.00"
+        assert np.isclose(h["bed_start_time"], exam["bed_start_time"] + (n - 1) * 100.0)
+        assert "patient_name" not in h
+        assert (V.work_bed(n) / "normdt.s").resolve() == (w / "normdt.s").resolve()
+    assert json.loads((V.root / "virtual.json").read_text())["exam"]["dose_mbq"] == 262.7
+    assert cli.resolve("lympho2_x", tmp_path).root == V.root
+    assert cli.resolve("tmpl", tmp_path).root == T.root
+    assert eio.sim_case(cli.resolve("lympho2_x", tmp_path), "an", 1).root == \
+        tmp_path / "lympho2_x" / "sim_an_s1"

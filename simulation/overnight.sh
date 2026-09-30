@@ -56,9 +56,9 @@ export D710_OUT
 export D710_PYTHON="${D710_PYTHON:-python3}"
 PY="$D710_PYTHON"
 
-SIM="${CASE}_sim_gate_s${SEED}"
-SIMDIR="$D710_OUT/$SIM"
-ROOT="$D710_OUT/${CASE}_sim"
+SIM="sim_gate_s${SEED}"
+SIMDIR="$D710_OUT/$CASE/$SIM"
+ROOT="$D710_OUT/$CASE/sim_cache"
 mkdir -p "$ROOT"
 LOG="$ROOT/overnight_$(date +%Y%m%d_%H%M).log"
 exec > >(tee -a "$LOG") 2>&1
@@ -102,12 +102,12 @@ post_process() {
     for b in "${done_beds[@]}"; do
         "$D710" simulate gate --case "$CASE" --bed "$b" --seconds "$SIM_SECONDS" \
             --seed "$SEED" --threads "$THREADS" --convert-only
-        "$D710" lm check --case "$SIM" --bed "$b" | tail -1 \
+        "$D710" lm check --out "$D710_OUT/$CASE" --case "$SIM" --bed "$b" | tail -1 \
             || say "warning: lm check failed on $SIM bed $b"
     done
     say "post: reconstructing with the simulation's own randoms and scatter"
-    "$D710" lm recon --case "$SIM"
-    "$D710" export --case "$SIM" --lm --format nifti
+    "$D710" lm recon --out "$D710_OUT/$CASE" --case "$SIM"
+    "$D710" export --out "$D710_OUT/$CASE" --case "$SIM" --lm --format nifti
     say "post: raw data against the real exam"
     "$D710" simulate compare --case "$CASE" --sims "gate_s$SEED"
     say "post: images against the real low-count scan and the full dose"

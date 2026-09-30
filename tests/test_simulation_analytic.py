@@ -23,8 +23,10 @@ def _ellipse_phantom(shape=(40, 40, 6), dr=(6.0, 6.0, 6.0), seed=3):
 def test_sss_kernel_equals_pytomography_summed_not_averaged(monkeypatch):
     torch = pytest.importorskip("torch")
     psss = pytest.importorskip("pytomography.utils.sss")
+    import pytomography
     from pytomography.metadata import ObjectMeta
 
+    monkeypatch.setattr(pytomography, "device", torch.device("cpu"))
     act, mu, origin, vox = _ellipse_phantom()
     lut = pp.crystal_lut()
     got = {}

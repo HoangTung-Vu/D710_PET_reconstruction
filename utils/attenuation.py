@@ -130,7 +130,8 @@ def resample_to_bed(vol, z, x0: float, y0: float, pixel_mm: float,
                     table_position_mm: float, xy: int, dr_mm: float,
                     first_plane: int = 0, n_planes: int = PLANES_PER_BED,
                     cval: float = -1000.0, edge_tol_planes: float = 1.5,
-                    what: str = "CT", clamp_edges: bool = False) -> np.ndarray:
+                    what: str = "CT", clamp_edges: bool = False,
+                    order: int = 1) -> np.ndarray:
     from scipy.ndimage import map_coordinates
 
     z = np.asarray(z, np.float64)
@@ -158,7 +159,7 @@ def resample_to_bed(vol, z, x0: float, y0: float, pixel_mm: float,
 
     c = (np.arange(xy) - xy // 2) * vy
     g = np.meshgrid(gz, (c - y0) / pixel_mm, (c - x0) / pixel_mm, indexing="ij")
-    return map_coordinates(vol, [x.ravel() for x in g], order=1,
+    return map_coordinates(vol, [x.ravel() for x in g], order=order,
                            mode="constant", cval=cval).reshape(n_planes, xy, xy)
 
 

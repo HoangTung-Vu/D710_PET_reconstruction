@@ -35,16 +35,23 @@ def load_calib(path=CALIB_JSON) -> dict:
 
 
 class Bed:
-    def __init__(self, case, bed: int, seconds: float | None = None):
+    def __init__(self, case, bed: int, seconds: float | None = None, psf=None):
+        from lm.recon import psf_fwhm
+
         self.case, self.bed = case, bed
         self.pdir = ph.directory(eio.sim_root(case), bed)
         self.meta = ph.load(self.pdir)
         self.half = float(self.meta["timing"]["half_life_s"])
         self.frame = float(seconds or self.meta["frame_s"])
         self.k_frame = ph.frame_integral_s(self.frame, self.half) / self.meta["frame_integral_s"]
-        native = ph.decays_per_voxel(self.pdir, self.meta) / np.float32(ph.VOXEL_ML * 1000.0)
+        self.psf = psf_fwhm(psf) if psf is not None else None
+        per_ml = np.float32(ph.VOXEL_ML * 1000.0)
+        native = ph.decays_per_voxel(self.pdir, self.meta) / per_ml
         self.x_native = pp.projector_image(native)
-        self.x = pp.projector_image(native * np.float32(self.k_frame))
+        self.obj = native * np.float32(self.k_frame)
+        seen = (native if self.psf is None
+                else ph.decays_per_voxel(self.pdir, self.meta, self.psf) / per_ml)
+        self.x = pp.projector_image(seen * np.float32(self.k_frame))
         self.mu = pp.projector_image(np.load(self.pdir / "mu_bed.npy"))
         self.binmap = BinMap(case.prompt(bed))
         self.pairs = pp.RingPairs(self.binmap)
@@ -168,9 +175,9 @@ def model_rate(b: Bed, calib: dict, out=print, device=None) -> np.ndarray:
 
 
 def run_bed(case, dst, bed: int, seconds: float | None, seed: int, calib: dict,
-            singles_mode: str = "model", out=print, device=None) -> dict:
+            singles_mode: str = "model", out=print, device=None, psf=None) -> dict:
     t0 = time.time()
-    b = Bed(case, bed, seconds)
+    b = Bed(case, bed, seconds, psf)
     rng = np.random.default_rng(seed)
     sc = calib["scatter"]
     f, info = sss_sparse(b, sc["image_step"], sc["crystal_step"], sc["ring_step"],
@@ -194,14 +201,19 @@ def run_bed(case, dst, bed: int, seconds: float | None, seed: int, calib: dict,
                             "kappa": calib["kappa"], "scatter": {k: sc[k] for k in ("w", "k_s")},
                             "singles": singles_mode, "sss": info,
                             "expected": dict(zip(LABELS, map(float, expected))),
-                            "counts": counts, "tof_bins": 1,
+                            "counts": counts, "tof_bins": 1, "psf_fwhm_mm": b.psf,
+                            "depostfilter": b.meta.get("depostfilter"),
+                            "pet_order": b.meta.get("pet_order", 1),
                             "calib_case": calib.get("case"), "calib_made": calib.get("made")}}
     terms = {"attn": af_bin, "randoms": randoms_bin,
              "scatter": b.per_bin(scatter_bin)}
     row = eio.write_bed(case, dst, bed, ev, terms, header, {"label": lab},
                         README.format(case=case.name, seed=seed, seconds=b.frame,
-                                      singles=singles_mode))
+                                      singles=singles_mode,
+                                      psf=f"{b.psf} mm FWHM" if b.psf else "none"))
     np.save(dst.raw_sim / f"bed{bed}_singles_rate.npy", rate.astype(np.float32))
+    np.save(dst.raw_sim / f"bed{bed}_x_true.npy",
+            (np.float32(calib["kappa"]) * b.obj).astype(np.float32))
     row.update(header["simulated"])
     row["wall_s"] = round(time.time() - t0, 1)
     out(f"  bed {bed}: {row['prompts']:,} prompts in {b.frame:g} s -- {counts}  "
@@ -214,9 +226,10 @@ def run_bed(case, dst, bed: int, seconds: float | None, seed: int, calib: dict,
 README = """\
 Simulated raw data -- written by `d710 simulate analytic`. NOT measured data.
 Analytic model of the D710 over the CT and PET of case {case!r}; seed {seed},
-{seconds:g} s simulated, non-TOF, singles: {singles}. Trues are parallelproj
-line integrals, scatter is single-scatter simulation, randoms are 2w S_a S_b;
-the constants come from simulation/analytic_calib.json.
+{seconds:g} s simulated, non-TOF, singles: {singles}, PSF: {psf}. Trues are
+parallelproj line integrals of the activity blurred by the PSF, scatter is
+single-scatter simulation, randoms are 2w S_a S_b; the constants come from
+simulation/analytic_calib.json.
 
   ../decoded/bed<n>.lm.npy        events (tof_bin 0): trues, scatter, randoms
   ../decoded/bed<n>.s             histogrammed from those events
@@ -226,4 +239,6 @@ the constants come from simulation/analytic_calib.json.
   ../work/bed<n>/scatter          the scatter mean the events were drawn from
   bed<n>_truth.npz                per event: label 0 true, 1 scatter, 2 random
   bed<n>_singles_rate.npy         singles per crystal at bed start, cps
+  bed<n>_x_true.npy               the object before the PSF, (z, y, x), in the
+                                  units of work/bed<n>/sino.npz img (kappa x)
 """

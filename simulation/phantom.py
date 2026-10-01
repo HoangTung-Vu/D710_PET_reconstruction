@@ -1,22 +1,28 @@
 from __future__ import annotations
 
 import datetime as dt
+import functools
 import json
 import math
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
 
 from utils.attenuation import hu_to_mu, resample_to_bed, to_radiological
-from utils.scanner import DR_MM, NSEG0, PLANE_MM, XY
+from utils.scanner import (DR_MM, NSEG0, PLANE_MM, POST_FILTER_FWHM_MM,
+                           POST_FILTER_Z_RATIO, XY)
 
 UNITS = ("suv", "bqml", "relative")
 
 VOXEL_XYZ = (DR_MM, DR_MM, PLANE_MM)
 
 VOXEL_ML = DR_MM * DR_MM * PLANE_MM / 1000.0
+
+PET_ORDER = 3
+
+FWHM_TO_SIGMA = 1.0 / (2.0 * math.sqrt(2.0 * math.log(2.0)))
 
 DEFAULT_MARGIN_MM = 900.0
 """Enough to take in the whole 896 mm GE whole-body image from any bed. Measured
@@ -99,6 +105,35 @@ def _load_dicom(path: Path, modality: str) -> Volume:
     return Volume(np.asarray(vol, np.float32), z, m["x0"], m["y0"], m["px"],
                   f"DICOM {m['desc']} (BQML)",
                   {"path": str(path), "decay": m["decay"]})
+
+
+def depostfilter(vol: Volume, fwhm_mm: float = POST_FILTER_FWHM_MM,
+                 z_ratio: float = POST_FILTER_Z_RATIO, iters: int = 0) -> Volume:
+    from osem.stitch import post_filter
+
+    if iters <= 0:
+        return vol
+    vox = [float(np.diff(vol.z).mean()), vol.pixel_mm, vol.pixel_mm]
+
+    def H(a):
+        return post_filter(a, vox, fwhm_mm, z_ratio, verbose=False)
+
+    g = np.clip(vol.data, 0.0, None).astype(np.float32)
+    norm = H(np.ones_like(g))
+    x = g.copy()
+    for _ in range(int(iters)):
+        hx = H(x)
+        x = x * H(np.divide(g, hx, out=np.zeros_like(g), where=hx > 0)) / norm
+    fit = float(np.linalg.norm(H(x) - g) / max(np.linalg.norm(g), 1e-30))
+    info = {"sum_ratio": float(x.sum(dtype=np.float64) / max(g.sum(dtype=np.float64), 1e-30)),
+            "max_ratio": float(x.max() / max(g.max(), 1e-30)), "residual": fit}
+    return replace(vol, data=x.astype(np.float32),
+                   meta={**vol.meta, "depostfilter": info})
+
+
+@functools.lru_cache(maxsize=1)
+def _pet(path: str, fwhm_mm: float, z_ratio: float, iters: int) -> Volume:
+    return depostfilter(load_volume(path, "PT"), fwhm_mm, z_ratio, iters)
 
 
 def utc_epoch(stamp: str) -> float:
@@ -196,17 +231,30 @@ def world_origin(shape_zyx) -> np.ndarray:
 
 
 def on_bed_grid(vol: Volume, table_position_mm: float, margin_mm: float,
-                cval: float, what: str) -> np.ndarray:
+                cval: float, what: str, order: int = 1) -> np.ndarray:
     first, n = grid_planes(margin_mm)
     a = resample_to_bed(vol.data, vol.z, vol.x0, vol.y0, vol.pixel_mm,
                         table_position_mm, XY, DR_MM, first_plane=first,
-                        n_planes=n, cval=cval, what=what, clamp_edges=True)
+                        n_planes=n, cval=cval, what=what, clamp_edges=True,
+                        order=order)
     return np.ascontiguousarray(to_radiological(a), dtype=np.float32)
 
 
 def bed_planes(arr, margin_mm: float) -> np.ndarray:
     first, _ = grid_planes(margin_mm)
     return arr[-first:-first + NSEG0]
+
+
+def psf_bed_planes(arr, margin_mm: float, fwhm_xyz) -> np.ndarray:
+    from scipy.ndimage import gaussian_filter
+
+    sigma = (np.asarray(fwhm_xyz, np.float64)[::-1] * FWHM_TO_SIGMA
+             / np.array([PLANE_MM, DR_MM, DR_MM]))
+    first = -grid_planes(margin_mm)[0]
+    pad = min(int(4.0 * sigma[0] + 0.5) + 1, first)
+    slab = np.asarray(arr[first - pad:first + NSEG0 + pad], np.float32)
+    out = gaussian_filter(slab, sigma, mode="constant", cval=0.0)
+    return out[pad:pad + NSEG0]
 
 
 def write_mhd(path, arr_zyx, spacing_xyz=VOXEL_XYZ, origin_xyz=None) -> Path:
@@ -242,22 +290,33 @@ def directory(sim_root: Path, bed: int) -> Path:
 
 def build(case, bed: int, ct_path, pet_path, pet_units: str, out_dir: Path,
           activity=None, margin_mm: float = DEFAULT_MARGIN_MM,
-          kvp: float | None = None, out=print) -> dict:
+          kvp: float | None = None, depostfilter: dict | None = None,
+          out=print) -> dict:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     hdr = case.header(bed)
     timing = exam_timing(case)
     tp = float(hdr["table_position_mm"])
 
+    dp = {"iters": 0, "fwhm_mm": POST_FILTER_FWHM_MM, "z_ratio": POST_FILTER_Z_RATIO,
+          **(depostfilter or {})}
+    dp = {"iters": int(dp["iters"]), "fwhm_mm": float(dp["fwhm_mm"]),
+          "z_ratio": float(dp["z_ratio"])}
     ct = load_volume(ct_path, "CT")
-    pet = load_volume(pet_path, "PT")
+    pet = _pet(str(pet_path), dp["fwhm_mm"], dp["z_ratio"], dp["iters"])
     out(f"  CT  {ct.describe()}")
     out(f"  PET {pet.describe()}")
+    if dp["iters"] > 0:
+        dp.update(pet.meta["depostfilter"])
+        out(f"  de-postfilter: {dp['iters']} Richardson-Lucy iterations of "
+            f"{dp['fwhm_mm']:g} mm + [1,{dp['z_ratio']:g},1]; activity x{dp['sum_ratio']:.4f}, "
+            f"max x{dp['max_ratio']:.3f}, |Hx - PET| {100 * dp['residual']:.1f} %")
     kvp = float(kvp or ct.meta.get("kvp") or 120.0)
 
     f, info = bqml_scale(pet, pet_units, timing, activity)
     hu = on_bed_grid(ct, tp, margin_mm, -1000.0, "CT")
-    act = np.clip(on_bed_grid(pet, tp, margin_mm, 0.0, "PET"), 0.0, None) * np.float32(f)
+    act = np.clip(on_bed_grid(pet, tp, margin_mm, 0.0, "PET", order=PET_ORDER),
+                  0.0, None) * np.float32(f)
 
     frame_s = float(hdr["frame_duration_ms"]) / 1000.0
     t_bed = timing["bed_start"][bed]
@@ -275,6 +334,7 @@ def build(case, bed: int, ct_path, pet_path, pet_units: str, out_dir: Path,
     meta = {
         "case": case.name, "bed": bed, "table_position_mm": tp,
         "ct": str(ct_path), "pet": str(pet_path), "ct_kvp": kvp,
+        "depostfilter": dp, "pet_order": PET_ORDER,
         "first_plane": first, "n_planes": n, "margin_mm": margin_mm,
         "shape_zyx": list(act.shape), "voxel_xyz_mm": list(VOXEL_XYZ),
         "origin_xyz_mm": world_origin(act.shape).tolist(),
@@ -305,8 +365,10 @@ def load(out_dir: Path) -> dict:
     return json.loads(p.read_text())
 
 
-def decays_per_voxel(out_dir: Path, meta: dict) -> np.ndarray:
-    act = bed_planes(read_mhd(Path(out_dir) / "act_bqml.mhd"), meta["margin_mm"])
+def decays_per_voxel(out_dir: Path, meta: dict, psf_fwhm_mm=None) -> np.ndarray:
+    full = read_mhd(Path(out_dir) / "act_bqml.mhd")
+    act = (psf_bed_planes(full, meta["margin_mm"], psf_fwhm_mm) if psf_fwhm_mm
+           else bed_planes(full, meta["margin_mm"]))
     k = (meta["decay_scan_to_bed"] * meta["timing"]["positron_fraction"]
          * meta["frame_integral_s"] * VOXEL_ML)
     return (act * np.float32(k)).astype(np.float32)

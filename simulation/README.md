@@ -22,8 +22,8 @@ d710 lm check --out $D710_OUT/fdg26081008 --case sim_gate_s1 --bed 1  # bit-exac
 
 ```bash
 d710 simulate calibrate --case fdg26081901          # once; writes analytic_calib.json + crystal_eff.npy (~50 min)
-d710 simulate phantom   --case fdg26081901
-d710 simulate analytic  --case fdg26081901          # -> fdg26081901/sim_an_s1
+d710 simulate phantom   --case fdg26081901 --depostfilter-iters 5   # GE's post-filter undone first
+d710 simulate analytic  --case fdg26081901          # -> fdg26081901/sim_an_s1; --label an_rl5_s1 -> sim_an_rl5_s1
 d710 simulate check-terms --case fdg26081901        # simulated randoms/scatter vs GE's and vs the tails
 d710 lm check --out $D710_OUT/fdg26081901 --case sim_an_s1 --bed 1   # bit-exact
 d710 sino     --out $D710_OUT/fdg26081901 --case sim_an_s1           # non-TOF, like the simulation
@@ -44,16 +44,22 @@ Per LOR `(a, b)` in bin `beta`: `y = kappa normdt AF P[x] + k_s normdt SSS + 2w 
 
 | part | how | constant (fitted on beds 2, 3, 5, 6 of fdg26081901) |
 |---|---|---|
-| trues | `joseph3d_fwd` through the PET (decays per mm^3) and the CT's mu | `kappa` |
+| trues | `joseph3d_fwd` through the PET (decays per mm^3), blurred by GE's PSF (`--psf`, 4.87/4.87/4.45 mm), and the CT's mu | `kappa` |
 | scatter | PyTomography's single-scatter kernel (Watson 2007), summed over points, activity and mu 24 planes beyond each end of the bed | `k_s`, weight `normdt` |
-| singles | `eff_i (c_s G_i + c_0)`, `G_i` = attenuated solid angle of every voxel of the whole image | `c_s`, `c_0`, `crystal_eff.npy` |
+| singles | `eff_i (c_s G_i + c_0)`, `G_i` = attenuated solid angle of every voxel of the whole image | `c_s`, `c_0` (mean of fdg26081901 and fdg26081008), `crystal_eff.npy` |
 | out-of-FOV photons | pass the lead end shields only through the patient port (350 mm), shield plane 30 mm beyond the crystals | chosen among three |
 
 `decoded/bed<n>.singles.npy` is in GE's hardware order (modules of 2 x 4 blocks); `singles.measured()` puts it in crystal-id order. Without it, randoms from singles are 30-50 % wrong plane by plane.
 
 Measured on fdg26081901 (held-out beds 1, 4, 7), simulated / real: prompts 0.969, 1.023, 0.978; randoms / GE's 0.949, 1.026, 1.082; scatter / GE's 0.971, 1.061, 0.956. The weakest part is the singles' axial shape on the first and last bed. Details, and every number: `.claude/audit/simulation-analytic/ANALYTIC.md`.
 
-A virtual case borrows the template's bed 4 `normdt` (symlinked by absolute path: keep the template unpruned, and build the virtual case on the machine that runs it), its dose, weight and injection time for SUV -> Bq/mL, and its bed spacing; the beds are laid over the NIfTI's own z range. The template's identifying header fields are not copied. `--exam manifest.json` replaces the dose, weight, half-life, injection and scan-start times with the patient's own, read from a lympho2 manifest's `SUV` block; its local times are shifted to UTC by `--utc-offset-h` (7), and the decayed dose it recomputes must match the manifest's.
+`c_0`, the singles every crystal sees whatever the image holds, did not carry over to the held-out fdg26081008: its own refit is 238.88 against fdg26081901's 294.81, while `c_s` moved 1 %. `analytic_calib.json` now holds the mean of the two, 266.84, with both values beside it. On fdg26081008 that takes randoms / real delays from 1.10-1.22 to 1.02-1.12 per bed (computed from the cached `G`), and moves fdg26081901 about 7 % the other way. Delays are `2 tau S^2` on 36 of the 37 beds of the five FDG exams, so the randoms are only as good as the singles. For a case with raw data, `--singles measured` stays exact.
+
+The PET a simulation starts from is GE's image, which went through the PSF, GE's reconstruction and GE's 6.4 mm + [1,4,1] post-filter. Simulated from as it is, then reconstructed and post-filtered again, it ends at 0.76 of GE's lesion SUVmax (median of 10 lymphoma lesions); without our post-filter it is 0.99. `--depostfilter-iters N` on `phantom` and `virtual` undoes GE's post-filter first, with N Richardson-Lucy iterations of `osem.stitch.post_filter` itself on the PET's own grid, and `analytic` blurs the activity of the trues by the PSF the reconstruction models (`--psf`, default GE's; 0 turns it off). Scatter and singles are computed from the unblurred activity. The PET is resampled onto the bed grid with cubic splines (linear would blur back about 2.6 mm), and `phantom.json` records both choices, so the scatter and singles caches follow them. N is chosen against the real raw data of fdg26081008, not guessed; each iteration brings back some of the noise GE's filter had smoothed.
+
+Every bed also writes `raw_simulation/bed<n>_x_true.npy`: the object before the PSF, on the bed grid, (z, y, x), in the units of `work/bed<n>/sino.npz` `img` (`kappa` times decays per voxel). Post-filtered, it is GE's image again, so it is the reference both for the reconstruction and for a network.
+
+A virtual case borrows the template's bed 4 `normdt` (symlinked by absolute path: keep the template unpruned, and build the virtual case on the machine that runs it), its dose, weight and injection time for SUV -> Bq/mL, and its bed spacing; the beds are laid over the NIfTI's own z range, and an image spanning a whole number of beds (to a thousandth of a step) gets exactly that many. The template's identifying header fields are not copied. `--exam manifest.json` replaces the dose, weight, half-life, injection and scan-start times with the patient's own, read from a lympho2 manifest's `SUV` block; its local times are shifted to UTC by `--utc-offset-h` (7), and the decayed dose it recomputes must match the manifest's.
 
 ## One night of GATE: `overnight.sh`
 

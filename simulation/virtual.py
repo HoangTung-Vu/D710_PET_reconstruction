@@ -66,7 +66,7 @@ def table_positions(z0: float, z1: float, step: float) -> list[float]:
                          f"({BED_SPAN_MM:.1f} mm)")
     if last - first < 1e-6:
         return [first]
-    n = math.ceil((last - first) / step - 1e-9) + 1
+    n = math.ceil((last - first) / step - 1e-3) + 1
     return [first + k * (last - first) / (n - 1) for k in range(n)]
 
 
@@ -88,7 +88,8 @@ def write_to_stir(template: Case, template_bed: int, w: Path, ct, table_position
 
 def build(template: Case, name: str, ct, pet, pet_units: str, root: Path,
           template_bed: int = TEMPLATE_BED, margin_mm: float = ph.DEFAULT_MARGIN_MM,
-          kvp: float | None = None, exam: dict | None = None, out=print) -> Case:
+          kvp: float | None = None, exam: dict | None = None,
+          depostfilter: dict | None = None, out=print) -> Case:
     V = Case(name, root)
     if any(V.decoded.glob("bed*.json")):
         raise SystemExit(f"error: {V.root} already holds a case; pick another --name")
@@ -133,7 +134,7 @@ def build(template: Case, name: str, ct, pet, pet_units: str, root: Path,
     info = {"template": template.name, "template_bed": template_bed, "ct": str(ct),
             "pet": str(pet), "pet_units": pet_units, "pet_z_mm": [float(z.min()), float(z.max())],
             "bed_step_mm": step, "table_positions_mm": [float(p) for p in pos],
-            "exam": exam}
+            "exam": exam, "depostfilter": depostfilter}
     if exam:
         out(f"exam from {exam['source']}: {exam['dose_mbq']:.2f} MBq, "
             f"{exam['patient_weight_kg']:g} kg, uptake {exam['uptake_min']:.1f} min, "
@@ -142,5 +143,5 @@ def build(template: Case, name: str, ct, pet, pet_units: str, root: Path,
     for n in range(1, len(pos) + 1):
         out(f"phantom bed {n}: table {pos[n - 1]:.2f} mm")
         ph.build(V, n, ct, pet, pet_units, ph.directory(eio.sim_root(V), n),
-                 margin_mm=margin_mm, kvp=kvp, out=out)
+                 margin_mm=margin_mm, kvp=kvp, depostfilter=depostfilter, out=out)
     return V

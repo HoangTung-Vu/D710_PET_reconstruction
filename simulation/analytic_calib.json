@@ -43,7 +43,13 @@
  },
  "singles": {
   "c_s": 2.424676451616666,
-  "c_0": 294.80641440279464,
+  "c_0": 266.84,
+  "c_0_by_case": {
+   "fdg26081901": 294.81,
+   "fdg26081008": 238.88
+  },
+  "c_0_rule": "mean of the two",
+  "c_0_updated": "2026-10-01",
   "eff_file": "crystal_eff.npy",
   "shield": true,
   "down_zyx": [

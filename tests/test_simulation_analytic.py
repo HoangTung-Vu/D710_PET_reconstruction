@@ -148,6 +148,70 @@ def test_virtual_beds_cover_the_pet_with_at_least_the_template_overlap():
         virtual.table_positions(0.0, 100.0, step)
 
 
+def test_a_pet_spanning_whole_beds_plus_round_off_gets_no_extra_bed():
+    from simulation import virtual
+
+    step = 124.26
+    pos = virtual.table_positions(0.0, virtual.BED_SPAN_MM + 6 * step + 1e-6, step)
+    assert len(pos) == 7 and np.allclose(np.diff(pos), step)
+    assert len(virtual.table_positions(0.0, virtual.BED_SPAN_MM + 6.5 * step, step)) == 8
+
+
+def test_depostfilter_inverts_ges_post_filter():
+    from osem.stitch import post_filter
+    from simulation import phantom as ph
+
+    vox = [3.27, 2.734, 2.734]
+    z, y, x = np.mgrid[:24, :40, :40].astype(np.float64)
+    zz = (z - 12) * vox[0] / vox[1]
+    obj = (0.2 * ((y - 20) ** 2 + (x - 20) ** 2 < 15 ** 2)
+           + 4.0 * (zz ** 2 + (y - 20) ** 2 + (x - 20) ** 2 < 4 ** 2)).astype(np.float32)
+
+    def H(a):
+        return post_filter(a, vox, verbose=False)
+
+    g = H(obj)
+    vol = ph.Volume(g, vox[0] * np.arange(24), 0.0, 0.0, vox[1], "t")
+    assert ph.depostfilter(vol, iters=0) is vol
+    out = ph.depostfilter(vol, iters=30)
+    d = out.data
+    r0 = np.linalg.norm(H(g) - g) / np.linalg.norm(g)
+    r = np.linalg.norm(H(d) - g) / np.linalg.norm(g)
+    assert r < r0 and r < 0.02
+    assert out.meta["depostfilter"]["residual"] == pytest.approx(r, rel=1e-3)
+    assert np.isclose(d.sum(dtype=np.float64), g.sum(dtype=np.float64), rtol=0.01)
+    assert d.min() >= 0.0 and d.max() > g.max()
+
+
+def test_psf_blur_of_the_bed_slab_equals_the_whole_grid_and_keeps_counts(tmp_path):
+    from scipy.ndimage import gaussian_filter
+
+    from simulation import phantom as ph
+    from utils.scanner import DR_MM, NSEG0, PLANE_MM, PSF_FWHM_MM
+
+    margin = 30.0
+    first, n = ph.grid_planes(margin)
+    rng = np.random.default_rng(4)
+    act = np.zeros((n, 40, 40), np.float32)
+    act[:, 10:30, 10:30] = rng.random((n, 20, 20))
+    sigma = (np.array([PSF_FWHM_MM[2] / PLANE_MM, PSF_FWHM_MM[1] / DR_MM, PSF_FWHM_MM[0] / DR_MM])
+             / (2.0 * np.sqrt(2.0 * np.log(2.0))))
+    whole = gaussian_filter(act, sigma, mode="constant")[-first:-first + NSEG0]
+    assert np.allclose(ph.psf_bed_planes(act, margin, PSF_FWHM_MM), whole, rtol=1e-5, atol=1e-7)
+
+    inner = np.zeros_like(act)
+    sl = slice(-first + 3, -first + NSEG0 - 3)
+    inner[sl] = act[sl]
+    ph.write_mhd(tmp_path / "act_bqml.mhd", inner)
+    meta = {"margin_mm": margin, "decay_scan_to_bed": 1.0, "frame_integral_s": 1.0,
+            "timing": {"positron_fraction": 1.0}}
+    a = ph.decays_per_voxel(tmp_path, meta)
+    b = ph.decays_per_voxel(tmp_path, meta, PSF_FWHM_MM)
+    assert a.shape == b.shape == (NSEG0, 40, 40)
+    assert np.isclose(b.sum(dtype=np.float64), a.sum(dtype=np.float64), rtol=1e-5)
+    assert b.max() < a.max()
+
+
 def test_shield_aperture_blocks_only_rays_that_leave_through_the_lead():
     lut = pp.crystal_lut().astype(np.float64)
     det = np.array([0, 11 * NDET + 100, 23 * NDET + 300])

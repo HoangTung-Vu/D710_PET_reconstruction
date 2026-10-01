@@ -6,6 +6,7 @@ from pathlib import Path
 
 from utils.paths import Case
 from utils.paths import case as get_case
+from utils.scanner import POST_FILTER_FWHM_MM, POST_FILTER_Z_RATIO, PSF_FWHM_MM
 
 from . import events_io as eio
 from . import gpu
@@ -42,6 +43,11 @@ def _beds(C: Case, beds) -> list[int]:
     return beds
 
 
+def _depostfilter(a) -> dict:
+    return {"iters": a.depostfilter_iters, "fwhm_mm": a.depostfilter_mm,
+            "z_ratio": a.depostfilter_z_ratio}
+
+
 def cmd_phantom(C, a) -> int:
     ct = Path(a.ct) if a.ct else _default_input(C, "ct")
     pet = Path(a.pet) if a.pet else _default_input(C, "pet")
@@ -50,7 +56,8 @@ def cmd_phantom(C, a) -> int:
     for bed in _beds(C, a.beds):
         print(f"phantom bed {bed}: CT {ct}\n  PET {pet} ({units})")
         ph.build(C, bed, ct, pet, units, ph.directory(eio.sim_root(C), bed),
-                 activity=act, margin_mm=a.margin_mm, kvp=a.kvp)
+                 activity=act, margin_mm=a.margin_mm, kvp=a.kvp,
+                 depostfilter=_depostfilter(a))
     return 0
 
 
@@ -113,10 +120,12 @@ def cmd_analytic(C, a) -> int:
     from . import analytic
 
     calib = analytic.load_calib(a.calib) if a.calib else analytic.load_calib()
-    dst = eio.sim_case(C, analytic.METHOD, a.seed)
+    dst = (eio.sim_named(C, a.label) if a.label
+           else eio.sim_case(C, analytic.METHOD, a.seed))
     for bed in _beds(C, a.beds):
         print(f"analytic bed {bed}")
-        analytic.run_bed(C, dst, bed, a.seconds, a.seed, calib, a.singles, device=a.device)
+        analytic.run_bed(C, dst, bed, a.seconds, a.seed, calib, a.singles, device=a.device,
+                         psf=a.psf)
     print(f"-> {dst.root}")
     return 0
 
@@ -137,7 +146,7 @@ def cmd_virtual(a) -> int:
     exam = virtual.exam_from_manifest(Path(a.exam), a.utc_offset_h) if a.exam else None
     V = virtual.build(T, eio.VIRTUAL, Path(a.ct), Path(a.pet), a.pet_units,
                       out_root(a.out) / a.name, a.template_bed, a.margin_mm, a.kvp,
-                      exam=exam)
+                      exam=exam, depostfilter=_depostfilter(a))
     print(f"-> {V.root}")
     return 0
 
@@ -147,6 +156,16 @@ def main(argv=None) -> int:
                                  description="raw D710 data simulated from a case's CT and PET",
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
+
+    def depost(p):
+        p.add_argument("--depostfilter-iters", type=int, default=0, metavar="N",
+                       help="Richardson-Lucy iterations undoing GE's post-filter on the PET "
+                            "before it is simulated (0: off)")
+        p.add_argument("--depostfilter-mm", type=float, default=POST_FILTER_FWHM_MM,
+                       metavar="MM", help="transaxial FWHM of the post-filter to undo")
+        p.add_argument("--depostfilter-z-ratio", type=float, default=POST_FILTER_Z_RATIO,
+                       metavar="R", help="axial [1,R,1] of the post-filter to undo")
+        return p
 
     def common(p):
         p.add_argument("--case", required=True, help="the real case the simulation copies")
@@ -163,6 +182,7 @@ def main(argv=None) -> int:
     p.add_argument("--margin-mm", type=float, default=ph.DEFAULT_MARGIN_MM,
                    help="activity beyond each end of the bed that GATE also sees")
     p.add_argument("--kvp", type=float, default=None, help="CT kVp (NIfTI has none; 120)")
+    depost(p)
 
     p = common(sub.add_parser("gate", help="GATE Monte Carlo, in resumable chunks"))
     p.add_argument("--seconds", type=float, default=None,
@@ -204,6 +224,7 @@ def main(argv=None) -> int:
                         "(default: the template's)")
     p.add_argument("--utc-offset-h", type=float, default=7.0,
                    help="hours the manifest's local times are ahead of UTC")
+    depost(p)
     p.add_argument("--out", default=None, help="output root (default $D710_OUT)")
 
     p = common(sub.add_parser("calibrate", help="fit the analytic model to a real case"))
@@ -225,6 +246,10 @@ def main(argv=None) -> int:
     p.add_argument("--singles", choices=("model", "measured"), default="model",
                    help="randoms from modelled singles, or from the case's own")
     p.add_argument("--calib", default=None, help="default: simulation/analytic_calib.json")
+    p.add_argument("--psf", type=float, nargs="+", default=list(PSF_FWHM_MM), metavar="MM",
+                   help="XY [Z] mm FWHM blurring the activity of the trues; 0 disables")
+    p.add_argument("--label", default=None,
+                   help="output <case>/sim_<label> (default: an_s<seed>)")
     p.add_argument("--device", choices=gpu.DEVICES, default=None,
                    help=f"scatter and singles on cpu or cuda (default ${gpu.ENV}, else auto)")
 

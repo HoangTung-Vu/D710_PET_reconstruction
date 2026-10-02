@@ -43,13 +43,20 @@
  },
  "singles": {
   "c_s": 2.424676451616666,
-  "c_0": 266.84,
+  "c_0": 240.0,
+  "c_0_previous": 266.84,
   "c_0_by_case": {
    "fdg26081901": 294.81,
    "fdg26081008": 238.88
   },
-  "c_0_rule": "mean of the two",
-  "c_0_updated": "2026-10-01",
+  "c_0_rule": "round value fixed by the user after the leave-one-exam-out test of 2026-10-02; per-exam refits 82-267",
+  "c_0_refit_2026_10_02": {
+   "fdg26072803": 224.3,
+   "fdg26080604": 82.3,
+   "fdg26081008": 222.6,
+   "fdg26081901": 266.7
+  },
+  "c_0_updated": "2026-10-02",
   "eff_file": "crystal_eff.npy",
   "shield": true,
   "down_zyx": [

@@ -160,12 +160,18 @@ def main(argv=None) -> int:
     which.add_argument("--sino", action="store_true",
                        help="export recon_sino.npz (d710 sino) instead of "
                             "recon.npz")
+    which.add_argument("--fbsem", action="store_true",
+                       help="export recon_fbsem.npz (d710 fbsem recon), with "
+                            "the sinogram K")
     args = ap.parse_args(argv)
+    sino_k = args.sino or args.fbsem
 
     C = get_case(args.case, args.out)
-    src = C.recon_lm if args.lm else C.recon_sino if args.sino else C.recon
+    src = (C.recon_lm if args.lm else C.recon_sino if args.sino else
+           C.recon_fbsem if args.fbsem else C.recon)
     if not src.exists():
         how = ("d710 lm recon --case %s" % C.name if args.lm else
+               "d710 fbsem recon --case %s --model <.pt>" % C.name if args.fbsem else
                "d710 sino --case %s" % C.name if args.sino else
                "./d710_isolate_stir.sh osem --case %s  (the SIRF sinogram "
                "path, docker only)\n  or, without SIRF:  d710 sino --case %s "
@@ -189,9 +195,9 @@ def main(argv=None) -> int:
     if K is not None:
         print(f"K from --K = {K:,.2f}")
     if K is None:
-        K = quant.k_export(lm=args.lm, sino=args.sino)
+        K = quant.k_export(lm=args.lm, sino=sino_k)
         if K is not None:
-            var, const = quant.k_source(lm=args.lm, sino=args.sino)
+            var, const = quant.k_source(lm=args.lm, sino=sino_k)
             print(f"export's own K = {K:,.2f}"
                   + (f"   ({var})" if os.environ.get(var)
                      else f"   (quant.{const})"))
@@ -214,7 +220,8 @@ def main(argv=None) -> int:
 
     r = quant.report(vol, K, hdr, vox, dose=dose)
 
-    tag = "_lm" if args.lm else "_sino" if args.sino else ""
+    tag = ("_lm" if args.lm else "_sino" if args.sino else
+           "_fbsem" if args.fbsem else "")
     C.export.mkdir(parents=True, exist_ok=True)
     if args.format in ("nifti", "both"):
         for name, arr in (("bqml", r["bqml"]), ("suvbw", r["suv"])):
@@ -224,12 +231,14 @@ def main(argv=None) -> int:
     if args.format in ("dicom", "both"):
         n_it, n_sub = int(z["n_iterations"]), int(z["n_subsets"])
         engine = ("LM-OSEM PyTomography" if args.lm else
-                  "OSEM PyTomography" if args.sino else "OSEM SIRF")
+                  "OSEM PyTomography" if args.sino else
+                  "FBSEM-Net PyTomography" if args.fbsem else "OSEM SIRF")
         paths = write_dicom(r["bqml"], str(C.export / f"dicom{tag}"), hdr,
                             vox[2], vox[1], vox[0], z0,
                             series_desc=f"{engine} {n_it}x{n_sub} BQML",
                             series_number=(902 if args.lm else
-                                           903 if args.sino else 901))
+                                           903 if args.sino else
+                                           904 if args.fbsem else 901))
         print(f"wrote {len(paths)} DICOM files -> {C.export / ('dicom' + tag)}")
         print("   Units=BQML + dose + weight + DecayCorrection=START -> "
               "the viewer computes SUV itself;\n   FrameOfReferenceUID = the "

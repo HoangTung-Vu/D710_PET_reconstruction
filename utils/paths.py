@@ -77,6 +77,10 @@ class Case:
     def recon_sino(self) -> Path:
         return self.root / "recon_sino.npz"
 
+    @property
+    def recon_fbsem(self) -> Path:
+        return self.root / "recon_fbsem.npz"
+
     def vendor_bed(self, n: int) -> Path:
         return self.vendor / f"bed{n}"
 

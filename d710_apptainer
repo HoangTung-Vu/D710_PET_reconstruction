@@ -45,7 +45,7 @@ WHAT RUNS WHERE
                              and docker ran that step as root. `doctor` checks
                              it; apptainer_shim/docker prints the fallback if
                              it is missing.
-  attn sino lm lowdose export
+  attn sino lm fbsem lowdose export
                              no container: conda activate petct_recon. This is
                              where a GPU pays off.
   osem                       not here: it needs SIRF, on a machine with docker

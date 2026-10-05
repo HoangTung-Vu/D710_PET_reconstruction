@@ -23,7 +23,6 @@ def parser():
     ap.add_argument("--n-it", type=int)
     ap.add_argument("--n-sub", type=int)
     ap.add_argument("--xy", type=int)
-    ap.add_argument("--bn", choices=("running", "batch"), default="running")
     ap.add_argument("--check-osem", action="store_true")
     ap.add_argument("--cache")
     ap.add_argument("--max-rays", type=int)
@@ -78,7 +77,7 @@ def main(argv=None) -> int:
         n_it, n_sub = args.n_it or ck["n_it"], args.n_sub or ck["n_sub"]
         xy = args.xy or ck.get("xy", XY)
         tag = f"{Path(args.model).name}:{file_sha(args.model)}"
-    net.train(args.bn == "batch")
+    net.eval()
     print(f"case {C.root}: beds {beds}, {n_it}x{n_sub}, {tag}")
 
     img, sens = {}, {}

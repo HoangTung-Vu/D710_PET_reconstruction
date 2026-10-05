@@ -9,20 +9,24 @@ from torch.utils.checkpoint import checkpoint
 TINY = 1e-30
 
 
+def bn(n: int) -> nn.BatchNorm3d:
+    return nn.BatchNorm3d(n, track_running_stats=False)
+
+
 class ResUnit3D(nn.Module):
     def __init__(self, depth: int = 3, kernels: int = 32, kernel_size: int = 3):
         super().__init__()
         if depth < 2:
             raise ValueError(f"depth must be >= 2, got {depth}")
         pad = kernel_size // 2
-        layers = [nn.Conv3d(1, kernels, kernel_size, padding=pad),
-                  nn.BatchNorm3d(kernels), nn.ReLU(inplace=True)]
+        layers = [nn.Conv3d(1, kernels, kernel_size, padding=pad), bn(kernels),
+                  nn.ReLU(inplace=True)]
         for _ in range(depth - 2):
             layers += [nn.Conv3d(kernels, kernels, kernel_size, padding=pad),
-                       nn.BatchNorm3d(kernels), nn.ReLU(inplace=True)]
-        layers += [nn.Conv3d(kernels, 1, kernel_size, padding=pad),
-                   nn.BatchNorm3d(1)]
+                       bn(kernels), nn.ReLU(inplace=True)]
+        layers += [nn.Conv3d(kernels, 1, kernel_size, padding=pad), bn(1)]
         self.dcnn = nn.Sequential(*layers)
+        nn.init.zeros_(self.dcnn[-1].weight)
 
     def forward(self, x):
         return torch.relu(self.dcnn(x) + x)

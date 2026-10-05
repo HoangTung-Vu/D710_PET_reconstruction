@@ -107,6 +107,9 @@ def load_arrays(C, n: int, n_sub: int, psf, cache=None,
             a["s"] = np.load(p)
     if with_label:
         a["label"] = label(C, n)
+        p = C.work_bed(n) / "sino.npz"
+        if p.exists():
+            a["osem"] = np.ascontiguousarray(np.load(p)["img"].transpose(2, 1, 0))
     return a
 
 

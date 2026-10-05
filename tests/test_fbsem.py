@@ -106,6 +106,7 @@ def test_gradient_reaches_every_parameter(binmap):
     net = FBSEMNet(depth=3, kernels=4).train()
     with torch.no_grad():
         net.gamma.fill_(0.5)
+        net.reg.dcnn[-1].weight.fill_(1.0)
     b = bed(binmap, 4)
     x = net(b, 1)
     loss = torch.nn.functional.mse_loss(x, blob(binmap))
@@ -126,3 +127,36 @@ def test_gamma_reset():
         net.gamma.fill_(-1.0)
     net.clamp_gamma()
     assert net.gamma.item() == pytest.approx(0.01)
+
+
+def test_init_is_identity_and_mode_free(binmap):
+    torch.manual_seed(2)
+    net = FBSEMNet(depth=3, kernels=8)
+    x = torch.rand(XY, XY, 2 * binmap.nrings - 1)
+    with torch.no_grad():
+        assert torch.equal(net.train().regularise(x), x)
+        net.reg.dcnn[-1].weight.fill_(1.0)
+        a = net.train().regularise(x)
+        b = net.eval().regularise(x)
+    assert torch.equal(a, b)
+
+
+def test_init_starts_near_osem(binmap):
+    torch.manual_seed(3)
+    b = bed(binmap, 4, psf=[4.87, 4.87, 4.45])
+    xt = blob(binmap)
+    body = xt > 0.05 * torch.quantile(xt.flatten(), 0.999)
+
+    def nrmse(x):
+        return float(torch.linalg.vector_norm((x - xt)[body])
+                     / torch.linalg.vector_norm(xt[body]))
+
+    u = float(xt[body].mean())
+    net = FBSEMNet(depth=3, kernels=32)
+    with torch.no_grad():
+        net.set_units(u, float(b.s.mean()) / u)
+        net.gamma.zero_()
+        osem = nrmse(net.train()(b, 2))
+        net.gamma.fill_(0.55)
+        init = nrmse(net.train()(b, 2))
+    assert init < 1.5 * osem

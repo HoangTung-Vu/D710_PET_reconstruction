@@ -12,8 +12,8 @@ import numpy as np
 from utils.paths import out_root
 from utils.scanner import N_ITERATIONS, N_SUBSETS, PSF_FWHM_MM, XY
 
-COLUMNS = ["epoch", "step", "case", "bed", "loss", "nrmse", "gamma", "seconds",
-           "peak_gib"]
+COLUMNS = ["epoch", "step", "case", "bed", "loss", "nrmse", "osem_nrmse", "gamma",
+           "seconds", "peak_gib"]
 VAL_COLUMNS = ["epoch", "step", "val_loss", "val_nrmse", "osem_nrmse", "gamma",
                "minutes", "best"]
 VAL_BED_COLUMNS = ["epoch", "step", "case", "bed", "loss", "nrmse", "osem_nrmse",
@@ -65,6 +65,14 @@ def errors(x, lab, body) -> tuple[float, float]:
             float(torch.linalg.vector_norm(d) / torch.linalg.vector_norm(lab[body])))
 
 
+def osem_nrmse(a, bed, lab, body) -> float:
+    import torch
+
+    if a.get("osem") is None:
+        return math.nan
+    return errors(torch.from_numpy(a["osem"]).to(lab.device) * bed.mask, lab, body)[1]
+
+
 def val_samples(root, args) -> list:
     from . import data
 
@@ -73,13 +81,6 @@ def val_samples(root, args) -> list:
     cases = data.sim_cases(root, args.val_sets, args.sim, args.val_cases)
     out = [(C, beds[len(beds) // 2]) for C, beds in cases]
     return out[:args.val_limit] if args.val_limit else out
-
-
-def osem_image(C, n):
-    p = C.work_bed(n) / "sino.npz"
-    if not p.exists():
-        return None
-    return np.ascontiguousarray(np.load(p)["img"].transpose(2, 1, 0))
 
 
 def validate(net, samples, args, cache, dev) -> list:
@@ -97,9 +98,7 @@ def validate(net, samples, args, cache, dev) -> list:
             lab = torch.from_numpy(a["label"]).to(dev) * bed.mask
             body = body_of(lab)
             loss, nrmse = errors(net(bed, args.n_it), lab, body)
-            o = osem_image(a["case"], a["bed"])
-            osem = (errors(torch.from_numpy(o).to(dev) * bed.mask, lab, body)[1]
-                    if o is not None else math.nan)
+            osem = osem_nrmse(a, bed, lab, body)
             rows.append({"case": a["case"].root.parent.name, "bed": a["bed"],
                          "loss": loss, "nrmse": nrmse, "osem_nrmse": osem,
                          "seconds": time.time() - t0})
@@ -229,12 +228,13 @@ def main(argv=None) -> int:
 
             with torch.no_grad():
                 _, nrmse = errors(x, lab, body)
+                osem = osem_nrmse(a, bed, lab, body)
             peak = (torch.cuda.max_memory_allocated(dev) / 2**30
                     if dev.type == "cuda" else 0.0)
             losses.append(loss.item())
             errs.append(nrmse)
             w.writerow([epoch, step, a["case"].root.parent.name, a["bed"],
-                        f"{losses[-1]:.6g}", f"{nrmse:.5f}",
+                        f"{losses[-1]:.6g}", f"{nrmse:.5f}", f"{osem:.5f}",
                         f"{net.gamma.item():.6g}", f"{time.time() - t0:.1f}",
                         f"{peak:.2f}"])
             fh.flush()

@@ -20,7 +20,7 @@ DELTA = pytomography.delta
 class Bed:
     def __init__(self, binmap, y, sens, add, n_sub: int, psf=PSF_FWHM_MM,
                  xy: int = XY, meta=None, mask=None, s=None, device=None,
-                 max_rays: int | None = None):
+                 max_rays: int | None = None, init: str = "counts"):
         dev = torch.device(device or pytomography.device)
         self.device = dev
         self.sm = SinogramSystemMatrix(binmap, xy=xy, psf=psf, meta=meta,
@@ -42,9 +42,18 @@ class Bed:
                              for m, v in enumerate(self.views)])
             del S
         self.s = torch.as_tensor(s, dtype=torch.float32).to(dev)
+        self.init_scale = 1.0
+        if init == "counts":
+            trues = (float(np.sum(y, dtype=np.float64))
+                     - float(np.sum(np.asarray(add) * np.asarray(sens), dtype=np.float64)))
+            denom = float((self.s.sum(0) * self.mask).sum())
+            if trues > 0 and denom > 0:
+                self.init_scale = trues / denom
+        elif init != "mask":
+            raise ValueError(f"init is 'counts' or 'mask', not {init!r}")
 
     def initial(self):
-        return self.mask.clone()
+        return self.mask * self.init_scale
 
     def sens_full(self):
         return self.s.sum(0) * self.mask
@@ -61,9 +70,9 @@ class Bed:
 
     @classmethod
     def from_arrays(cls, a: dict, n_sub: int, psf=PSF_FWHM_MM, device=None,
-                    max_rays: int | None = None, xy: int = XY):
+                    max_rays: int | None = None, xy: int = XY, init: str = "counts"):
         return cls(a["binmap"], a["y"], a["sens"], a["add"], n_sub, psf=psf,
-                   xy=xy, s=a.get("s"), device=device, max_rays=max_rays)
+                   xy=xy, s=a.get("s"), device=device, max_rays=max_rays, init=init)
 
 
 def sens_key(C, n: int, n_sub: int, psf, xy: int = XY) -> str:
@@ -114,9 +123,9 @@ def load_arrays(C, n: int, n_sub: int, psf, cache=None,
 
 
 def build(a: dict, n_sub: int, psf, device=None, max_rays=None,
-          xy: int = XY) -> Bed:
+          xy: int = XY, init: str = "counts") -> Bed:
     bed = Bed.from_arrays(a, n_sub, psf=psf, device=device, max_rays=max_rays,
-                          xy=xy)
+                          xy=xy, init=init)
     p = a.get("s_path")
     if p is not None and a.get("s") is None:
         p.parent.mkdir(parents=True, exist_ok=True)

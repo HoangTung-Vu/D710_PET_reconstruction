@@ -40,21 +40,21 @@ def blob(binmap):
     return torch.from_numpy(np.repeat(x[:, :, None], nz, 2).astype(np.float32))
 
 
-def problem(binmap, seed=0):
+def problem(binmap, seed=0, scale=1.0):
     sm = SinogramSystemMatrix(binmap, meta=meta(binmap), device="cpu", psf=0)
     rng = np.random.default_rng(seed)
-    S = rng.uniform(0.5, 1.0, binmap.shape).astype(np.float32)
-    ybar = S * sm.forward(blob(binmap)).numpy() + 0.2
+    S = (rng.uniform(0.5, 1.0, binmap.shape) / scale).astype(np.float32)
+    ybar = S * sm.forward(scale * blob(binmap)).numpy() + 0.2
     y = rng.poisson(ybar).astype(np.float32)
     add = (0.2 / S).astype(np.float32)
     return y, S, add
 
 
-def bed(binmap, n_sub, seed=0, psf=0):
-    y, S, add = problem(binmap, seed)
+def bed(binmap, n_sub, seed=0, psf=0, init="mask", scale=1.0):
+    y, S, add = problem(binmap, seed, scale)
     shape = (XY, XY, 2 * binmap.nrings - 1)
     return Bed(binmap, y, S, add, n_sub, psf=psf, xy=XY, meta=meta(binmap),
-               mask=np.ones(shape, np.float32), device="cpu")
+               mask=np.ones(shape, np.float32), device="cpu", init=init)
 
 
 @pytest.mark.parametrize("psf", [0, [4.87, 4.87, 4.45]])
@@ -141,10 +141,11 @@ def test_init_is_identity_and_mode_free(binmap):
     assert torch.equal(a, b)
 
 
-def test_init_starts_near_osem(binmap):
+@pytest.mark.parametrize("scale", [1.0, 0.01])
+def test_init_starts_near_osem(binmap, scale):
     torch.manual_seed(3)
-    b = bed(binmap, 4, psf=[4.87, 4.87, 4.45])
-    xt = blob(binmap)
+    b = bed(binmap, 4, psf=[4.87, 4.87, 4.45], init="counts", scale=scale)
+    xt = scale * blob(binmap)
     body = xt > 0.05 * torch.quantile(xt.flatten(), 0.999)
 
     def nrmse(x):

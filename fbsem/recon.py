@@ -84,7 +84,8 @@ def main(argv=None) -> int:
     for n in beds:
         t0 = time.time()
         a = B.load_arrays(C, n, n_sub, psf, cache, xy=xy)
-        bed = B.build(a, n_sub, psf, dev, args.max_rays, xy)
+        bed = B.build(a, n_sub, psf, dev, args.max_rays, xy,
+                      init="mask" if args.check_osem else "counts")
         with torch.no_grad():
             x = net(bed, n_it)
         img[n] = np.ascontiguousarray(x.cpu().numpy().transpose(2, 1, 0))

@@ -136,6 +136,15 @@ python -m deepPET.evaluate --name g128 --limit 300           # DeepPET vs OSEM 2
 python -m deepPET.real --case fdg26081008 --bed 6 --name g128
 ```
 
+### Whole real cases, for `evaluate_recon`
+
+```bash
+d710 deeppet recon --case fdg26081901 --model $D710_OUT/deeppet/runs/g256/best.pt   # all beds, stitched
+d710 export --case fdg26081901 --deeppet --format nifti                             # <case>_deeppet_suvbw.nii.gz
+```
+
+The count scale is the calibrated `ssrb_counts_per_bqml_mm_s` of `calib.json` (`python -m deepPET.calibrate --ssrb-only`), not a fit to GE; `--scale ge` gives the fit back. Models trained before the geometry hotfix (`g256`) are rotated back onto the current geometry. Details: `.claude/audit/deepPET/RECON.md`.
+
 `real` reconstructs OSEM 2D the way GE does clinically (`--osem ge`, the default): 2 iterations × 24 subsets per slice, then GE's post-filter on the stack of slices — 6.4 mm transaxial and the axial [1, 4, 1] (`osem.stitch.post_filter`). On fdg26081901 bed 4 it matches GE's image at r = 0.983 (rRMSE 0.63), against r = 0.972 (rRMSE 0.81) for the paper's 5 × 16 with the transaxial filter only (`--osem paper`). `evaluate` keeps the paper's 5 × 16: its test slices are drawn one at a time, so there are no neighbours to filter axially.
 
 Outputs go to `$D710_OUT/deeppet/{data,runs/<name>,real}/`.

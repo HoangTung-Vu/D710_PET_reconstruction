@@ -31,6 +31,31 @@ def bqml_per_suv(case) -> dict:
             "frame_s": float(hdr["frame_duration_ms"]) / 1000.0}
 
 
+def ssrb_scale(case, bed: int, sc: Scanner2D) -> dict:
+    from osem.stitch import decay_factor, injection_epoch
+    from utils.quant import dose_bq
+
+    from .real import ge_planes, ssrb
+
+    x, den, _, _ = ssrb(case, bed)
+    p = np.stack([sc.fwd(g) for g in ge_planes(case, bed, sc.grid)])
+    v = den > 0
+    s = float(x[v].sum(dtype=np.float64) / p[v].sum(dtype=np.float64))
+    hdr = case.header(bed)
+    fb = float(decay_factor(hdr, injection_epoch(hdr)))
+    t = float(hdr["frame_duration_ms"]) / 1000.0
+    q = s * fb * float(hdr["patient_weight_kg"]) * 1000.0 / (dose_bq(hdr) * t)
+    return {"case": case.name, "bed": bed, "s_ssrb": s, "q": q}
+
+
+def add_ssrb(out: dict, rows: list) -> dict:
+    q = [r["q"] for r in rows]
+    out["ssrb_counts_per_bqml_mm_s"] = float(np.mean(q))
+    out["ssrb_q_range"] = [min(q), max(q)]
+    out["beds_ssrb"] = rows
+    return out
+
+
 def bed_factor(case, bed: int, a: float, sc: Scanner2D) -> dict:
     from scipy.ndimage import gaussian_filter
 
@@ -67,11 +92,24 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Measure SUV -> counts on real D710 beds.")
     ap.add_argument("--cases", nargs="+", default=list(DEFAULT_CASES))
     ap.add_argument("--out", default=str(CALIB_JSON))
+    ap.add_argument("--ssrb-only", action="store_true")
     a = ap.parse_args(argv)
 
     from utils.paths import case as get_case
 
     sc = Scanner2D(GRID)
+    if a.ssrb_only:
+        cur = json.loads(Path(a.out).read_text())
+        rows = []
+        for name in a.cases:
+            C = get_case(name)
+            for b in C.beds(("background", "normdt", "attn")):
+                rows.append(ssrb_scale(C, b, sc))
+                print(f"  {name} bed {b}: s_ssrb {rows[-1]['s_ssrb']:.5f}  q {rows[-1]['q']:.5g}",
+                      flush=True)
+        Path(a.out).write_text(json.dumps(add_ssrb(cur, rows), indent=1))
+        print(f"q = {cur['ssrb_counts_per_bqml_mm_s']:.5g} -> {a.out}")
+        return 0
     rows, cases = [], []
     for name in a.cases:
         C = get_case(name)
@@ -104,6 +142,7 @@ def main(argv=None) -> int:
            "frame_s": cases[0]["frame_s"], "grid_mm": sc.voxel_mm,
            "made": dt.date.today().isoformat(), "by": "python -m deepPET.calibrate",
            "cases": cases, "beds": rows}
+    add_ssrb(out, [ssrb_scale(get_case(r["case"]), r["bed"], sc) for r in rows])
     Path(a.out).write_text(json.dumps(out, indent=1))
     print(f"\nA = {A:.1f} Bq/mL per SUV, B = {B:.5g} counts per Bq/mL.mm "
           f"-> s = {A * B:.4f} counts per SUV.mm (beds {out['counts_per_suv_mm_bed_range'][0]:.4f}"

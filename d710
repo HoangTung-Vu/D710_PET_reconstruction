@@ -48,6 +48,9 @@ COMMANDS
   d710 fbsem    train|recon|eval                 FBSEM-Net: OSEM with a 3D CNN
                                                  in every sub-iteration; see
                                                  fbsem/README.md
+  d710 deeppet  recon --case N --model PT        DeepPET: SSRB sinogram -> image
+                                                 per plane, stitched; see
+                                                 deepPET/README.md
   d710 lowdose  --case N --drf D                 a thinned copy of a case
                 [--mode low-count|low-dose]      shorter scan / less activity
                 [--sinogram derived|binomial]    -> <case>/raw_simulation/
@@ -57,7 +60,7 @@ COMMANDS
                                                  from the case's CT and PET
                                                  (GATE 10 or parallelproj);
                                                  see simulation/README.md
-  d710 export   --case N [--format nifti|dicom] [--lm|--sino|--fbsem]
+  d710 export   --case N [--format nifti|dicom] [--lm|--sino|--fbsem|--deeppet]
                                                  Bq/mL and SUV -> NIfTI/DICOM
                                                  --lm reads recon_lm.npz,
                                                  --sino recon_sino.npz
@@ -66,7 +69,7 @@ COMMANDS
 
 TWO RUNTIMES, AND A THIRD KEPT ONLY FOR COMPARISON
   d710:full        decode estimate tostir exam read shell -- GE's own software
-  host python      attn sino lm fbsem lowdose simulate export -- PyTomography,
+  host python      attn sino lm fbsem deeppet lowdose simulate export -- PyTomography,
                    parallelproj and opengate
   sirf-local:0.1   osem, and nothing else.  `d710 sino` is the same sinogram
                    OSEM without SIRF and is replacing it; osem needs docker
@@ -435,6 +438,20 @@ fbsem)
     exec env D710_OUT="$O" PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}" \
         "$PY" -u -m fbsem "${REST[@]+"${REST[@]}"}" \
         "${FB_EXTRA[@]+"${FB_EXTRA[@]}"}"
+    ;;
+
+deeppet)
+    need_py "numpy, scipy, torch, parallelproj, nibabel" \
+        "torch, parallelproj and nibabel are required (see deepPET/README.md):"
+    O="$(resolve_out)"
+    DP_EXTRA=()
+    if [[ "${REST[0]:-}" == recon ]]; then
+        need_case
+        DP_EXTRA=(--case "$CASE" ${BED:+--beds "$BED"} ${CT:+--ct "$CT"})
+    fi
+    exec env D710_OUT="$O" PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}" \
+        "$PY" -u -m deepPET "${REST[@]+"${REST[@]}"}" \
+        "${DP_EXTRA[@]+"${DP_EXTRA[@]}"}"
     ;;
 
 lowdose)

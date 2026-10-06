@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from utils.geometry import det_pair_map, detector_xy_mm
-from utils.scanner import NDET
+from utils.scanner import GANTRY_XY_MM, NDET, VIEW_OFFSET_DEG, XTAL0_OFFSET_DEG, XTAL_PITCH_DEG
 
 N_VIEW, N_TANG_RAW = 288, 381
 
@@ -12,6 +12,10 @@ FOV_RADIUS_MM = 350.0
 FOV_MM = 2 * FOV_RADIUS_MM
 
 GRIDS = (128, 256)
+
+TRAIN_GEOMETRY = {"offset_deg": -(XTAL0_OFFSET_DEG + XTAL_PITCH_DEG), "centre_mm": (0.0, 0.0)}
+
+SCANNER_GEOMETRY = {"offset_deg": VIEW_OFFSET_DEG, "centre_mm": tuple(GANTRY_XY_MM)}
 
 
 def tangential_distance_mm() -> np.ndarray:
@@ -39,10 +43,11 @@ def fov_mask(grid: int, radius_mm: float = FOV_RADIUS_MM) -> np.ndarray:
 
 class Scanner2D:
 
-    def __init__(self, grid: int = 128):
+    def __init__(self, grid: int = 128, offset_deg: float = VIEW_OFFSET_DEG,
+                 centre_mm=GANTRY_XY_MM):
         d1, d2 = det_pair_map(N_VIEW, N_TANG_RAW, NDET)
         d1, d2 = d1[:, TANG], d2[:, TANG]
-        xy = detector_xy_mm()
+        xy = detector_xy_mm(offset_deg=offset_deg, centre_mm=centre_mm)
         self.xs = np.zeros((N_VIEW, N_TANG, 3), np.float32)
         self.xe = np.zeros((N_VIEW, N_TANG, 3), np.float32)
         self.xs[..., :2] = xy[d1]

@@ -263,3 +263,81 @@ def test_osem_ge_applies_ges_axial_filter(sc):
     assert out.shape == (3, 128, 128)
     assert out[1, c, c] == pytest.approx(4.0) and out[0, c, c] == pytest.approx(1.0)
     assert np.allclose(osem_ge(y, y, y, sc, slices=[1], recon=rec, fwhm_mm=0.0)[0], out[1])
+
+
+def test_geometry_fix_undoes_the_training_geometry():
+    from deepPET.osem2d import osem
+    from deepPET.recon import rigid_resample
+    from deepPET.scanner2d import FOV_MM, SCANNER_GEOMETRY, TRAIN_GEOMETRY, Scanner2D
+
+    f = disk(128, 25.0, 4.0, cx=-120.0, cy=60.0) + disk(128, 150.0, 0.5, cx=10.0, cy=10.0)
+    new, old = Scanner2D(128, **SCANNER_GEOMETRY), Scanner2D(128, **TRAIN_GEOMETRY)
+    y = new.fwd(f)
+    got = osem(y, np.ones_like(y), np.zeros_like(y), old, 6, 16, post_fwhm_mm=0.0)
+    ref = osem(y, np.ones_like(y), np.zeros_like(y), new, 6, 16, post_fwhm_mm=0.0)
+    c = (np.arange(128) - 63.5) * FOV_MM / 128
+
+    def centre(img):
+        w = np.where(img > 2.0, img, 0.0)
+        return np.array([(w.sum(axis=0) * c).sum(), (w.sum(axis=1) * c).sum()]) / w.sum()
+
+    off = lambda img: float(np.hypot(*(centre(img) - centre(ref))))
+    fixed = rigid_resample(got, 128, FOV_MM / 128)
+    wrong = rigid_resample(got, 128, FOV_MM / 128, SCANNER_GEOMETRY, TRAIN_GEOMETRY)
+    assert off(got) > 5.0 and off(wrong) > 5.0 and off(fixed) < 0.3
+    assert np.array_equal(rigid_resample(got, 128, FOV_MM / 128, SCANNER_GEOMETRY, SCANNER_GEOMETRY), got)
+
+
+def test_resampling_keeps_world_positions():
+    from deepPET.recon import rigid_resample
+    from deepPET.scanner2d import SCANNER_GEOMETRY
+    from utils.scanner import DR_MM, XY
+
+    img = disk(256, 20.0, 1.0, cx=-80.0, cy=55.0)
+    out = rigid_resample(img, XY, DR_MM, SCANNER_GEOMETRY, SCANNER_GEOMETRY)
+    c = (np.arange(XY) - (XY - 1) / 2.0) * DR_MM
+    w = out / out.sum()
+    assert float((w.sum(axis=0) * c).sum()) == pytest.approx(-80.0, abs=0.3)
+    assert float((w.sum(axis=1) * c).sum()) == pytest.approx(55.0, abs=0.3)
+    assert out.sum() * DR_MM ** 2 == pytest.approx(img.sum() * (700.0 / 256) ** 2, rel=0.01)
+
+
+def _hdr(dose=300.0, weight=60.0, frame_ms=90000.0, start=1_800_000_000.0):
+    return {"dose_mbq": dose, "residual_dose_mbq": 10.0, "patient_weight_kg": weight,
+            "half_life_s": 6586.2, "frame_duration_ms": frame_ms, "bed_start_time": start,
+            "radiopharm_start_datetime": "20270115080000.00"}
+
+
+def test_count_units_invert_the_export_chain(tmp_path):
+    from deepPET.recon import bed_decay, counts_per_suv
+    from utils import quant
+    from utils.paths import Case
+
+    C = Case("x", tmp_path)
+    beds = {1: _hdr(start=1_800_000_000.0 + 3600.0), 2: _hdr(start=1_800_000_000.0 + 3700.0)}
+    C.header = lambda n: beds[n]
+    K, suv = 141_637.7, np.array([0.5, 2.0, 12.0])
+    f, ref, h0 = quant.scan_start_factor(C, list(beds))
+    for n, h in beds.items():
+        img = suv * counts_per_suv(C, h, K)
+        vol = img * bed_decay(h) * f
+        r = quant.report(vol, K, h0, [3.27, 2.13, 2.13], dose=quant.dose_bq(h0) * f, out=lambda *a: None)
+        assert np.allclose(r["suv"], suv, rtol=1e-9)
+
+
+def test_physical_scale_follows_dose_weight_and_frame():
+    from deepPET.recon import s_phys
+
+    cal = {"ssrb_counts_per_bqml_mm_s": 1e-6}
+    s0 = s_phys(_hdr(), cal)
+    assert s_phys(_hdr(dose=2 * 300.0 - 10.0), cal) == pytest.approx(2 * s0)
+    assert s_phys(_hdr(weight=120.0), cal) == pytest.approx(s0 / 2)
+    assert s0 / 2 < s_phys(_hdr(frame_ms=45000.0), cal) < 1.01 * s0 / 2
+    with pytest.raises(SystemExit):
+        s_phys(_hdr(), {})
+
+
+def test_deeppet_cli_dispatch():
+    from deepPET.__main__ import main
+
+    assert main([]) == 2 and main(["--help"]) == 0 and main(["nope"]) == 2

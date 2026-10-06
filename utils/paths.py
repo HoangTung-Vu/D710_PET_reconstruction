@@ -81,6 +81,10 @@ class Case:
     def recon_fbsem(self) -> Path:
         return self.root / "recon_fbsem.npz"
 
+    @property
+    def recon_deeppet(self) -> Path:
+        return self.root / "recon_deeppet.npz"
+
     def vendor_bed(self, n: int) -> Path:
         return self.vendor / f"bed{n}"
 
